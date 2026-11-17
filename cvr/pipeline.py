@@ -28,7 +28,7 @@ from . import vocab as V
 from .calibration import FreqAware, GlobalPlatt, GroupShrunkPlatt
 from .features import featurize, read_raw
 from .models import GBDT, LogReg, SmoothedRate
-from .schema import CAT_INPUTS, GROUP_KEY, SHOP_KEY, VOCAB_COLS
+from .schema import CAT_INPUTS, GROUP_KEY, NUM_INPUTS, SHOP_KEY, VOCAB_COLS
 
 ROLES = ["train", "v1", "v2"]
 
@@ -63,7 +63,8 @@ def evaluate(df: pl.DataFrame, p: np.ndarray) -> dict:
     g1 = cls == "G1"
     return {
         "G1": M.group_report(y[g1], p[g1], g[g1]),
-        "overall_nonmissing": M.overall(y[nonmiss], p[nonmiss]),
+        "overall_nonmissing": M.overall(y[nonmiss], p[nonmiss])
+        | M.gauc(y[nonmiss], p[nonmiss], df["user_key"].to_numpy()[nonmiss]),
         "overall_all": M.overall(y, p),
         "pooled_O_over_E_by_class": {c: float(y[cls == c].sum() / p[cls == c].sum())
                                      for c in G.CLASSES if (cls == c).any()},
@@ -85,10 +86,14 @@ def main(config_path: str) -> Path:
     srcs = sources(cfg)
     user_pct = cfg["data"].get("smoke_user_pct")
 
-    # 1) one vocabulary from the training sources only
-    counts_frames = [read_raw(p, b, user_pct, columns=VOCAB_COLS).select(VOCAB_COLS) for p, b in srcs["train"]]
-    vocab = V.build_vocab(V.count_values(counts_frames), min_count=cfg["vocab"]["min_count"])
-    del counts_frames
+    # 1) one vocabulary from the training sources only, counted one file at a time
+    counts = None
+    for p, b in srcs["train"]:
+        frame = read_raw(p, b, user_pct, columns=VOCAB_COLS).select(VOCAB_COLS)
+        counts = V.count_values([frame], counts=counts)
+        del frame
+    vocab = V.build_vocab(counts, min_count=cfg["vocab"]["min_count"])
+    del counts
     V.save(vocab, run_dir / "vocab")
     sizes = V.sizes(vocab)
     timings["vocab"] = time.time() - t0
@@ -118,20 +123,22 @@ def main(config_path: str) -> Path:
         fitted_info[name] = {"key": key, "p0": m.p0, "prior_strength_m": m.m}
         for r in preds:
             preds[r][name] = m.predict(data[r])
-    t1 = time.time()
-    lr = LogReg.fit(data["train"], sizes, mc["lr_C"], mc["lr_max_iter"])
-    fitted_info["M1"] = {"C": mc["lr_C"], "n_iter": int(lr.model.n_iter_[0]), "converged": lr.converged,
-                         "dims": lr.n_onehot, "seconds": time.time() - t1}
-    for r in preds:
-        preds[r]["M1"] = lr.predict(data[r])
-    variants = {"M2": None}
-    if mc.get("ablation_no_history"):
-        variants["M2_nohist"] = CAT_INPUTS  # same model without purchase-history inputs
-    for vname, inputs in variants.items():
+    ablate = bool(mc.get("ablation_no_history"))
+    lr_variants = {"M1": NUM_INPUTS} | ({"M1_nohist": []} if ablate else {})
+    for vname, num_inputs in lr_variants.items():
+        t1 = time.time()
+        lr = LogReg.fit(data["train"], sizes, mc["lr_C"], mc["lr_max_iter"], num_inputs)
+        fitted_info[vname] = {"C": mc["lr_C"], "n_iter": int(lr.model.n_iter_[0]), "converged": lr.converged,
+                              "dims": lr.n_onehot + len(num_inputs), "seconds": time.time() - t1}
+        for r in preds:
+            preds[r][vname] = lr.predict(data[r])
+    gb_variants = {"M2": CAT_INPUTS + NUM_INPUTS} | ({"M2_nohist": CAT_INPUTS} if ablate else {})
+    for vname, inputs in gb_variants.items():
         for seed in mc["seeds"]:
             t1 = time.time()
             gb = GBDT.fit(data["train"], mc["lgb"], seed, mc["num_boost_round"], mc["early_stopping_rounds"], inputs)
-            fitted_info[f"{vname}_s{seed}"] = {"best_iteration": gb.booster.best_iteration, "seconds": time.time() - t1}
+            fitted_info[f"{vname}_s{seed}"] = {"rounds_from_early_stopping": gb.rounds, "refit_on_all_training": True,
+                                               "seconds": time.time() - t1}
             for r in preds:
                 preds[r][f"{vname}_s{seed}"] = gb.predict(data[r])
     timings["models"] = time.time() - t0 - sum(timings.values())
@@ -191,6 +198,19 @@ def main(config_path: str) -> Path:
     boot = M.paired_bootstrap_macro_diff(v2["y"].to_numpy()[g1m], p_sel[g1m], p_ii[g1m], g2_codes[g1m],
                                          v2["user_key"].to_numpy()[g1m], bs["reps"], bs["seed"])
     boot["note"] = f"{first}: selected ({method}) minus (ii) on V2 G1 rows; selection data, not a test"
+
+    # purchase-history ablation (raw predictions): same model with vs without history inputs.
+    # V2 is not used to choose anything in this comparison; M2 pairs seed k with seed k.
+    hist_ablation = {}
+    if ablate:
+        y_g1, g_g1, u_g1 = v2["y"].to_numpy()[g1m], g2_codes[g1m], v2["user_key"].to_numpy()[g1m]
+        hist_ablation["M1"] = M.paired_bootstrap_macro_diff(
+            y_g1, preds["v2"]["M1"][g1m], preds["v2"]["M1_nohist"][g1m], g_g1, u_g1, bs["reps"], bs["seed"])
+        hist_ablation["M2"] = M.paired_bootstrap_macro_diff(
+            y_g1, [preds["v2"][f"M2_s{s}"][g1m] for s in mc["seeds"]],
+            [preds["v2"][f"M2_nohist_s{s}"][g1m] for s in mc["seeds"]], g_g1, u_g1, bs["reps"], bs["seed"])
+        for v in hist_ablation.values():
+            v["note"] = "with minus without history inputs, raw predictions, V2 G1 rows; negative = history helps"
     timings["selection_bootstrap"] = time.time() - t0 - sum(timings.values())
 
     meta = {
@@ -204,7 +224,8 @@ def main(config_path: str) -> Path:
         "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
         "fitted": fitted_info, "calibration": cal_info,
     }
-    out = {"meta": meta, "groups": group_summary, "selection": selection, "v2_bootstrap_info": boot, "v2_rows": rows}
+    out = {"meta": meta, "groups": group_summary, "selection": selection, "v2_bootstrap_info": boot,
+           "v2_history_ablation": hist_ablation, "v2_rows": rows}
     (run_dir / "results.json").write_text(json.dumps(out, indent=2, default=str))
     (run_dir / "selection.json").write_text(json.dumps(selection, indent=2, default=str))
     (run_dir / "results.md").write_text(render_markdown(out, mc["seeds"], lambdas))
@@ -225,11 +246,11 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
         f"(selected on training files only): {gs['G1_groups']} groups, {gs['G1_train_click_share']:.2%} of training clicks",
         f"- selection: base **{sel['base_model']}**, λ(iii) = {sel['lambda_iii']:g}, method **{sel['calibration_method']}**",
         f"- time {meta['timings_seconds']['total']} s, peak memory {meta['peak_rss_gb']} GB", "",
-        "| model | calib | G1 macro LogLoss | G1 pooled O/E | G1 median abs(O/E−1) | G1 within-group AUC | LogLoss (non-missing) | AUC (non-missing) | O/E (non-missing) | ECE10 | AUC (all rows) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| model | calib | G1 macro LogLoss | G1 pooled O/E | G1 median abs(O/E−1) | G1 within-group AUC | LogLoss (non-missing) | AUC (non-missing) | GAUC (non-missing) | O/E (non-missing) | ECE10 | AUC (all rows) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
-    families = {"M0a": ["M0a"], "M0b": ["M0b"], "M1": ["M1"], "M2": [f"M2_s{s}" for s in seeds],
-                "M2_nohist": [f"M2_nohist_s{s}" for s in seeds]}
+    families = {"M0a": ["M0a"], "M0b": ["M0b"], "M1": ["M1"], "M1_nohist": ["M1_nohist"],
+                "M2": [f"M2_s{s}" for s in seeds], "M2_nohist": [f"M2_nohist_s{s}" for s in seeds]}
     suffixes = ["raw", "ii"] + [f"iii_lam{l:g}" for l in lambdas] + ["iv"]
     for fam, names in families.items():
         for suf in suffixes:
@@ -247,12 +268,20 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
             lines.append(f"| {fam} | {suf} | {cell(('G1', 'macro_logloss'))} | {cell(('G1', 'pooled_O_over_E'), '.3f')} | "
                          f"{cell(('G1', 'median_abs_ratio_dev'), '.3f')} | {cell(('G1', 'within_group_auc_macro'), '.4f')} | "
                          f"{cell(('overall_nonmissing', 'logloss'))} | {cell(('overall_nonmissing', 'auc'), '.4f')} | "
+                         f"{cell(('overall_nonmissing', 'gauc'), '.4f')} | "
                          f"{cell(('overall_nonmissing', 'O_over_E'), '.3f')} | {cell(('overall_nonmissing', 'ece10'), '.5f')} | "
                          f"{cell(('overall_all', 'auc'), '.4f')} |")
     b = out["v2_bootstrap_info"]
     lines += ["", f"Paired user bootstrap on V2 G1 rows ({b['note']}): diff = {b['diff']:+.6f}, "
-                  f"95% CI [{b['ci95'][0]:+.6f}, {b['ci95'][1]:+.6f}], {b['reps']} reps, {b['users']} users, {b['groups']} groups.",
-              "", "Values with ± are mean ± sd over base-model seeds."]
+                  f"95% CI [{b['ci95'][0]:+.6f}, {b['ci95'][1]:+.6f}], {b['reps']} reps, {b['users']} users, {b['groups']} groups."]
+    for fam, h in out.get("v2_history_ablation", {}).items():
+        lines.append(f"History ablation {fam} ({h['note']}): diff = {h['diff']:+.6f}, 95% CI "
+                     f"[{h['ci95'][0]:+.6f}, {h['ci95'][1]:+.6f}], seed pairs {h['seed_pairs']}, "
+                     f"per pair {[round(x, 6) for x in h['per_pair_diff']]}.")
+    gx = next(iter(rows.values()))["overall_nonmissing"]
+    lines += ["", f"GAUC: per-user AUC weighted by clicks over users with both classes "
+                  f"({gx['users_used']} users used, {gx['users_excluded']} excluded, {gx['click_share_used']:.1%} of non-missing clicks).",
+              "Values with ± are mean ± sd over base-model seeds."]
     return "\n".join(lines) + "\n"
 
 

@@ -34,17 +34,36 @@ def per_group(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> pl.DataFrame:
                                 pl.col("p").sum().alias("E"), pl.col("l").mean().alias("logloss"))
 
 
+def grouped_auc(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> pl.DataFrame:
+    """Per-group AUC from within-group ranks (Mann-Whitney), ties get average ranks.
+
+    AUC_g = (sum of positive ranks - n_pos (n_pos + 1) / 2) / (n_pos * n_neg); null if one class only.
+    """
+    df = pl.DataFrame({"g": g, "y": y.astype(np.int8), "p": p})
+    df = df.with_columns(pl.col("p").rank("average").over("g").alias("r"))
+    agg = df.group_by("g").agg(pl.len().alias("n"), pl.col("y").sum().cast(pl.Int64).alias("n_pos"),
+                               (pl.col("r") * pl.col("y")).sum().alias("rank_pos"))
+    n_neg = pl.col("n") - pl.col("n_pos")
+    return agg.with_columns(
+        pl.when((pl.col("n_pos") > 0) & (n_neg > 0))
+        .then((pl.col("rank_pos") - pl.col("n_pos") * (pl.col("n_pos") + 1) / 2) / (pl.col("n_pos") * n_neg))
+        .otherwise(None).alias("auc"))
+
+
 def within_group_auc_macro(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> tuple[float | None, int, int]:
     """Mean of per-group AUC over groups with both classes; returns (mean, used, excluded)."""
-    df = pl.DataFrame({"g": g, "y": y, "p": p})
-    aucs, excluded = [], 0
-    for _, part in df.group_by("g"):
-        yy = part["y"].to_numpy()
-        if 0 < yy.sum() < yy.size:
-            aucs.append(roc_auc_score(yy, part["p"].to_numpy()))
-        else:
-            excluded += 1
-    return (float(np.mean(aucs)) if aucs else None), len(aucs), excluded
+    a = grouped_auc(y, p, g)
+    used = a.filter(pl.col("auc").is_not_null())
+    return (float(used["auc"].mean()) if used.height else None), used.height, a.height - used.height
+
+
+def gauc(y: np.ndarray, p: np.ndarray, users: np.ndarray) -> dict:
+    """MAC-style GAUC: per-user AUC weighted by the user's clicks, over users with both classes."""
+    a = grouped_auc(y, p, users)
+    used = a.filter(pl.col("auc").is_not_null())
+    return {"gauc": float((used["auc"] * used["n"]).sum() / used["n"].sum()) if used.height else None,
+            "users_used": used.height, "users_excluded": a.height - used.height,
+            "click_share_used": float(used["n"].sum() / y.size)}
 
 
 def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
@@ -65,30 +84,41 @@ def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
     }
 
 
-def paired_bootstrap_macro_diff(y: np.ndarray, p_a: np.ndarray, p_b: np.ndarray, g: np.ndarray,
-                                users: np.ndarray, reps: int = 1000, seed: int = 0) -> dict:
+def paired_bootstrap_macro_diff(y: np.ndarray, p_a: np.ndarray | list[np.ndarray], p_b: np.ndarray | list[np.ndarray],
+                                g: np.ndarray, users: np.ndarray, reps: int = 1000, seed: int = 0) -> dict:
     """Macro LogLoss(A) - macro LogLoss(B) with a 95% interval from resampling USERS.
 
-    Both models are scored on the SAME resampled users in every replicate (paired).
+    p_a / p_b may be lists of seed-matched predictions (A seed k is paired with B seed k).
+    Every replicate draws ONE set of resampled users, used for both models and all seed pairs;
+    the replicate's statistic is the mean over seed pairs of the paired difference.
     A group enters a replicate's macro mean only if it has at least one resampled click.
     """
+    pa = p_a if isinstance(p_a, list) else [p_a]
+    pb = p_b if isinstance(p_b, list) else [p_b]
+    if len(pa) != len(pb):
+        raise ValueError("seed-matched prediction lists must have equal length")
     _, ui = np.unique(users, return_inverse=True)
     _, gi = np.unique(g, return_inverse=True)
     U, G = ui.max() + 1, gi.max() + 1
     n = sparse.csr_matrix((np.ones_like(y, dtype=float), (ui, gi)), shape=(U, G))
-    la = sparse.csr_matrix((bce(y, p_a), (ui, gi)), shape=(U, G))
-    lb = sparse.csr_matrix((bce(y, p_b), (ui, gi)), shape=(U, G))
+    # The macro difference is linear in the per-row loss differences, so averaging the seed pairs'
+    # row differences first gives exactly the mean of the per-pair macro differences.
+    row_diffs = [bce(y, a) - bce(y, b) for a, b in zip(pa, pb)]
 
-    def macro(w: np.ndarray, L: sparse.csr_matrix) -> np.ndarray:
-        cnt, tot = n.T @ w, L.T @ w
+    def as_matrix(v: np.ndarray) -> sparse.csr_matrix:
+        return sparse.csr_matrix((v, (ui, gi)), shape=(U, G))
+
+    def macro(w: np.ndarray, d: sparse.csr_matrix) -> float:
+        cnt, tot = n.T @ w, d.T @ w
         keep = cnt > 0
-        return (tot[keep] / cnt[keep]).mean()
+        return float((tot[keep] / cnt[keep]).mean())
 
-    point = macro(np.ones(U), la) - macro(np.ones(U), lb)
+    ones = np.ones(U)
+    d_mean = as_matrix(np.mean(row_diffs, axis=0))
     rng = np.random.default_rng(seed)
-    diffs = np.empty(reps)
-    for r in range(reps):
-        w = np.bincount(rng.integers(U, size=U), minlength=U).astype(float)
-        diffs[r] = macro(w, la) - macro(w, lb)
+    diffs = np.array([macro(np.bincount(rng.integers(U, size=U), minlength=U).astype(float), d_mean)
+                      for _ in range(reps)])
     lo, hi = np.quantile(diffs, [0.025, 0.975])
-    return {"diff": float(point), "ci95": [float(lo), float(hi)], "reps": reps, "users": int(U), "groups": int(G)}
+    return {"diff": macro(ones, d_mean), "ci95": [float(lo), float(hi)], "reps": reps, "users": int(U),
+            "groups": int(G), "seed_pairs": len(pa),
+            "per_pair_diff": [macro(ones, as_matrix(r)) for r in row_diffs]}

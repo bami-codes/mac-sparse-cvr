@@ -25,13 +25,14 @@ SHOP_KEY = "ad_feat2"  # [추정] shop-like anonymous item feature
 UNKNOWN = 0  # value not seen in the training files
 MISSING = 1  # the PAD token
 
-CAT_INPUTS = USER_COLS + CTX_COLS + ["ad_feat1", "ad_feat3", "ad_feat4", "ad_feat5"]
+# M1 and M2 use the SAME inputs: CAT_INPUTS + NUM_INPUTS. The *_nohist variants drop NUM_INPUTS.
+CAT_INPUTS = USER_COLS + CTX_COLS + ["ad_feat1", SHOP_KEY, "ad_feat3", "ad_feat4", "ad_feat5"]
 NUM_INPUTS = [
     "match_ad_feat0", "match_ad_feat1", "match_ad_feat2", "hist_empty",
     "mm_feat0_max", "mm_feat0_mean", "mm_feat1_max", "mm_feat1_mean",
 ]
 HISTORY_INPUTS = NUM_INPUTS  # all numeric inputs come from the purchase history
-LR_ONEHOT = CAT_INPUTS + [SHOP_KEY]
+LR_ONEHOT = CAT_INPUTS
 
 
 def assert_no_label_inputs(inputs: list[str]) -> None:

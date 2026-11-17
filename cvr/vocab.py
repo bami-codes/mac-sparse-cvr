@@ -14,8 +14,10 @@ import polars as pl
 from .schema import MISSING, PAD, UNKNOWN, VOCAB_COLS
 
 
-def count_values(frames: list[pl.DataFrame], cols: list[str] = VOCAB_COLS) -> dict[str, pl.DataFrame]:
-    counts: dict[str, pl.DataFrame] = {}
+def count_values(frames: list[pl.DataFrame], cols: list[str] = VOCAB_COLS,
+                 counts: dict[str, pl.DataFrame] | None = None) -> dict[str, pl.DataFrame]:
+    """Value counts per column; pass `counts` to add one more file without keeping earlier ones."""
+    counts = dict(counts or {})
     for df in frames:
         for c in cols:
             vc = df.group_by(c).agg(pl.len().alias("n")).rename({c: "value"})

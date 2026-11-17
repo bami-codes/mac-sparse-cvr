@@ -47,41 +47,44 @@ class SmoothedRate:
 class LogReg:
     offsets: dict[str, int]
     n_onehot: int
+    num_inputs: list[str]
     mean: np.ndarray
     std: np.ndarray
     model: LogisticRegression
 
-    @staticmethod
-    def _design(df: pl.DataFrame, offsets: dict[str, int], n_onehot: int,
-                mean: np.ndarray, std: np.ndarray) -> sparse.csr_matrix:
+    def _design(self, df: pl.DataFrame) -> sparse.csr_matrix:
         """Exact one-hot of vocabulary codes (column offsets) + standardized numeric inputs."""
-        n = df.height
-        cols = [df[c].to_numpy().astype(np.int64) + offsets[c] for c in LR_ONEHOT]
-        num = (df.select(NUM_INPUTS).to_numpy().astype(np.float64) - mean) / std
-        idx = np.column_stack(cols + [np.tile(np.arange(len(NUM_INPUTS)) + n_onehot, (n, 1))])
-        val = np.column_stack([np.ones((n, len(cols))), num])
+        n, k_num = df.height, len(self.num_inputs)
+        cols = [df[c].to_numpy().astype(np.int64) + self.offsets[c] for c in LR_ONEHOT]
+        parts_idx, parts_val = cols, [np.ones((n, len(cols)))]
+        if k_num:
+            num = (df.select(self.num_inputs).to_numpy().astype(np.float64) - self.mean) / self.std
+            parts_idx = cols + [np.tile(np.arange(k_num) + self.n_onehot, (n, 1))]
+            parts_val = parts_val + [num]
+        idx, val = np.column_stack(parts_idx), np.column_stack(parts_val)
         k = idx.shape[1]
         return sparse.csr_matrix((val.ravel(), idx.ravel(), np.arange(0, n * k + 1, k)),
-                                 shape=(n, n_onehot + len(NUM_INPUTS)))
+                                 shape=(n, self.n_onehot + k_num))
 
     @classmethod
-    def fit(cls, train: pl.DataFrame, vocab_sizes: dict[str, int], C: float, max_iter: int) -> "LogReg":
+    def fit(cls, train: pl.DataFrame, vocab_sizes: dict[str, int], C: float, max_iter: int,
+            num_inputs: list[str] = NUM_INPUTS) -> "LogReg":
+        assert_no_label_inputs(LR_ONEHOT + num_inputs)
         offsets, pos = {}, 0
         for c in LR_ONEHOT:
             offsets[c], pos = pos, pos + vocab_sizes[c]
-        num = train.select(NUM_INPUTS).to_numpy().astype(np.float64)
-        mean, std = num.mean(0), num.std(0) + 1e-9
-        X = cls._design(train, offsets, pos, mean, std)
-        model = LogisticRegression(C=C, solver="lbfgs", max_iter=max_iter, tol=1e-5)
-        model.fit(X, train["y"].to_numpy())
-        return cls(offsets, pos, mean, std, model)
+        num = train.select(num_inputs).to_numpy().astype(np.float64) if num_inputs else np.zeros((1, 0))
+        m = cls(offsets, pos, list(num_inputs), num.mean(0), num.std(0) + 1e-9,
+                LogisticRegression(C=C, solver="lbfgs", max_iter=max_iter, tol=1e-5))
+        m.model.fit(m._design(train), train["y"].to_numpy())
+        return m
 
     @property
     def converged(self) -> bool:
         return int(self.model.n_iter_[0]) < self.model.max_iter
 
     def predict(self, df: pl.DataFrame) -> np.ndarray:
-        return self.model.predict_proba(self._design(df, self.offsets, self.n_onehot, self.mean, self.std))[:, 1]
+        return self.model.predict_proba(self._design(df))[:, 1]
 
 
 # ---------------------------------------------------------------- M2: LightGBM
@@ -89,11 +92,15 @@ class LogReg:
 class GBDT:
     booster: lgb.Booster
     inputs: list[str]
+    rounds: int  # chosen by early stopping on held-out TRAINING users, then refit on all training rows
 
     @classmethod
     def fit(cls, train: pl.DataFrame, params: dict, seed: int, num_boost_round: int,
             early_stopping_rounds: int, inputs: list[str] | None = None) -> "GBDT":
-        """Early stopping uses ~10% of TRAINING users (second key digit == 0), never V1/V2."""
+        """Two stages so M2 sees the same training rows as M1:
+        1) early stopping on ~10% of TRAINING users (second key digit == 0) picks the rounds;
+        2) the model is refit on ALL training rows with that number of rounds. V1/V2 are never used.
+        """
         inputs = inputs or (CAT_INPUTS + NUM_INPUTS)
         assert_no_label_inputs(inputs)
         cat_idx = [i for i, c in enumerate(inputs) if c in CAT_INPUTS]
@@ -102,10 +109,12 @@ class GBDT:
         p = dict(params, seed=seed, objective="binary", deterministic=True, force_row_wise=True, verbose=-1)
         dtr = lgb.Dataset(X[~es], y[~es], categorical_feature=cat_idx, free_raw_data=True)
         des = lgb.Dataset(X[es], y[es], categorical_feature=cat_idx, reference=dtr)
-        booster = lgb.train(p, dtr, num_boost_round=num_boost_round, valid_sets=[des],
-                            callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)])
-        return cls(booster, inputs)
+        probe = lgb.train(p, dtr, num_boost_round=num_boost_round, valid_sets=[des],
+                          callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)])
+        rounds = max(1, probe.best_iteration)
+        full = lgb.train(p, lgb.Dataset(X, y, categorical_feature=cat_idx, free_raw_data=True),
+                         num_boost_round=rounds)
+        return cls(full, inputs, rounds)
 
     def predict(self, df: pl.DataFrame) -> np.ndarray:
-        X = df.select(self.inputs).to_numpy().astype(np.float64)
-        return self.booster.predict(X, num_iteration=self.booster.best_iteration)
+        return self.booster.predict(df.select(self.inputs).to_numpy().astype(np.float64))
