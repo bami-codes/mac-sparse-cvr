@@ -132,3 +132,18 @@ def test_model_comparisons_are_judged_against_the_placebo_null(tmp_path):
     assert neg["placebo_replicates"] == PLACEBO_REPLICATES - 1  # judged against the OTHER noise replicates
     pc = menu.placebo_calibration()
     assert "rejections_adjusted_leave_one_out" in pc
+
+
+def test_per_test_plan_items_normalize_and_validate():
+    from cvr.agent.session import normalize, plan_schema, validate
+
+    item = {"id": 1, "statement": "같은 상품 이력이 있으면 전환율이 높다", "claim_type": "associational",
+            "evidence": ["[E3]"], "test": "association", "segment": "all", "feature": "same_item_in_history",
+            "direction": "higher_cvr_with_feature"}
+    h = normalize(item)
+    assert h["tool"] == "association" and h["expected"] == "higher_cvr_with_feature" and h["evidence"] == ["E3"]
+    assert validate(h, {"E3"}) == []
+    abl = normalize({"id": 2, "statement": "s", "claim_type": "associational", "evidence": ["E2"],
+                     "test": "ablation_effect", "segment": "sparse_G1", "group": "history_match"})
+    assert abl["expected"] == "group_helps" and any("not allowed" in i for i in validate(abl, {"E2"}))
+    assert len(plan_schema(["history_match"])["properties"]["hypotheses"]["items"]["anyOf"]) == 4

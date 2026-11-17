@@ -44,21 +44,46 @@ CAUSAL_WORDS = ["인과", "입증", "증명", "때문에", "덕분에", "원인"
 
 
 def plan_schema(groups: list[str]) -> dict:
+    """One object shape per test (anyOf), so a test can only carry the fields and directions that mean
+    something for it. In run 1 a flat schema let the planner pair any tool with any 'expected' value, and
+    20 of 21 hypotheses had a direction that did not fit their tool."""
+    common = {"id": {"type": "integer"}, "statement": {"type": "string"},
+              "claim_type": {"type": "string", "enum": ["predictive", "associational", "causal"]},
+              "evidence": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+              "segment": {"type": "string", "enum": SEGMENTS}}
+    req = ["id", "statement", "claim_type", "evidence", "test", "segment"]
+    variants = [
+        {"type": "object", "required": req + ["group"], "properties": common | {
+            "test": {"type": "string", "enum": ["ablation_effect"]}, "group": {"type": "string", "enum": groups}}},
+        {"type": "object", "required": req + ["group", "segment_b"], "properties": common | {
+            "test": {"type": "string", "enum": ["interaction"]}, "group": {"type": "string", "enum": groups},
+            "segment_b": {"type": "string", "enum": SEGMENTS}}},
+        {"type": "object", "required": req + ["feature", "direction"], "properties": common | {
+            "test": {"type": "string", "enum": ["association"]}, "feature": {"type": "string", "enum": list(ASSOC_FEATURES)},
+            "direction": {"type": "string", "enum": ["higher_cvr_with_feature", "lower_cvr_with_feature"]}}},
+        {"type": "object", "required": req + ["relative_mde"], "properties": common | {
+            "test": {"type": "string", "enum": ["ab_test_design"]},
+            "relative_mde": {"type": "number", "minimum": 0.01, "maximum": 0.5}}},
+    ]
     return {"type": "object", "required": ["hypotheses"], "properties": {"hypotheses": {
-        "type": "array", "minItems": 3, "maxItems": 8, "items": {
-            "type": "object",
-            "required": ["id", "statement", "claim_type", "evidence", "tool", "segment", "expected"],
-            "properties": {
-                "id": {"type": "integer"}, "statement": {"type": "string"},
-                "claim_type": {"type": "string", "enum": ["predictive", "associational", "causal"]},
-                "evidence": {"type": "array", "items": {"type": "string"}},
-                "tool": {"type": "string", "enum": ["ablation_effect", "association", "interaction", "ab_test_design"]},
-                "group": {"type": "string", "enum": groups + ["none"]},
-                "feature": {"type": "string", "enum": list(ASSOC_FEATURES) + ["none"]},
-                "segment": {"type": "string", "enum": SEGMENTS},
-                "segment_b": {"type": "string", "enum": SEGMENTS + ["none"]},
-                "relative_mde": {"type": "number", "minimum": 0.01, "maximum": 0.5},
-                "expected": {"type": "string", "enum": EXPECTED}}}}}}
+        "type": "array", "minItems": 3, "maxItems": 8, "items": {"anyOf": variants}}}}
+
+
+IMPLIED_EXPECTED = {"ablation_effect": "group_helps", "interaction": "group_helps_more_in_segment",
+                    "ab_test_design": "needs_experiment"}
+
+
+def normalize(h: dict) -> dict:
+    """Plan item -> internal hypothesis. Accepts the per-test format (test + direction) and the run-1 flat
+    format (tool + expected) unchanged. Evidence ids like "[E3]" are normalized to "E3"."""
+    h = dict(h)
+    if "test" in h and "tool" not in h:
+        h["tool"] = h.pop("test")
+        h["expected"] = h.pop("direction", None) or IMPLIED_EXPECTED.get(h["tool"], "none")
+    for k in ("group", "feature", "segment_b"):
+        h.setdefault(k, "none")
+    h["evidence"] = [str(e).strip().strip("[]").strip() for e in h.get("evidence", [])]
+    return h
 
 
 REPORT_SCHEMA = {"type": "object", "required": ["items", "overall"], "properties": {
@@ -68,11 +93,14 @@ REPORT_SCHEMA = {"type": "object", "required": ["items", "overall"], "properties
     "overall": {"type": "string"}}}
 
 PLANNER_SYSTEM = """너는 광고 전환 분석가다. 주어진 근거 자료만 보고, 클릭한 사용자를 전환으로 이끄는 단서에 대한 검증 가능한 가설을 3~8개 제안한다.
+검증 방법(test)은 네 가지이고, 각각 검증하는 것이 다르다:
+- ablation_effect (claim_type=predictive): 특성 그룹(group)을 빼고 다시 학습하면 그 세그먼트에서 예측이 나빠지는가 = 그 그룹이 예측에 도움이 되는가.
+- interaction (claim_type=predictive): 특성 그룹의 도움이 segment에서 segment_b보다 더 큰가.
+- association (claim_type=associational): 특성(feature)이 있는 클릭과 없는 클릭의 전환율이 다른가. direction에 전환율이 높을지(higher) 낮을지(lower)를 쓴다. 인과가 아니다.
+- ab_test_design (claim_type=causal): 무언가를 바꾸면 전환이 늘어나는지는 관측 데이터로 확인할 수 없으므로, 필요한 실험 규모만 계산한다.
 규칙:
-- 각 가설은 근거 자료의 id(E1 등)를 evidence에 인용한다. 근거에 없는 사실을 지어내지 않는다.
-- claim_type: 예측에 도움이 되는지(predictive), 함께 나타나는지(associational), 바꾸면 전환이 늘어나는지(causal)를 정확히 구분한다.
-- predictive는 ablation_effect 또는 interaction, associational은 association, causal은 ab_test_design 도구를 쓴다.
-- 도구 인자는 주어진 목록(group, feature, segment)에서만 고른다. 쓰지 않는 인자는 "none".
+- evidence에는 근거 id만 쓴다 (예: "E3"). 근거에 없는 사실을 지어내지 않는다.
+- 문장(statement)은 고른 검증 방법이 실제로 확인하는 내용과 일치해야 한다.
 - 숫자 결과를 예상해서 쓰지 않는다. 결과는 코드가 계산한다."""
 
 REPORTER_SYSTEM = """너는 분석 보고서 작성자다. 가설별로 코드가 계산한 판정과 결과가 주어진다.
@@ -97,6 +125,8 @@ def validate(h: dict, known_ev: set[str]) -> list[str]:
         issues.append("no evidence cited")
     if bad_ev:
         issues.append(f"evidence ids not in the package: {bad_ev}")
+    if h["tool"] == "ab_test_design" and h["claim_type"] != "causal":
+        issues.append(f"ab_test_design is for causal claims, got claim_type={h['claim_type']}")
     if h["claim_type"] != "causal" and h["tool"] not in ALLOWED_TOOLS[h["claim_type"]]:
         issues.append(f"tool {h['tool']} not allowed for a {h['claim_type']} claim")
     if h["claim_type"] != "causal":
@@ -190,7 +220,8 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
     records, unique = [], {}
     for p in plans:
         known = {e["id"] for e in EVIDENCE} | ({FALSE_EVIDENCE["id"]} if p["negative_control"] else set())
-        for h in p["plan"]["hypotheses"]:
+        for raw in p["plan"]["hypotheses"]:
+            h = normalize(raw)
             issues = validate(h, known)
             rec = {"session": p["session"], "hypothesis": h, "issues": issues, "key": list(hypothesis_key(h))}
             if issues:
