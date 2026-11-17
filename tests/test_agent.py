@@ -101,3 +101,34 @@ def test_negative_control_status_and_placebo_calibration(tmp_path):
     s2, _, _ = _run(tmp_path / "again", sessions=1, negative=None)
     assert s2["negative_control"]["status"] == "not run"
     assert NEGATIVE_GROUP == "user_score"
+
+
+def test_expected_direction_must_fit_the_tool(tmp_path):
+    # run 1 with HyperCLOVA X: an association labelled "group_helps" was judged "opposite_direction" although the
+    # data agreed with the statement; such plans are now invalid instead of silently flipped
+    from cvr.agent.session import validate
+
+    h = {"claim_type": "associational", "tool": "association", "feature": "same_category_in_history",
+         "segment": "all", "expected": "group_helps", "evidence": ["E3"]}
+    assert any("does not fit tool" in i for i in validate(h, {"E3"}))
+    h2 = dict(h, expected="higher_cvr_with_feature")
+    assert validate(h2, {"E3"}) == []
+    h3 = {"claim_type": "predictive", "tool": "ablation_effect", "group": "none", "segment": "all",
+          "expected": "group_helps", "evidence": ["E3"]}
+    assert any("needs argument group" in i for i in validate(h3, {"E3"}))
+
+
+def test_identifiers_are_not_numbers():
+    assert check_text("ad_feat1과 sparse_G1, E3 근거에서 G1에서는 다르다", "not_confirmed")["digits"] == 0
+    assert check_text("효과는 0.0123이다", "not_confirmed")["digits"] > 0
+
+
+def test_model_comparisons_are_judged_against_the_placebo_null(tmp_path):
+    menu = Menu(_menu(tmp_path / "menu"))
+    r = menu.ablation_effect("history_match", "sparse_G1")
+    assert r["test"].startswith("training-variance") and r["placebo_replicates"] == PLACEBO_REPLICATES
+    assert r["effect_vs_placebo"] == r["estimate"] - r["placebo_mean"] and r["p_value"] < 0.05
+    neg = menu.ablation_effect(NEGATIVE_GROUP, "sparse_G1", replicate=0)
+    assert neg["placebo_replicates"] == PLACEBO_REPLICATES - 1  # judged against the OTHER noise replicates
+    pc = menu.placebo_calibration()
+    assert "rejections_adjusted_leave_one_out" in pc

@@ -168,15 +168,53 @@ class Menu:
             return bce(y, self.df["p_full"].to_numpy()) - bce(y, self.df[f"p_no_{group}"].to_numpy())
         raise ValueError(f"unknown feature group {group!r}; allowed: {list(FEATURE_GROUPS)}")
 
-    def ablation_effect(self, group: str, segment: str, replicate: int = 0) -> dict:
+    def _eval_only(self, delta: np.ndarray, m: np.ndarray) -> tuple[float, np.ndarray]:
+        s, c = self._sums(delta, m)
+        return float(s.sum() / c.sum()), np.array([(w @ s) / (w @ c) for w in self._w])
+
+    def _placebo(self, segment: str, segment_b: str | None = None, exclude: int | None = None) -> np.ndarray:
+        """Estimates for 'retraining with an uninformative extra feature' (with minus without), per noise replicate."""
+        ma = self._seg(segment)
+        mb = self._seg(segment_b) if segment_b else None
+        out = []
+        for r in range(PLACEBO_REPLICATES):
+            if r == exclude:
+                continue
+            d = self._loss_delta(NEGATIVE_GROUP, r)
+            a = self._eval_only(d, ma)[0]
+            out.append(a - self._eval_only(d, mb)[0] if mb is not None else a)
+        return np.array(out)
+
+    def _train_adjusted(self, point: float, reps: np.ndarray, null: np.ndarray) -> dict:
+        """Compare a retrained-model difference with the placebo null.
+
+        The evaluation bootstrap treats the fitted models as fixed, so it misses the variation that retraining
+        alone causes (in the first agent run, pure-noise features were "significant" in 8 of 10 placebo tests).
+        Approximation: under the null, estimate ~ N(mean(null), var_boot + var_train), with var_train the
+        variance of the placebo estimates (plus its own uncertainty, var_train / R). Only R = 4-5 replicates.
+        """
+        mu0, sd_t = float(null.mean()), float(null.std(ddof=1))
+        se = float(np.sqrt(reps.var() + sd_t ** 2 * (1 + 1 / null.size)))
+        eff = point - mu0
+        z = eff / se
+        return {"placebo_mean": mu0, "placebo_sd": sd_t, "placebo_replicates": int(null.size),
+                "effect_vs_placebo": eff, "ci95_vs_placebo": [eff - 1.96 * se, eff + 1.96 * se],
+                "p_value": float(2 * norm.sf(abs(z))), "test": "training-variance adjusted (placebo null)"}
+
+    def ablation_effect(self, group: str, segment: str, replicate: int = 0, adjust: bool = True) -> dict:
         m = self._seg(segment)
         extra = {"group": group, "segment": segment, "rows": int(m.sum()),
                  "meaning": "mean LogLoss(full) - LogLoss(without group); < 0 = group helps"}
         if (bad := self._arm_problem(segment, m)):
             return insufficient("ablation_effect", bad, **extra)
-        s, c = self._sums(self._loss_delta(group, replicate), m)
-        reps = np.array([(w @ s) / (w @ c) for w in self._w])
-        return self._finish("ablation_effect", s.sum() / c.sum(), reps, extra)
+        point, reps = self._eval_only(self._loss_delta(group, replicate), m)
+        out = self._finish("ablation_effect", point, reps, extra)
+        if out["status"] == "ok":
+            out["p_value_eval_only"] = out["p_value"]
+            if adjust:  # the negative control is judged against the OTHER noise replicates
+                out |= self._train_adjusted(point, reps, self._placebo(
+                    segment, exclude=replicate if group == NEGATIVE_GROUP else None))
+        return out
 
     def association(self, feature: str, segment: str) -> dict:
         if feature not in ASSOC_FEATURES:
@@ -206,7 +244,12 @@ class Menu:
         sa, ca = self._sums(d, ma)
         sb, cb = self._sums(d, mb)
         reps = np.array([(w @ sa) / (w @ ca) - (w @ sb) / (w @ cb) for w in self._w])
-        return self._finish("interaction", sa.sum() / ca.sum() - sb.sum() / cb.sum(), reps, extra)
+        point = sa.sum() / ca.sum() - sb.sum() / cb.sum()
+        out = self._finish("interaction", point, reps, extra)
+        if out["status"] == "ok":
+            out["p_value_eval_only"] = out["p_value"]
+            out |= self._train_adjusted(float(point), reps, self._placebo(segment, segment_b))
+        return out
 
     def ab_test_design(self, segment: str, relative_mde: float, alpha: float = 0.05, power: float = 0.8) -> dict:
         """Two-proportion sample size, inflated by a design effect for clicks clustered within users.
@@ -240,12 +283,15 @@ class Menu:
         for r in range(PLACEBO_REPLICATES):
             for seg in segments:
                 res = self.ablation_effect(NEGATIVE_GROUP, seg, replicate=r)
-                out.append({"replicate": r, "segment": seg, "status": res["status"],
-                            "estimate": res.get("estimate"), "p_value": res.get("p_value")})
+                out.append({"replicate": r, "segment": seg, "status": res["status"], "estimate": res.get("estimate"),
+                            "p_eval_only": res.get("p_value_eval_only"), "p_adjusted": res.get("p_value")})
         ok = [o for o in out if o["status"] == "ok"]
         return {"tests": len(out), "computable": len(ok), "alpha": alpha,
-                "rejections": sum(o["p_value"] < alpha for o in ok),
-                "rejections_noise_helps": sum(o["p_value"] < alpha and o["estimate"] < 0 for o in ok), "detail": out}
+                "rejections": sum(o["p_eval_only"] < alpha for o in ok),
+                "rejections_noise_helps": sum(o["p_eval_only"] < alpha and o["estimate"] < 0 for o in ok),
+                "rejections_adjusted_leave_one_out": sum(o["p_adjusted"] < alpha for o in ok),
+                "note": "eval-only = fixed-model user bootstrap; adjusted = against the other noise replicates",
+                "detail": out}
 
 
 if __name__ == "__main__":

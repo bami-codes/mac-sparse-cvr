@@ -36,6 +36,10 @@ EXPECTED = ["group_helps", "group_helps_more_in_segment", "higher_cvr_with_featu
             "needs_experiment"]
 ALLOWED_TOOLS = {"predictive": {"ablation_effect", "interaction"}, "associational": {"association"},
                  "causal": {"ab_test_design"}}
+# the expected direction must mean something for the chosen tool (a mismatch silently flipped verdicts in run 1)
+COMPATIBLE_EXPECTED = {"ablation_effect": {"group_helps"}, "interaction": {"group_helps_more_in_segment"},
+                       "association": {"higher_cvr_with_feature", "lower_cvr_with_feature"}}
+REQUIRED_ARGS = {"ablation_effect": ["group"], "interaction": ["group", "segment_b"], "association": ["feature"]}
 CAUSAL_WORDS = ["인과", "입증", "증명", "때문에", "덕분에", "원인", "증가시", "늘린다", "늘려", "높인다", "높여", "끌어올"]
 
 
@@ -95,8 +99,13 @@ def validate(h: dict, known_ev: set[str]) -> list[str]:
         issues.append(f"evidence ids not in the package: {bad_ev}")
     if h["claim_type"] != "causal" and h["tool"] not in ALLOWED_TOOLS[h["claim_type"]]:
         issues.append(f"tool {h['tool']} not allowed for a {h['claim_type']} claim")
-    if h["claim_type"] != "causal" and h["expected"] == "needs_experiment":
-        issues.append("expected=needs_experiment on a non-causal claim")
+    if h["claim_type"] != "causal":
+        if h["tool"] in COMPATIBLE_EXPECTED and h["expected"] not in COMPATIBLE_EXPECTED[h["tool"]]:
+            issues.append(f"expected={h['expected']} does not fit tool {h['tool']} "
+                          f"(allowed: {sorted(COMPATIBLE_EXPECTED[h['tool']])})")
+        for a in REQUIRED_ARGS.get(h["tool"], []):
+            if h.get(a, "none") == "none":
+                issues.append(f"tool {h['tool']} needs argument {a}")
     return issues
 
 
@@ -136,13 +145,21 @@ def render_result(rec: dict) -> str:
                 f"그룹당 필요 클릭 {r['clicks_per_arm']:,} (설계 효과 {r['design_effect']:.2f} 반영, 독립 가정 시 "
                 f"{r['clicks_per_arm_iid']:,}){days}")
     unit = {"ablation_effect": "LogLoss 차이", "interaction": "제거 효과의 차이", "association": "전환율 차이"}[r["tool"]]
+    if "effect_vs_placebo" in r:  # retrained-model comparison: judged against the placebo (noise) null
+        lo, hi = r["ci95_vs_placebo"]
+        return (f"{head}. {unit} {r['estimate']:+.6f} (위약 평균 {r['placebo_mean']:+.6f}, 위약 {r['placebo_replicates']}개), "
+                f"위약 대비 효과 {r['effect_vs_placebo']:+.6f} [95% 근사 구간 {lo:+.6f}, {hi:+.6f}], "
+                f"BH 조정 p = {rec['bh_adjusted_p']:.3f}")
     extra = (f", 전환율 {r['cvr_with']:.4f} vs {r['cvr_without']:.4f}" if r["tool"] == "association" else "")
     return (f"{head}. {unit} {r['estimate']:+.6f} [95% CI {r['ci95'][0]:+.6f}, {r['ci95'][1]:+.6f}], "
             f"BH 조정 p = {rec['bh_adjusted_p']:.3f}{extra}")
 
 
+IDENTIFIER = re.compile(r"[A-Za-z_]+\d+[A-Za-z_\d]*")  # ad_feat1, sparse_G1, G1, E3: names, not numbers
+
+
 def check_text(text: str, verdict: str) -> dict:
-    digits = re.findall(r"\d", text)
+    digits = re.findall(r"\d", IDENTIFIER.sub("", text))
     hits = [w for w in CAUSAL_WORDS if w in text]
     if verdict == "needs_experiment":  # describing a future experiment may use causal words; "proven" may not
         hits = [w for w in hits if w in ("입증", "증명")]
@@ -150,12 +167,14 @@ def check_text(text: str, verdict: str) -> dict:
 
 
 # ------------------------------------------------------------------ run
-def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_session: int | None) -> dict:
+def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_session: int | None,
+        from_plans: Path | None = None) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     menu = Menu(menu_dir)
-    # 1) all plans first; frozen (hashed) before any tool sees confirmation data
-    plans = []
-    for k in range(1, sessions + 1):
+    # 1) all plans first; frozen (hashed) before any tool sees confirmation data.
+    #    With from_plans, an earlier frozen set is reused as is (re-analysis without new planner calls).
+    plans = json.loads(from_plans.read_text()) if from_plans else []
+    for k in ([] if from_plans else range(1, sessions + 1)):
         neg = k == negative_control_session
         groups = list(FEATURE_GROUPS) + ([NEGATIVE_GROUP] if neg else [])
         lists = {"group": groups, "feature": list(ASSOC_FEATURES), "segment": SEGMENTS}
@@ -200,10 +219,11 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
                 r["bh_significant"], r["bh_adjusted_p"] = s, a
                 want_negative = r["hypothesis"]["expected"] in ("group_helps", "group_helps_more_in_segment",
                                                                 "lower_cvr_with_feature")
+                eff = r["result"].get("effect_vs_placebo", r["result"]["estimate"])
                 if not s:
                     r["verdict"] = "not_confirmed"
                 else:
-                    r["verdict"] = "confirmed" if (r["result"]["estimate"] < 0) == want_negative else "opposite_direction"
+                    r["verdict"] = "confirmed" if (eff < 0) == want_negative else "opposite_direction"
 
     # 3) reports: LLM interpretation without digits + code-rendered results; checks
     reports = []
@@ -274,9 +294,11 @@ def render_markdown(reports: list[dict], summary: dict) -> str:
              f"- executable {summary['executable_share']:.0%}, planner rule compliance {summary['planner_rule_compliance']:.0%}, "
              f"LLM text with digits {summary['llm_text_with_digits']}, causal-word flags {summary['llm_text_causal_word_flags']}",
              f"- stability (mean Jaccard of tests across sessions) {summary['stability_mean_jaccard']}",
-             f"- negative control: {summary['negative_control']['status']}; placebo calibration of the ablation test: "
-             f"{pc['rejections']}/{pc['computable']} rejections at alpha {pc['alpha']} (noise looked helpful in "
-             f"{pc['rejections_noise_helps']})", ""]
+             f"- negative control: {summary['negative_control']['status']}",
+             f"- placebo calibration (pure-noise features, alpha {pc['alpha']}): evaluation-only test "
+             f"{pc['rejections']}/{pc['computable']} rejections (noise looked helpful in {pc['rejections_noise_helps']}); "
+             f"training-variance adjusted test (leave-one-out null) {pc['rejections_adjusted_leave_one_out']}/{pc['computable']}",
+             ""]
     for rep in reports:
         lines += [f"## Session {rep['session']}", ""]
         for it in rep["items"]:
@@ -302,6 +324,7 @@ if __name__ == "__main__":
     ap.add_argument("--sessions", type=int, default=5)
     ap.add_argument("--negative-control", type=int, default=None, help="session number that sees the false E8")
     ap.add_argument("--scripted", action="store_true")
+    ap.add_argument("--from-plans", type=Path, default=None, help="reuse a plans_frozen.json (re-analysis)")
     a = ap.parse_args()
     audit = AuditLog(Path(a.out) / "audit.jsonl")
     if a.scripted:
@@ -311,5 +334,5 @@ if __name__ == "__main__":
     else:
         def factory(k: int):
             return ClovaClient(audit, seed=k)
-    print(json.dumps(run(Path(a.menu), Path(a.out), factory, a.sessions, a.negative_control),
+    print(json.dumps(run(Path(a.menu), Path(a.out), factory, a.sessions, a.negative_control, a.from_plans),
                      ensure_ascii=False, indent=2, default=float))
