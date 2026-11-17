@@ -26,7 +26,7 @@ import polars as pl
 
 from . import groups as G
 from . import metrics as M
-from .artifacts import load_gbdt, load_logreg
+from .artifacts import load_gbdt, load_logreg, load_stacking
 from .calibration import load_calibrators
 from .checks import CheckFailed, require_close, require_finite_probs
 from .features import featurize, read_raw
@@ -87,11 +87,16 @@ def freeze(run: Path) -> dict:
         "pipeline_dirty_files": res["meta"]["git"]["dirty_files"],
         "config": cfg, "seeds": seeds,
         "selection": {"base_model": base, "calibration_method": method, "lambda_iii": sel["lambda_iii"],
-                      "selected_on": sel["selected_on"]},
+                      "selected_on": sel["selected_on"], "mode": sel.get("selection_mode", "calibration"),
+                      "primary": sel.get("primary") or {
+                          "type": "calibration", "description": f"{base}: {method} vs (ii)",
+                          "treatment": [f"{n}|{method}" for n in family_names(base, seeds)],
+                          "control": [f"{n}|ii" for n in family_names(base, seeds)]}},
         "groups": {"definition": gc, "p0_train": p0, "G1_groups": g1.height,
                    "G1_codes_sha256": hashlib.sha256(np.sort(g1[GROUP_KEY].to_numpy()).tobytes()).hexdigest()},
         "primary": {
-            "comparison": f"{base} family ({len(family_names(base, seeds))} seed(s)): {method} vs (ii) global Platt",
+            "comparison": (sel.get("primary") or {}).get("description")
+                          or f"{base} family ({len(family_names(base, seeds))} seed(s)): {method} vs (ii) global Platt",
             "metric": "G1 macro LogLoss (equal weight over G1 groups), lower is better",
             "uncertainty": f"seed-paired user bootstrap, {cfg['bootstrap']['reps']} reps, seed {cfg['bootstrap']['seed']}; "
                            "models fixed (evaluation-user uncertainty only)",
@@ -148,6 +153,8 @@ def evaluate_file(run: Path, eval_file: Path, mode: str) -> dict:
                    how="horizontal")
 
     mdir = run / "models"
+    if (mdir / "stacking").exists():  # second study: out-of-fold inputs are built from full-training fits
+        df = load_stacking(mdir / "stacking").transform(df)
     preds: dict[str, np.ndarray] = {}
     for spec in sorted(mdir.glob("M*.json")):
         name = spec.stem
@@ -202,22 +209,26 @@ def evaluate_file(run: Path, eval_file: Path, mode: str) -> dict:
     # ---------------- primary comparison (pre-defined in freeze.json)
     bs = cfg["bootstrap"]
     y1, u1, g1 = df["y"].to_numpy()[g1m], df["user_key"].to_numpy()[g1m], g[g1m]
-    fam = family_names(sel["base_model"], seeds)
-    method = sel["calibration_method"]
-    prim = M.paired_bootstrap_macro_diff(y1, [g1_pred[f"{n_}|{method}"] for n_ in fam],
-                                         [g1_pred[f"{n_}|ii"] for n_ in fam], g1, u1, bs["reps"], bs["seed"])
+    pc = sel.get("primary") or {  # runs frozen before the primary definition was stored (first study)
+        "treatment": [f"{n_}|{sel['calibration_method']}" for n_ in family_names(sel["base_model"], seeds)],
+        "control": [f"{n_}|ii" for n_ in family_names(sel["base_model"], seeds)]}
+    prim = M.paired_bootstrap_macro_diff(y1, [g1_pred[k] for k in pc["treatment"]],
+                                         [g1_pred[k] for k in pc["control"]], g1, u1, bs["reps"], bs["seed"])
     if mode == "dryrun":  # same rows, order and bootstrap seed -> must equal the pipeline's V2 bootstrap
         rec = json.loads((run / "results.json").read_text())["v2_bootstrap_info"]
         require_close("dryrun primary diff", abs(prim["diff"] - rec["diff"]), DRYRUN_TOL)
         require_close("dryrun primary CI", max(abs(a - b) for a, b in zip(prim["ci95"], rec["ci95"])), DRYRUN_TOL)
-    auc_drop = mean_sd([rows[f"{n_}|{method}"]["overall_nonmissing"]["auc"] - rows[f"{n_}|ii"]["overall_nonmissing"]["auc"]
-                        for n_ in fam])["mean"]
-    cal_sel = mean_sd([rows[f"{n_}|{method}"]["G1"]["median_abs_ratio_dev"] for n_ in fam])["mean"]
-    cal_ii = mean_sd([rows[f"{n_}|ii"]["G1"]["median_abs_ratio_dev"] for n_ in fam])["mean"]
+    auc_drop = mean_sd([rows[t]["overall_nonmissing"]["auc"] - rows[c]["overall_nonmissing"]["auc"]
+                        for t, c in zip(pc["treatment"], pc["control"])])["mean"]
+    cal_sel = mean_sd([rows[t]["G1"]["median_abs_ratio_dev"] for t in pc["treatment"]])["mean"]
+    cal_ii = mean_sd([rows[c]["G1"]["median_abs_ratio_dev"] for c in pc["control"]])["mean"]
+    bid_t = mean_sd([rows[t]["G1"]["abs_conv_error_share"] for t in pc["treatment"]])["mean"]
+    bid_c = mean_sd([rows[c]["G1"]["abs_conv_error_share"] for c in pc["control"]])["mean"]
     primary = prim | {"success": bool(prim["diff"] < 0 and prim["ci95"][1] < 0 and all(d < 0 for d in prim["per_pair_diff"])),
                       "overall_auc_selected_minus_ii": auc_drop, "auc_criterion_met": bool(auc_drop >= -0.002),
                       "G1_median_abs_ratio_dev": {"selected": cal_sel, "ii": cal_ii},
-                      "group_calibration_criterion_met": bool(cal_sel <= cal_ii)}
+                      "group_calibration_criterion_met": bool(cal_sel <= cal_ii),
+                      "G1_bid_error_share": {"treatment": bid_t, "control": bid_c}}
 
     # ---------------- secondary comparisons (pre-defined)
     secondary = {}
@@ -254,11 +265,14 @@ def render(r: dict, manifest: dict) -> str:
              f"- **diff = {p['diff']:+.6f}, 95% CI [{p['ci95'][0]:+.6f}, {p['ci95'][1]:+.6f}], per seed pair "
              f"{[round(x, 6) for x in p['per_pair_diff']]} → success: {p['success']}**",
              f"- overall AUC (selected − ii) {p['overall_auc_selected_minus_ii']:+.5f} (criterion met: {p['auc_criterion_met']}); "
-             f"G1 median |O/E−1| selected {p['G1_median_abs_ratio_dev']['selected']:.4f} vs ii {p['G1_median_abs_ratio_dev']['ii']:.4f}", "",
+             f"G1 median |O/E−1| treatment {p['G1_median_abs_ratio_dev']['selected']:.4f} vs control {p['G1_median_abs_ratio_dev']['ii']:.4f}; "
+             f"G1 bid-error share treatment {p['G1_bid_error_share']['treatment']:.4f} vs control {p['G1_bid_error_share']['control']:.4f}", "",
              "| family | calib | G1 macro LogLoss | G1exp macro LogLoss | AUC (non-missing) | GAUC | O/E (non-missing) |",
              "|---|---|---|---|---|---|---|"]
     fams = {"M1": ["M1"], "M1_nohist": ["M1_nohist"], "M2": [f"M2_s{s}" for s in seeds],
-            "M2_nohist": [f"M2_nohist_s{s}" for s in seeds], "M3_attn": [f"M3_attn_s{s}" for s in seeds],
+            "M2_nohist": [f"M2_nohist_s{s}" for s in seeds], "M2aux": [f"M2aux_s{s}" for s in seeds],
+            "M2te": [f"M2te_s{s}" for s in seeds], "M2both": [f"M2both_s{s}" for s in seeds],
+            "M3_attn": [f"M3_attn_s{s}" for s in seeds],
             "M3_mean": [f"M3_mean_s{s}" for s in seeds]}
     for fam, names in fams.items():
         for suf in ("raw", "ii", lam_key, "iv"):

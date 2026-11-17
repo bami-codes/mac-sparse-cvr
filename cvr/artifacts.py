@@ -38,3 +38,30 @@ def load_gbdt(path: Path) -> GBDT:
 
     meta = json.loads(path.with_suffix(".json").read_text())
     return GBDT(lgb.Booster(model_file=str(path.with_suffix(".txt"))), meta["inputs"], meta["rounds"])
+
+
+def save_stacking(st, folder: Path) -> None:
+    """Second-study inputs (cvr/stacking.py): auxiliary model, group-rate tables and group counts."""
+    folder.mkdir(parents=True, exist_ok=True)
+    if st.aux is not None:
+        save_gbdt(st.aux, folder / "aux_mta")
+    for k, m in st.te.items():
+        m.table.write_parquet(folder / f"te_{k}.parquet")
+        st.counts[k].write_parquet(folder / f"counts_{k}.parquet")
+    (folder / "meta.json").write_text(json.dumps({
+        "aux": st.aux is not None,
+        "te": {k: {"key": m.key, "p0": m.p0, "m": m.m} for k, m in st.te.items()}}))
+
+
+def load_stacking(folder: Path):
+    import polars as pl
+
+    from .models import SmoothedRate
+    from .stacking import StackingModels
+
+    meta = json.loads((folder / "meta.json").read_text())
+    aux = load_gbdt(folder / "aux_mta") if meta["aux"] else None
+    te = {k: SmoothedRate(v["key"], v["p0"], v["m"], pl.read_parquet(folder / f"te_{k}.parquet"))
+          for k, v in meta["te"].items()}
+    counts = {k: pl.read_parquet(folder / f"counts_{k}.parquet") for k in meta["te"]}
+    return StackingModels(aux, te, counts)

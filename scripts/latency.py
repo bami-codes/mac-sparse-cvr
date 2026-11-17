@@ -43,7 +43,12 @@ def offline_predict(server: Server, run_dir: Path, raw: pl.DataFrame, feats: pl.
     if server.base.startswith("M3"):
         p = server.model.predict(encode_m3(raw, feats, load_vocab_frames(run_dir / "id_vocab")))
     else:
-        p = server.model.predict(feats)
+        f = feats
+        if (run_dir / "models" / "stacking").exists() and getattr(server, "stacking", None) is not None:
+            from cvr.artifacts import load_stacking
+
+            f = load_stacking(run_dir / "models" / "stacking").transform(feats)
+        p = server.model.predict(f)
     g = feats[GROUP_KEY].to_numpy()
     if server.method == "ii":
         return server.glob.predict(p)

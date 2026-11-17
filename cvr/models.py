@@ -96,16 +96,17 @@ class GBDT:
 
     @classmethod
     def fit(cls, train: pl.DataFrame, params: dict, seed: int, num_boost_round: int,
-            early_stopping_rounds: int, inputs: list[str] | None = None) -> "GBDT":
+            early_stopping_rounds: int, inputs: list[str] | None = None, label: str = "y") -> "GBDT":
         """Two stages so M2 sees the same training rows as M1:
         1) early stopping on ~10% of TRAINING users (second key digit == 0) picks the rounds;
         2) the model is refit on ALL training rows with that number of rounds. V1/V2 are never used.
+        `label` is "y" for every CVR model; the auxiliary model of cvr/stacking.py uses "label_mta".
         """
         inputs = inputs or (CAT_INPUTS + NUM_INPUTS)
         assert_no_label_inputs(inputs)
         cat_idx = [i for i, c in enumerate(inputs) if c in CAT_INPUTS]
         es = ((train["user_key"] // 100) % 10 == 0).to_numpy()
-        X, y = train.select(inputs).to_numpy().astype(np.float64), train["y"].to_numpy()
+        X, y = train.select(inputs).to_numpy().astype(np.float64), train[label].to_numpy()
         p = dict(params, seed=seed, objective="binary", deterministic=True, force_row_wise=True, verbose=-1)
         dtr = lgb.Dataset(X[~es], y[~es], categorical_feature=cat_idx, free_raw_data=True)
         des = lgb.Dataset(X[es], y[es], categorical_feature=cat_idx, reference=dtr)

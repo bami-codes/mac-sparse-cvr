@@ -78,6 +78,9 @@ def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
         "click_weighted_logloss": float(bce(y, p).mean()),
         "pooled_O_over_E": float(y.sum() / p.sum()),
         "median_abs_ratio_dev": float((with_pos["O"] / with_pos["E"] - 1).abs().median()) if with_pos.height else None,
+        # bid-error conversion (docs/DESIGN.md §13): share of conversion value mis-allocated at group level
+        # when bids are proportional to pCVR; non-zero even for a perfect model (noise), compare methods only
+        "abs_conv_error_share": float((pg["E"] - pg["O"]).abs().sum() / pg["O"].sum()) if pg["O"].sum() > 0 else None,
         "zero_positive_groups": zero.height,
         "zero_positive_mean_E_minus_O": float((zero["E"] - zero["O"]).mean()) if zero.height else None,
         "within_group_auc_macro": auc_macro, "auc_groups_used": used, "auc_groups_excluded": excl,

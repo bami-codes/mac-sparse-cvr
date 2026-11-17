@@ -24,6 +24,7 @@ import scipy
 import sklearn
 
 from . import artifacts as A
+from .artifacts import load_stacking, save_stacking
 from . import groups as G
 from . import metrics as M
 from . import vocab as V
@@ -33,6 +34,7 @@ from .features import featurize, read_raw
 from .models import GBDT, LogReg, SmoothedRate
 from .m3data import ID_COLS, OTHER_CATS, concat_arrays, count_ids, encode_m3, save_arrays
 from .schema import CAT_INPUTS, GROUP_KEY, NUM_INPUTS, SEQ_PAIRS, SHOP_KEY, VOCAB_COLS
+from .stacking import AUX_INPUTS, TE_INPUTS, fit_stacking
 
 ROLES = ["train", "v1", "v2"]
 RELOAD_ROWS = 50_000  # V2 rows used to compare in-memory vs reloaded predictions
@@ -171,7 +173,7 @@ def main(config_path: str) -> Path:
         for r in preds:
             preds[r][name] = m.predict(data[r])
     ablate = bool(mc.get("ablation_no_history"))
-    lr_variants = {"M1": NUM_INPUTS} | ({"M1_nohist": []} if ablate else {})
+    lr_variants = ({"M1": NUM_INPUTS} | ({"M1_nohist": []} if ablate else {})) if mc.get("include_m1", True) else {}
     for vname, num_inputs in lr_variants.items():
         t1 = time.time()
         lr = LogReg.fit(data["train"], sizes, mc["lr_C"], mc["lr_max_iter"], num_inputs)
@@ -201,7 +203,30 @@ def main(config_path: str) -> Path:
         lgb_search = {"chosen": chosen, "rule": "min V2 G1 macro LogLoss, first seed, raw", "candidates": lgb_search}
     else:
         lgb_params = mc["lgb"]
-    gb_variants = {"M2": CAT_INPUTS + NUM_INPUTS} | ({"M2_nohist": CAT_INPUTS} if ablate else {})
+    # second study (docs/DESIGN.md §13): out-of-fold auxiliary / group-rate inputs
+    stc = mc.get("stacking") or {}
+    stacking_info = {}
+    if stc.get("enabled"):
+        t1 = time.time()
+        use_aux, use_te = bool(stc.get("aux", True)), bool(stc.get("te", True))
+        data["train"], st_models, stacking_info = fit_stacking(
+            data["train"], lgb_params, stc["aux_seed"], stc["folds"], mc["num_boost_round"],
+            mc["early_stopping_rounds"], use_aux, use_te)
+        for r in ("v1", "v2"):
+            data[r] = st_models.transform(data[r])
+        save_stacking(st_models, models_dir / "stacking")
+        re = load_stacking(models_dir / "stacking").transform(v2_head())
+        for c in [c for c in AUX_INPUTS + TE_INPUTS if c in re.columns]:
+            stacking_info.setdefault("reload_check", {})[c] = require_close(
+                f"reload stacking {c}", float(np.abs(re[c].to_numpy() - data["v2"][c].to_numpy()[:re.height]).max()),
+                RELOAD_TOL)
+        stacking_info["seconds"] = time.time() - t1
+    base_inputs = CAT_INPUTS + NUM_INPUTS
+    gb_variants = {"M2": base_inputs} | ({"M2_nohist": CAT_INPUTS} if ablate else {})
+    if stc.get("enabled"):
+        gb_variants |= {k: v for k, v in {"M2aux": base_inputs + AUX_INPUTS, "M2te": base_inputs + TE_INPUTS,
+                                          "M2both": base_inputs + AUX_INPUTS + TE_INPUTS}.items()
+                        if k in stc["variants"]}
     for vname, inputs in gb_variants.items():
         for seed in mc["seeds"]:
             t1 = time.time()
@@ -249,7 +274,9 @@ def main(config_path: str) -> Path:
     n1, n2 = v1["tr_clicks"].to_numpy(), v2["tr_clicks"].to_numpy()
     lambdas = cfg["calibration"]["lambdas"]
     # model families that can be selected as the base model (seed-matched lists of prediction keys)
-    fams = {"M1": ["M1"], "M2": [f"M2_s{s}" for s in mc["seeds"]]}
+    fams = ({"M1": ["M1"]} if "M1" in preds["v2"] else {}) | {"M2": [f"M2_s{s}" for s in mc["seeds"]]}
+    if stc.get("enabled"):
+        fams |= {v: [f"{v}_s{s}" for s in mc["seeds"]] for v in stc["variants"]}
     if use_m3:
         fams |= {f"M3_{v}": [f"M3_{v}_s{s}" for s in mc["seeds"]] for v in m3c["variants"]}
     base_names = [n for names in fams.values() for n in names]
@@ -289,9 +316,21 @@ def main(config_path: str) -> Path:
     def seed_mean(family: str, suffix: str) -> float:
         return float(np.mean([primary(f"{n}|{suffix}") for n in fams[family]]))
 
-    base = min(fams, key=lambda f: seed_mean(f, "raw"))
+    sc = cfg.get("selection") or {}
+    if sc.get("mode") == "model_variant":
+        # second study: choose one input variant on V2, all compared after the same (ii) calibration
+        base = min(sc["candidates"], key=lambda f: seed_mean(f, "ii"))
+    else:
+        base = min(fams, key=lambda f: seed_mean(f, "raw"))
     lam = min(lambdas, key=lambda l: seed_mean(base, f"iii_lam{l:g}"))
     method = min([f"iii_lam{lam:g}", "iv"], key=lambda s: seed_mean(base, s))
+    if sc.get("mode") == "model_variant":
+        ref = sc["reference"]
+        primary_cmp = {"type": "model", "description": f"{base} (ii) vs {ref} (ii)",
+                   "treatment": [f"{n}|ii" for n in fams[base]], "control": [f"{n}|ii" for n in fams[ref]]}
+    else:
+        primary_cmp = {"type": "calibration", "description": f"{base}: {method} vs (ii)",
+                   "treatment": [f"{n}|{method}" for n in fams[base]], "control": [f"{n}|ii" for n in fams[base]]}
     selection = {
         "selected_on": "V2 primary metric (G1 macro LogLoss), averaged over base-model seeds",
         "base_candidates": list(fams), "base_model": base, "lambda_iii": lam, "calibration_method": method,
@@ -299,7 +338,8 @@ def main(config_path: str) -> Path:
                        for s in ["raw", "ii", "iv"] + [f"iii_lam{l:g}" for l in lambdas]},
         "groups": group_summary["definition"], "vocab_fingerprint": V.fingerprint(vocab),
         "id_vocab_fingerprint": V.fingerprint(id_vocab) if use_m3 else None,
-        "lgb_params": lgb_params, "m3": m3c or None,
+        "lgb_params": lgb_params, "m3": m3c or None, "primary": primary_cmp,
+        "selection_mode": sc.get("mode", "calibration"),
     }
 
     # save the calibrators (with the selected lambda) of every saved base model, then reload-check them
@@ -324,9 +364,9 @@ def main(config_path: str) -> Path:
     bs = cfg["bootstrap"]
     y_g1, g_g1, u_g1 = v2["y"].to_numpy()[g1m], g2_codes[g1m], v2["user_key"].to_numpy()[g1m]
     boot = M.paired_bootstrap_macro_diff(
-        y_g1, [g1_pred[f"{n}|{method}"] for n in fams[base]], [g1_pred[f"{n}|ii"] for n in fams[base]],
+        y_g1, [g1_pred[k] for k in primary_cmp["treatment"]], [g1_pred[k] for k in primary_cmp["control"]],
         g_g1, u_g1, bs["reps"], bs["seed"])
-    boot["note"] = (f"{base} ({len(fams[base])} seed(s)): selected ({method}) minus (ii) on V2 G1 rows; "
+    boot["note"] = (f"{primary_cmp['description']} ({len(primary_cmp['treatment'])} seed pair(s)) on V2 G1 rows; "
                     "selection data, not a test; models fixed (evaluation-user uncertainty only)")
 
     # purchase-history ablation (raw predictions): same model with vs without history inputs.
@@ -364,6 +404,7 @@ def main(config_path: str) -> Path:
         "fitted": fitted_info, "calibration": cal_info,
     }
     meta["m3_id_coverage"] = m3_coverage
+    meta["stacking"] = stacking_info
     meta["reload_check_max_abs_diff"] = reload_check | {"rows": RELOAD_ROWS}
     out = {"meta": meta, "groups": group_summary, "selection": selection, "lgb_search": lgb_search,
            "v2_bootstrap_info": boot, "v2_history_ablation": hist_ablation, "v2_m3_pooling": m3_pooling,
@@ -386,13 +427,16 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
                                                    for x in meta['data'][r]) for r in ROLES),
         f"- **G1 groups**: `{d['key']}` with training clicks ≥ {d['n_min']} and training positives < {d['c_min']} "
         f"(selected on training files only): {gs['G1_groups']} groups, {gs['G1_train_click_share']:.2%} of training clicks",
-        f"- selection: base **{sel['base_model']}**, λ(iii) = {sel['lambda_iii']:g}, method **{sel['calibration_method']}**",
+        f"- selection: base **{sel['base_model']}**, λ(iii) = {sel['lambda_iii']:g}, method **{sel['calibration_method']}**; "
+        f"primary comparison ({sel.get('selection_mode', 'calibration')}): **{sel['primary']['description']}**",
         f"- time {meta['timings_seconds']['total']} s, peak memory {meta['peak_rss_gb']} GB", "",
         "| model | calib | G1 macro LogLoss | G1 pooled O/E | G1 median abs(O/E−1) | G1 within-group AUC | LogLoss (non-missing) | AUC (non-missing) | GAUC (non-missing) | O/E (non-missing) | ECE10 | AUC (all rows) |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     families = {"M0a": ["M0a"], "M0b": ["M0b"], "M1": ["M1"], "M1_nohist": ["M1_nohist"],
                 "M2": [f"M2_s{s}" for s in seeds], "M2_nohist": [f"M2_nohist_s{s}" for s in seeds],
+                "M2aux": [f"M2aux_s{s}" for s in seeds], "M2te": [f"M2te_s{s}" for s in seeds],
+                "M2both": [f"M2both_s{s}" for s in seeds],
                 "M3_attn": [f"M3_attn_s{s}" for s in seeds], "M3_mean": [f"M3_mean_s{s}" for s in seeds]}
     suffixes = ["raw", "ii"] + [f"iii_lam{l:g}" for l in lambdas] + ["iv"]
     for fam, names in families.items():

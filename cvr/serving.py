@@ -38,9 +38,18 @@ class Server:
             self.coef = self.model.model.coef_[0]
             self.intercept = float(self.model.model.intercept_[0])
         elif base.startswith("M2"):
-            from .artifacts import load_gbdt
+            from .artifacts import load_gbdt, load_stacking
 
             self.model = load_gbdt(mdir / base)
+            self.stacking = None
+            if any(c.startswith(("aux_", "te_", "logn_")) for c in self.model.inputs):
+                # second study: auxiliary model (2-stage cascade) and group-rate / count lookups
+                st = load_stacking(mdir / "stacking")
+                self.stacking = {
+                    "aux": st.aux,
+                    "te": {k: (dict(zip(m.table[k].to_list(), m.table["rate"].to_list())), m.p0) for k, m in st.te.items()},
+                    "counts": {k: dict(zip(c[k].to_list(), c["n"].to_list())) for k, c in st.counts.items()},
+                }
         elif base.startswith("M3"):
             import torch
 
@@ -83,7 +92,17 @@ class Server:
                 z += ((num - m.mean) / m.std) @ self.coef[m.n_onehot:m.n_onehot + len(m.num_inputs)]
             return expit(z)
         if self.base.startswith("M2"):
-            X = np.column_stack([codes[c] for c in CAT_INPUTS] + [num]).astype(np.float64)
+            cols = {c: codes[c].astype(np.float64) for c in CAT_INPUTS} | {c: num[:, j] for j, c in enumerate(NUM_INPUTS)}
+            st = getattr(self, "stacking", None)
+            if st is not None:
+                if st["aux"] is not None:  # stage 1: auxiliary model on the base inputs
+                    Xa = np.column_stack([cols[c] for c in st["aux"].inputs])
+                    cols["aux_mta"] = st["aux"].booster.predict(Xa, num_threads=1)
+                for k, (table, p0) in st["te"].items():
+                    cols[f"te_{k}"] = np.fromiter((table.get(int(x), p0) for x in codes[k]), np.float64, len(rows))
+                    cols[f"logn_{k}"] = np.log1p(np.fromiter((st["counts"][k].get(int(x), 0) for x in codes[k]),
+                                                             np.float64, len(rows)))
+            X = np.column_stack([cols[c] for c in self.model.inputs])
             return self.model.booster.predict(X, num_threads=1)
         n = len(rows)
         tgt = np.empty((n, len(ID_COLS)), np.int32)
