@@ -44,3 +44,25 @@ lambdas = [1.0, 10.0, 100.0, 1000.0, 10000.0]
 [bootstrap]
 reps = 200
 seed = 20261117
+
+# pre-defined LightGBM candidates (compared on V2 with the first seed); "default" keeps LightGBM's
+# categorical defaults (cat_smooth 10, min_data_per_group 100, max_cat_threshold 32, cat_l2 10)
+[[models.lgb_candidates]]
+name = "default"
+
+[[models.lgb_candidates]]
+name = "smooth50"
+cat_smooth = 50.0
+min_data_per_group = 200
+
+[[models.lgb_candidates]]
+name = "smooth50_thr64"
+cat_smooth = 50.0
+min_data_per_group = 200
+max_cat_threshold = 64
+
+[[models.lgb_candidates]]
+name = "smooth100_l2"
+cat_smooth = 100.0
+min_data_per_group = 500
+cat_l2 = 50.0

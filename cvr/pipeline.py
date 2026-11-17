@@ -61,7 +61,11 @@ def evaluate(df: pl.DataFrame, p: np.ndarray) -> dict:
     cls = df["group_class"].to_numpy()
     nonmiss = df["is_missing"].to_numpy() == 0
     g1 = cls == "G1"
-    return {
+    extra = {}
+    if "group_class_exp" in df.columns:  # sensitivity definition (expected positives)
+        ge = df["group_class_exp"].to_numpy() == "G1exp"
+        extra["G1exp"] = M.group_report(y[ge], p[ge], g[ge])
+    return extra | {
         "G1": M.group_report(y[g1], p[g1], g[g1]),
         "overall_nonmissing": M.overall(y[nonmiss], p[nonmiss])
         | M.gauc(y[nonmiss], p[nonmiss], df["user_key"].to_numpy()[nonmiss]),
@@ -107,10 +111,11 @@ def main(config_path: str) -> Path:
     # 3) groups from training statistics only
     gc = cfg["groups"]
     stats = G.train_stats(data["train"])
+    p0_train = float(data["train"]["y"].mean())  # all training rows, for the expected-positive definition
     for role in ROLES:
-        data[role] = pl.concat([data[role], G.classify(data[role], stats, gc["n_min"], gc["c_min"], gc["c_dense"])],
-                               how="horizontal")
-    group_summary = G.summary(stats, gc["n_min"], gc["c_min"], gc["c_dense"])
+        data[role] = pl.concat([data[role], G.classify(data[role], stats, gc["n_min"], gc["c_min"], gc["c_dense"],
+                                                       p0_train)], how="horizontal")
+    group_summary = G.summary(stats, gc["n_min"], gc["c_min"], gc["c_dense"], p0_train)
     group_summary["rows_by_class"] = {r: data[r]["group_class"].value_counts().sort("group_class").to_dicts()
                                       for r in ROLES}
 
@@ -132,11 +137,29 @@ def main(config_path: str) -> Path:
                               "dims": lr.n_onehot + len(num_inputs), "seconds": time.time() - t1}
         for r in preds:
             preds[r][vname] = lr.predict(data[r])
+    # LightGBM: compare the PRE-DEFINED candidates with the first seed on V2 (raw primary metric),
+    # then train every seed with the chosen candidate. Candidates override the shared `lgb` params.
+    lgb_search = {}
+    candidates = {c["name"]: {k: v for k, v in c.items() if k != "name"} for c in mc.get("lgb_candidates", [])}
+    if candidates:
+        for cname, over in candidates.items():
+            t1 = time.time()
+            gb = GBDT.fit(data["train"], mc["lgb"] | over, mc["seeds"][0], mc["num_boost_round"],
+                          mc["early_stopping_rounds"], CAT_INPUTS + NUM_INPUTS)
+            rep = evaluate(data["v2"], gb.predict(data["v2"]))
+            lgb_search[cname] = {"params": over, "rounds": gb.rounds, "seconds": time.time() - t1,
+                                 "v2_G1_macro_logloss": rep["G1"]["macro_logloss"],
+                                 "v2_auc_nonmissing": rep["overall_nonmissing"]["auc"]}
+        chosen = min(lgb_search, key=lambda c: lgb_search[c]["v2_G1_macro_logloss"])
+        lgb_params = mc["lgb"] | candidates[chosen]
+        lgb_search = {"chosen": chosen, "rule": "min V2 G1 macro LogLoss, first seed, raw", "candidates": lgb_search}
+    else:
+        lgb_params = mc["lgb"]
     gb_variants = {"M2": CAT_INPUTS + NUM_INPUTS} | ({"M2_nohist": CAT_INPUTS} if ablate else {})
     for vname, inputs in gb_variants.items():
         for seed in mc["seeds"]:
             t1 = time.time()
-            gb = GBDT.fit(data["train"], mc["lgb"], seed, mc["num_boost_round"], mc["early_stopping_rounds"], inputs)
+            gb = GBDT.fit(data["train"], lgb_params, seed, mc["num_boost_round"], mc["early_stopping_rounds"], inputs)
             fitted_info[f"{vname}_s{seed}"] = {"rounds_from_early_stopping": gb.rounds, "refit_on_all_training": True,
                                                "seconds": time.time() - t1}
             for r in preds:
@@ -224,8 +247,8 @@ def main(config_path: str) -> Path:
         "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
         "fitted": fitted_info, "calibration": cal_info,
     }
-    out = {"meta": meta, "groups": group_summary, "selection": selection, "v2_bootstrap_info": boot,
-           "v2_history_ablation": hist_ablation, "v2_rows": rows}
+    out = {"meta": meta, "groups": group_summary, "selection": selection, "lgb_search": lgb_search,
+           "v2_bootstrap_info": boot, "v2_history_ablation": hist_ablation, "v2_rows": rows}
     (run_dir / "results.json").write_text(json.dumps(out, indent=2, default=str))
     (run_dir / "selection.json").write_text(json.dumps(selection, indent=2, default=str))
     (run_dir / "results.md").write_text(render_markdown(out, mc["seeds"], lambdas))
@@ -278,6 +301,26 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
         lines.append(f"History ablation {fam} ({h['note']}): diff = {h['diff']:+.6f}, 95% CI "
                      f"[{h['ci95'][0]:+.6f}, {h['ci95'][1]:+.6f}], seed pairs {h['seed_pairs']}, "
                      f"per pair {[round(x, 6) for x in h['per_pair_diff']]}.")
+    ls = out.get("lgb_search") or {}
+    if ls:
+        lines += ["", f"LightGBM candidates ({ls['rule']}; chosen **{ls['chosen']}**):"]
+        lines += [f"- {k}: params {v['params']}, rounds {v['rounds']}, V2 G1 macro LogLoss {v['v2_G1_macro_logloss']:.5f}, "
+                  f"AUC {v['v2_auc_nonmissing']:.4f}" for k, v in ls["candidates"].items()]
+    se = gs.get("sensitivity_expected_positives") or {}
+    if se:
+        lo, hi = se["G1exp_click_range"]
+        lines += ["", f"Sensitivity G1exp (expected positives = training clicks × p0 = {se['p0']:.4%} < {d['c_min']}, "
+                      f"i.e. {lo} ≤ training clicks < {hi:.0f}): {se['G1exp_groups']} groups, "
+                      f"{se['G1exp_train_click_share']:.2%} of training clicks, overlap with G1 {se['G1_and_G1exp_overlap']} groups.",
+                  "", "| model | calib | G1exp macro LogLoss | G1exp pooled O/E |", "|---|---|---|---|"]
+        for fam, names in families.items():
+            for suf in suffixes:
+                keys = [f"{n}|{suf}" for n in names if f"{n}|{suf}" in rows and "G1exp" in rows[f"{n}|{suf}"]]
+                if keys:
+                    ll = mean_sd([rows[k]["G1exp"]["macro_logloss"] for k in keys])
+                    oe = mean_sd([rows[k]["G1exp"]["pooled_O_over_E"] for k in keys])
+                    lines.append(f"| {fam} | {suf} | {ll['mean']:.5f}" + (f" ± {ll['sd']:.5f}" if ll["n"] > 1 else "")
+                                 + f" | {oe['mean']:.3f} |")
     gx = next(iter(rows.values()))["overall_nonmissing"]
     lines += ["", f"GAUC: per-user AUC weighted by clicks over users with both classes "
                   f"({gx['users_used']} users used, {gx['users_excluded']} excluded, {gx['click_share_used']:.1%} of non-missing clicks).",
