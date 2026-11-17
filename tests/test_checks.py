@@ -53,3 +53,16 @@ def test_require_close_rejects_nan_and_large():
         require_close("x", float("nan"), 1e-9)
     with pytest.raises(CheckFailed):
         require_close("x", 1e-6, 1e-9)
+
+
+def test_python_max_hides_nan_so_each_calibrator_is_checked_separately():
+    # the bug a reviewer found: combining per-calibrator differences with Python max() drops a NaN
+    assert max([0.0, float("nan"), 0.0]) == 0.0
+    from cvr.checks import require_finite_probs
+
+    good, bad = np.full(5, 0.1), np.array([0.1, np.nan, 0.1, 0.1, 0.1])
+    require_finite_probs("ii", good)
+    with pytest.raises(CheckFailed):
+        require_finite_probs("iii", bad)
+    with pytest.raises(CheckFailed):
+        require_close("iii", float(np.abs(bad - good).max()), 1e-9)  # numpy max propagates NaN

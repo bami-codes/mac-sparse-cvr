@@ -27,7 +27,7 @@ from . import artifacts as A
 from . import groups as G
 from . import metrics as M
 from . import vocab as V
-from .checks import RELOAD_TOL, require_close
+from .checks import RELOAD_TOL, require_close, require_finite_probs
 from .calibration import FreqAware, GlobalPlatt, GroupShrunkPlatt, load_calibrators, save_calibrators
 from .features import featurize, read_raw
 from .models import GBDT, LogReg, SmoothedRate
@@ -160,9 +160,11 @@ def main(config_path: str) -> Path:
         return data["v2"].head(RELOAD_ROWS)
 
     def reload_diff(name: str, p_reloaded: np.ndarray, p_memory: np.ndarray) -> float:
-        """Max |reloaded - in-memory| on the V2 head; raises CheckFailed above RELOAD_TOL."""
+        """Max |reloaded - in-memory| on the V2 head; raises CheckFailed above RELOAD_TOL or on NaN."""
+        require_finite_probs(f"reloaded {name}", p_reloaded)
         return require_close(f"reload {name}", float(np.abs(p_reloaded - p_memory[: p_reloaded.size]).max()),
                              RELOAD_TOL)
+
     for name, key in (("M0a", GROUP_KEY), ("M0b", SHOP_KEY)):
         m = SmoothedRate.fit(data["train"], key)
         fitted_info[name] = {"key": key, "p0": m.p0, "prior_strength_m": m.m}
@@ -308,10 +310,13 @@ def main(config_path: str) -> Path:
         save_calibrators(gl, gsh, fah, group_clicks, models_dir / f"calib_{name}")
         gl2, gs2, fa2, _ = load_calibrators(models_dir / f"calib_{name}")
         gh, nh = g2_codes[:RELOAD_ROWS], n2[:RELOAD_ROWS]
-        reload_check[f"calib_{name}"] = require_close(f"reload calib_{name}", max(
-            float(np.abs(gl2.predict(p2h) - gl.predict(p2h)).max()),
-            float(np.abs(gs2.predict(p2h, gh) - gsh.predict(p2h, gh)).max()),
-            float(np.abs(fa2.predict(p2h, nh) - fah.predict(p2h, nh)).max())), RELOAD_TOL)
+        # each calibrator is checked on its own (a combined Python max() would hide a NaN)
+        for tag, p_re, p_mem in (("ii", gl2.predict(p2h), gl.predict(p2h)),
+                                 ("iii", gs2.predict(p2h, gh), gsh.predict(p2h, gh)),
+                                 ("iv", fa2.predict(p2h, nh), fah.predict(p2h, nh))):
+            require_finite_probs(f"reloaded calib_{name}|{tag}", p_re)
+            reload_check[f"calib_{name}|{tag}"] = require_close(
+                f"reload calib_{name}|{tag}", float(np.abs(p_re - p_mem).max()), RELOAD_TOL)
 
     # informational paired bootstrap on V2 (selection data, NOT a confirmatory test). It covers the SAME
     # seeds as the selection: every seed of the selected family, seed-paired, one user resample per replicate.

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .checks import RELOAD_TOL, require_close
+from .checks import RELOAD_TOL, require_close, require_finite_probs
 from .m3data import M3Arrays, load_arrays
 from .nn import M3Model, load_m3, save_m3
 
@@ -51,9 +51,10 @@ def main(job_dir: str) -> None:
             save_m3(m, job["other_sizes"], job["id_sizes"], models_dir / name)
             k = min(job["reload_rows"], evals["v2"].n)
             head = M3Arrays(*(np.asarray(getattr(evals["v2"], f)[:k]) for f in ("other", "target", "seq", "mm", "num")))
+            p_re = load_m3(models_dir / name).predict(head)
+            require_finite_probs(f"reloaded {name}", p_re)
             result["reload_check"][name] = require_close(
-                f"reload {name}", float(np.abs(load_m3(models_dir / name).predict(head) - preds["v2"][:k]).max()),
-                RELOAD_TOL)
+                f"reload {name}", float(np.abs(p_re - preds["v2"][:k]).max()), RELOAD_TOL)
             print(f"{name} done in {time.time() - t:.0f}s", flush=True)
     (job_path / "result.json").write_text(json.dumps(result, indent=2))
 
