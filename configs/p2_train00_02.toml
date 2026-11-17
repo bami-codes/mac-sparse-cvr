@@ -1,0 +1,55 @@
+# Second study (docs/DESIGN.md §13), pre-registered: train-00..02, V1 train-03, V2 train-04 (test train-12 later).
+name = "p2_train00_02"
+
+[data]
+root = "data/raw/mac/train"
+mode = "files"
+train = ["train-00.parquet", "train-01.parquet", "train-02.parquet"]
+v1 = ["train-03.parquet"]
+v2 = ["train-04.parquet"]
+
+[vocab]
+min_count = 1
+
+[groups]
+n_min = 500
+c_min = 20
+c_dense = 50
+
+[models]
+seeds = [2026, 2027, 2028]
+include_m1 = false
+lr_C = 1.0
+lr_max_iter = 2000
+num_boost_round = 2000
+early_stopping_rounds = 50
+
+# LightGBM settings fixed from the first study (smooth50); no candidate search
+[models.lgb]
+learning_rate = 0.05
+num_leaves = 63
+min_data_in_leaf = 200
+feature_fraction = 0.9
+bagging_fraction = 0.9
+bagging_freq = 1
+num_threads = 8
+cat_smooth = 50.0
+min_data_per_group = 200
+
+[models.stacking]
+enabled = true
+variants = ["M2aux", "M2te", "M2both"]
+folds = 3
+aux_seed = 2026
+
+[selection]
+mode = "model_variant"
+candidates = ["M2aux", "M2te", "M2both"]
+reference = "M2"
+
+[calibration]
+lambdas = [1.0, 10.0, 100.0, 1000.0, 10000.0]
+
+[bootstrap]
+reps = 1000
+seed = 20261117
