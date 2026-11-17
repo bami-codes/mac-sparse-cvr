@@ -37,6 +37,7 @@ FEATURE_GROUPS = {
     "context": CTX_COLS,
     "item_attributes": ["ad_feat3", "ad_feat4", "ad_feat5"],
 }
+NEGATIVE_GROUP = "user_score"  # random noise feature: its true contribution is zero (negative control)
 SEGMENTS = ["all", "sparse_G1", "dense", "no_history", "has_history", "same_category_in_history",
             "no_same_category_in_history", "high_visual_similarity", "low_visual_similarity"]
 ASSOC_FEATURES = {  # binary feature -> expression on the confirmation frame
@@ -77,6 +78,11 @@ def precompute(config_path: str) -> Path:
     models = {"full": full} | {f"no_{g}": [c for c in full if c not in cols] for g, cols in FEATURE_GROUPS.items()}
     keep = conf.select("user_key", "y", GROUP_KEY, "group_class", "hist_empty", "match_ad_feat0", "match_ad_feat1",
                        "match_ad_feat2", "high_visual")
+    # negative control: a random-noise feature ("user_score"), seeded, unrelated to the label by construction
+    rng = np.random.default_rng(cfg["seed"] + 7)
+    disc = disc.with_columns(pl.Series("noise_score", rng.uniform(size=disc.height)))
+    conf = conf.with_columns(pl.Series("noise_score", rng.uniform(size=conf.height)))
+    models["full_noise"] = full + ["noise_score"]
     info = {}
     for name, inputs in models.items():
         t = time.time()
@@ -132,10 +138,13 @@ class Menu:
         return point, np.quantile(reps, [0.025, 0.975]).tolist(), reps
 
     def _loss_diff(self, group: str, mask: np.ndarray) -> tuple[float, list[float], np.ndarray]:
-        if group not in FEATURE_GROUPS:
-            raise ValueError(f"unknown feature group {group!r}; allowed: {list(FEATURE_GROUPS)}")
         y = self.df["y"].to_numpy().astype(float)
-        d = bce(y, self.df["p_full"].to_numpy()) - bce(y, self.df[f"p_no_{group}"].to_numpy())
+        if group == NEGATIVE_GROUP:  # with the noise feature minus without it
+            d = bce(y, self.df["p_full_noise"].to_numpy()) - bce(y, self.df["p_full"].to_numpy())
+        elif group in FEATURE_GROUPS:
+            d = bce(y, self.df["p_full"].to_numpy()) - bce(y, self.df[f"p_no_{group}"].to_numpy())
+        else:
+            raise ValueError(f"unknown feature group {group!r}; allowed: {list(FEATURE_GROUPS)}")
         point, ci, reps = self._boot(d, np.ones_like(d), mask)
         return point, ci, d, reps
 

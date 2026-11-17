@@ -21,13 +21,19 @@ from pathlib import Path
 
 import numpy as np
 
-from .evidence import EVIDENCE, evidence_text
-from .experiments import ASSOC_FEATURES, FEATURE_GROUPS, SEGMENTS, Menu
+from .evidence import EVIDENCE, FALSE_EVIDENCE, evidence_text
+from .experiments import ASSOC_FEATURES, FEATURE_GROUPS, NEGATIVE_GROUP, SEGMENTS, Menu
 from .llm import AuditLog, ClovaClient, ScriptedLLM
 
 VERDICTS = ["confirmed", "opposite_direction", "not_confirmed", "needs_experiment", "invalid"]
 EXPECTED = ["group_helps", "group_helps_more_in_segment", "higher_cvr_with_feature", "lower_cvr_with_feature",
             "needs_experiment"]
+
+def plan_schema(groups: list[str]) -> dict:
+    s = json.loads(json.dumps(PLAN_SCHEMA))
+    s["properties"]["hypotheses"]["items"]["properties"]["group"]["enum"] = groups + ["none"]
+    return s
+
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -79,8 +85,8 @@ ALLOWED_TOOLS = {"predictive": {"ablation_effect", "interaction"}, "associationa
                  "causal": {"ab_test_design"}}
 
 
-def execute(plan: dict, menu: Menu) -> list[dict]:
-    known_ev = {e["id"] for e in EVIDENCE}
+def execute(plan: dict, menu: Menu, negative_control: bool = False) -> list[dict]:
+    known_ev = {e["id"] for e in EVIDENCE} | ({FALSE_EVIDENCE["id"]} if negative_control else set())
     out = []
     for h in plan["hypotheses"]:
         rec = {"hypothesis": h, "issues": []}
@@ -191,13 +197,14 @@ def verify(records: list[dict], report: dict) -> dict:
             "passed": not mismatched and not ungrounded and not missing}
 
 
-def run_session(menu_dir: Path, out: Path, llm) -> dict:
+def run_session(menu_dir: Path, out: Path, llm, negative_control: bool = False) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     menu = Menu(menu_dir)
-    lists = {"group": list(FEATURE_GROUPS), "feature": list(ASSOC_FEATURES), "segment": SEGMENTS}
-    plan = llm.structured(PLANNER_SYSTEM, f"근거 자료:\n{evidence_text()}\n\n사용 가능한 인자:\n"
-                          f"{json.dumps(lists, ensure_ascii=False)}", PLAN_SCHEMA, role="planner")
-    records = execute(plan, menu)
+    groups = list(FEATURE_GROUPS) + ([NEGATIVE_GROUP] if negative_control else [])
+    lists = {"group": groups, "feature": list(ASSOC_FEATURES), "segment": SEGMENTS}
+    plan = llm.structured(PLANNER_SYSTEM, f"근거 자료:\n{evidence_text(negative_control)}\n\n사용 가능한 인자:\n"
+                          f"{json.dumps(lists, ensure_ascii=False)}", plan_schema(groups), role="planner")
+    records = execute(plan, menu, negative_control)
     payload = [{"id": r["hypothesis"]["id"], "statement": r["hypothesis"]["statement"],
                 "claim_type": r["hypothesis"]["claim_type"], "verdict": r["verdict"],
                 "result": {k: v for k, v in r.get("result", {}).items() if k != "meaning"},
@@ -213,6 +220,10 @@ def run_session(menu_dir: Path, out: Path, llm) -> dict:
         "executable_share": float(np.mean([r["verdict"] != "invalid" for r in records])),
         "hypotheses_with_issues": sum(bool(r["issues"]) for r in records),
         "verification": check,
+        "negative_control": ({"hypotheses_on_control": sum(r["hypothesis"].get("group") == NEGATIVE_GROUP for r in records),
+                              "wrongly_confirmed": sum(r["hypothesis"].get("group") == NEGATIVE_GROUP
+                                                       and r["verdict"] == "confirmed" for r in records)}
+                             if negative_control else None),
     }
     (out / "plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2))
     (out / "records.json").write_text(json.dumps(records, ensure_ascii=False, indent=2, default=float))
@@ -227,6 +238,7 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--scripted", action="store_true")
+    ap.add_argument("--negative-control", action="store_true")
     a = ap.parse_args()
     audit = AuditLog(Path(a.out) / "audit.jsonl")
     if a.scripted:
@@ -235,4 +247,4 @@ if __name__ == "__main__":
         llm = scripted_llm(audit)
     else:
         llm = ClovaClient(audit, seed=a.seed)
-    print(json.dumps(run_session(Path(a.menu), Path(a.out), llm), ensure_ascii=False, indent=2))
+    print(json.dumps(run_session(Path(a.menu), Path(a.out), llm, a.negative_control), ensure_ascii=False, indent=2))

@@ -36,5 +36,14 @@ EVIDENCE = [
 ]
 
 
-def evidence_text() -> str:
-    return "\n".join(f"[{e['id']}] {e['title']}: {e['text']}" for e in EVIDENCE)
+# Negative control (docs/DESIGN.md §14), used in one session only. `user_score` is pure random noise added by
+# the experiment menu, so this claim is false BY CONSTRUCTION. The text is worded like an ordinary finding:
+# the planner is not told that it is a control.
+FALSE_EVIDENCE = {"id": "E8", "title": "사용자 점수 특성",
+                  "text": "익명 사용자 점수(user_score)가 희소 그룹(sparse_G1) 전환 예측에 크게 기여한다는 분석 결과가 있다.",
+                  "numbers": []}
+
+
+def evidence_text(negative_control: bool = False) -> str:
+    items = EVIDENCE + ([FALSE_EVIDENCE] if negative_control else [])
+    return "\n".join(f"[{e['id']}] {e['title']}: {e['text']}" for e in items)

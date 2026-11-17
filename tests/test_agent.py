@@ -26,6 +26,7 @@ def _menu(tmp_path):
           "high_visual": rng.uniform(size=n) < 0.2, "p_full": p_full.astype(np.float32)}
     for g in FEATURE_GROUPS:  # removing history_match loses the signal; other groups change nothing
         df[f"p_no_{g}"] = (np.full(n, y.mean()) if g == "history_match" else p_full).astype(np.float32)
+    df["p_full_noise"] = np.clip(p_full + rng.normal(0, 0.002, n), 0.001, 0.5).astype(np.float32)  # noise adds nothing
     pl.DataFrame(df).write_parquet(tmp_path / "confirmation_predictions.parquet")
     (tmp_path / "precompute.json").write_text(json.dumps({"config": {"data": {"confirmation": ["a", "b"]}}}))
     return tmp_path
@@ -58,3 +59,11 @@ def test_verifier_flags_wrong_verdict_and_invented_number(tmp_path):
     assert check["verdict_mismatches"][0]["id"] == 1
     assert any(u["number"] == 37.25 for u in check["ungrounded_numbers"])
     assert set(REPORT_SCHEMA["required"]) == {"items", "overall"}
+
+
+def test_negative_control_noise_group_is_not_confirmed(tmp_path):
+    from cvr.agent.experiments import NEGATIVE_GROUP, Menu
+
+    menu = Menu(_menu(tmp_path / "menu"))
+    r = menu.ablation_effect(NEGATIVE_GROUP, "sparse_G1")
+    assert r["estimate"] >= 0 or r["ci95"][1] >= 0  # adding pure noise never shows up as a clear gain
