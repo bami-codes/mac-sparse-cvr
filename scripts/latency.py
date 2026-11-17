@@ -91,9 +91,11 @@ def measure(run_dir: Path, v2_file: str, base: str, method: str) -> dict:
     return {"consistency": consistency, "batch1": pct(b1), "batch100": pct(b100)}
 
 
-def main(run: str, v2_file: str) -> None:
+def main(run: str, v2_file: str, method: str | None = None, out_name: str = "latency.json") -> None:
     run_dir = Path(run)
     sel = selection(run_dir)
+    if method:  # e.g. "ii", to time the same calibration as a comparison table (default: the run's selection)
+        sel = sel | {"calibration_method": method}
     # a served model is "base model + calibrator": measure every base that has saved calibrators
     bases = sorted(p.name[len("calib_"):-len(".npz")] for p in (run_dir / "models").glob("calib_*.npz"))
     report = {"run": str(run_dir), "calibration_method": sel["calibration_method"], "rows": N_ROWS,
@@ -104,12 +106,13 @@ def main(run: str, v2_file: str) -> None:
               "models": {}}
     for base in bases:
         out = run_dir / f"latency_{base}.json"
-        subprocess.run([sys.executable, __file__, run, v2_file, "--base", base, "--out", str(out)], check=True)
+        subprocess.run([sys.executable, __file__, run, v2_file, "--base", base, "--out", str(out),
+                        "--method", sel["calibration_method"]], check=True)
         report["models"][base] = json.loads(out.read_text())
         out.unlink()
         print(base, json.dumps(report["models"][base]))
-    (run_dir / "latency.json").write_text(json.dumps(report, indent=2))
-    print(f"wrote {run_dir / 'latency.json'}")
+    (run_dir / out_name).write_text(json.dumps(report, indent=2))
+    print(f"wrote {run_dir / out_name}")
 
 
 if __name__ == "__main__":
@@ -117,7 +120,8 @@ if __name__ == "__main__":
         run_arg, v2_arg = sys.argv[1], sys.argv[2]
         base_arg = sys.argv[sys.argv.index("--base") + 1]
         out_arg = Path(sys.argv[sys.argv.index("--out") + 1])
-        sel_ = selection(Path(run_arg))
-        out_arg.write_text(json.dumps(measure(Path(run_arg), v2_arg, base_arg, sel_["calibration_method"])))
+        method_arg = sys.argv[sys.argv.index("--method") + 1]
+        out_arg.write_text(json.dumps(measure(Path(run_arg), v2_arg, base_arg, method_arg)))
     else:
-        main(sys.argv[1], sys.argv[2])
+        m = sys.argv[sys.argv.index("--method") + 1] if "--method" in sys.argv else None
+        main(sys.argv[1], sys.argv[2], m, f"latency_{m}.json" if m else "latency.json")

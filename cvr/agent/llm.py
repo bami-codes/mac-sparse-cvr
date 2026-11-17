@@ -6,8 +6,8 @@ ClovaClient calls HyperCLOVA X through the CLOVA Studio Chat Completions v3 API:
 Structured outputs (`responseFormat` with a JSON schema) are used for the planner and the reporter;
 reasoning is explicitly disabled (`thinking.effort = "none"`) because the docs do not allow reasoning
 together with structured outputs. The JSON comes back as a string in result.message.content.
-The key is read from $CLOVASTUDIO_API_KEY or, if unset, from ~/.config/clovastudio/api_key (outside the
-repository). It is never written to logs.
+The key is read from $CLOVASTUDIO_API_KEY or, if unset, from .secrets/clovastudio_api_key (git-ignored)
+or ~/.config/clovastudio/api_key. It is never written to logs.
 
 ScriptedLLM returns fixed outputs so the whole pipeline can be tested without an API key.
 """
@@ -21,6 +21,9 @@ import uuid
 from pathlib import Path
 
 CLOVA_URL = "https://clovastudio.stream.ntruss.com/v3/chat-completions/{model}"
+# key files, in order: the repository's git-ignored .secrets/ folder, then a per-user config file
+KEY_FILES = [Path(__file__).resolve().parents[2] / ".secrets" / "clovastudio_api_key",
+             Path.home() / ".config" / "clovastudio" / "api_key"]
 
 
 class LLMError(RuntimeError):
@@ -41,11 +44,11 @@ class ClovaClient:
     def __init__(self, audit: AuditLog, model: str = "HCX-007", temperature: float = 0.3, seed: int = 0,
                  timeout: int = 120):
         self.key = os.environ.get("CLOVASTUDIO_API_KEY")
-        key_file = Path.home() / ".config" / "clovastudio" / "api_key"
-        if not self.key and key_file.exists():
-            self.key = key_file.read_text().strip()
+        for key_file in KEY_FILES:
+            if not self.key and key_file.exists():
+                self.key = key_file.read_text().strip() or None
         if not self.key:
-            raise LLMError("set CLOVASTUDIO_API_KEY or write the key to ~/.config/clovastudio/api_key")
+            raise LLMError(f"set CLOVASTUDIO_API_KEY or paste the key into {KEY_FILES[0]}")
         self.audit, self.model, self.temperature, self.seed, self.timeout = audit, model, temperature, seed, timeout
 
     def _post(self, body: dict, role: str) -> str:
