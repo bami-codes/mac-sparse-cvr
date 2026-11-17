@@ -1,0 +1,20 @@
+# 원본·파생 데이터 (CC BY-NC-SA 4.0, 레포에 올리지 않음)
+data/
+*.parquet
+*.csv
+*.csv.gz
+*.tar.gz
+*.zip
+
+# 실험 산출물
+runs/
+artifacts/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
