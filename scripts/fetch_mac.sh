@@ -20,8 +20,10 @@ items = json.loads(sys.argv[1]); rel = sys.argv[2]
 f = [i for i in items if i['path'] == rel][0]
 print(f['size'], f['lfs']['oid'])" "$meta" "$rel")
 
-  for attempt in 1 2 3 4 5 6; do
-    curl -sL --retry 3 -C - -o "$dest" "https://huggingface.co/datasets/$REPO/resolve/main/$rel" || true
+  for attempt in $(seq 1 12); do
+    # abort a stalled transfer (< 100 KB/s for 60 s) so the loop resumes it instead of hanging
+    curl -sL --retry 3 --speed-limit 100000 --speed-time 60 -C - -o "$dest" \
+      "https://huggingface.co/datasets/$REPO/resolve/main/$rel" || true
     [ "$(stat -f %z "$dest")" = "$size" ] && break
     echo "$rel: attempt $attempt incomplete ($(stat -f %z "$dest") / $size bytes)"
   done
