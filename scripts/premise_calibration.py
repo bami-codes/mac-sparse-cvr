@@ -34,7 +34,8 @@ MM = ["mm_feat0_seq", "mm_feat1_seq"]
 
 def build_features(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_row_index("rid")
-    out = df.select(["rid", "user_id", (pl.col("last") > 0).cast(pl.Int8).alias("y")] + CATS)
+    out = df.select(["rid", "user_id", (pl.col("last") > 0).cast(pl.Int8).alias("y"),
+                     (pl.col("ad_feat1") == PAD).alias("is_missing")] + CATS)
     for tgt, seq in SEQ_PAIRS:
         m = (df.select(["rid", tgt, seq]).explode(seq)
              .group_by("rid")
@@ -74,6 +75,36 @@ def group_calibration(g: pl.DataFrame) -> dict:
     }
 
 
+def user_bootstrap_ratio(ho: pl.DataFrame, masks: dict, reps: int = 500, seed: int = 20261117) -> dict:
+    """Pooled O/E per mask with a 95% interval from resampling holdout USERS with replacement.
+
+    Exploratory: the fitted model is held fixed, so refitting uncertainty is not included.
+    """
+    users = ho.select("user_id").unique().sort("user_id").with_row_index("uidx")
+    ho = ho.join(users, on="user_id", how="left")
+    n_users = users.height
+    obs = np.zeros((n_users, len(masks)))
+    exp = np.zeros_like(obs)
+    out = {}
+    for j, (name, mask) in enumerate(masks.items()):
+        rows = ho.filter(mask)
+        ug = rows.group_by("uidx").agg(pl.col("y").sum().alias("O"), pl.col("p").sum().alias("E"))
+        idx = ug["uidx"].to_numpy()
+        obs[idx, j], exp[idx, j] = ug["O"].to_numpy(), ug["E"].to_numpy()
+        out[name] = {"clicks": rows.height, "users": ug.height, "groups": rows["ad_feat1"].n_unique(),
+                     "observed": float(obs[:, j].sum()), "predicted": float(exp[:, j].sum()),
+                     "O_over_E": float(obs[:, j].sum() / exp[:, j].sum())}
+    rng = np.random.default_rng(seed)
+    samples = []
+    for _ in range(reps):
+        w = np.bincount(rng.integers(n_users, size=n_users), minlength=n_users)
+        samples.append((w @ obs) / (w @ exp))
+    ci = np.quantile(np.asarray(samples), [0.025, 0.975], axis=0)
+    for j, name in enumerate(masks):
+        out[name]["ci95_user_bootstrap"] = ci[:, j].tolist()
+    return out
+
+
 def main(src: str, out: str) -> None:
     t0 = time.time()
     cols = list({c for c in CATS + ["user_id", "last", "ad_feat0", "ad_feat2"]
@@ -86,7 +117,8 @@ def main(src: str, out: str) -> None:
     tr_mask = (h < 60).to_numpy()
     es_mask = ((h >= 60) & (h < 70)).to_numpy()
     ho_mask = (h >= 70).to_numpy()
-    xcols = [c for c in feats.columns if c not in ("rid", "user_id", "y")]
+    # is_missing is kept for reporting only (not a model input), so the model matches earlier runs
+    xcols = [c for c in feats.columns if c not in ("rid", "user_id", "y", "is_missing")]
     X = feats.select(xcols).to_numpy()
     y = feats["y"].to_numpy()
     cat_idx = [xcols.index(c) for c in CATS]
@@ -101,31 +133,51 @@ def main(src: str, out: str) -> None:
     p = booster.predict(X[ho_mask], num_iteration=booster.best_iteration)
     t_train = time.time() - t0 - t_feat
 
-    ho = feats.filter(pl.Series(ho_mask)).select(["ad_feat1", "y"]).with_columns(pl.Series("p", p))
+    # Holdout rows with group statistics computed on the TRAIN users only (h < 60).
+    # Groups are therefore selected on the 60% train split, not on the whole file.
     train_stats = (feats.filter(pl.Series(tr_mask)).group_by("ad_feat1")
                    .agg(pl.len().alias("tr_clicks"), pl.col("y").sum().alias("tr_pos")))
-    g = (ho.group_by("ad_feat1").agg(pl.col("y").sum().alias("O"), pl.col("p").sum().alias("E"),
-                                     (pl.col("p") * (1 - pl.col("p"))).sum().alias("V"),
-                                     pl.len().alias("ho_clicks"))
-         .join(train_stats, on="ad_feat1", how="left").fill_null(0))
+    ho = (feats.filter(pl.Series(ho_mask)).select(["user_id", "ad_feat1", "is_missing", "y"])
+          .with_columns(pl.Series("p", p))
+          .join(train_stats, on="ad_feat1", how="left")
+          .with_columns(pl.col("tr_clicks", "tr_pos").fill_null(0)))
 
-    bins = {
-        "unseen_in_train": g.filter(pl.col("tr_clicks") == 0),
-        "tr_clicks<100": g.filter((pl.col("tr_clicks") > 0) & (pl.col("tr_clicks") < 100)),
-        "tr_clicks>=100,tr_pos<5": g.filter((pl.col("tr_clicks") >= 100) & (pl.col("tr_pos") < 5)),
-        "tr_clicks>=100,tr_pos 5-19": g.filter((pl.col("tr_clicks") >= 100) & pl.col("tr_pos").is_between(5, 19)),
-        "tr_clicks>=100,tr_pos 20-49": g.filter((pl.col("tr_clicks") >= 100) & pl.col("tr_pos").is_between(20, 49)),
-        "tr_clicks>=100,tr_pos>=50": g.filter((pl.col("tr_clicks") >= 100) & (pl.col("tr_pos") >= 50)),
+    nm = ~pl.col("is_missing")
+    tc, tp = pl.col("tr_clicks"), pl.col("tr_pos")
+    bin_masks = {  # the missing-token group is excluded from every group bin
+        "unseen_in_train": nm & (tc == 0),
+        "tr_clicks 1-99": nm & (tc > 0) & (tc < 100),
+        "tr_clicks>=100,tr_pos<5": nm & (tc >= 100) & (tp < 5),
+        "tr_clicks>=100,tr_pos 5-19": nm & (tc >= 100) & tp.is_between(5, 19),
+        "tr_clicks>=100,tr_pos 20-49": nm & (tc >= 100) & tp.is_between(20, 49),
+        "tr_clicks>=100,tr_pos>=50": nm & (tc >= 100) & (tp >= 50),
+        "design_example tr_clicks>=500,tr_pos<20": nm & (tc >= 500) & (tp < 20),
     }
+
+    def per_group(mask: pl.Expr) -> pl.DataFrame:
+        return ho.filter(mask).group_by("ad_feat1").agg(
+            pl.col("y").sum().alias("O"), pl.col("p").sum().alias("E"),
+            (pl.col("p") * (1 - pl.col("p"))).sum().alias("V"), pl.len().alias("ho_clicks"))
+
+    def overall(mask: np.ndarray) -> dict:
+        yy, pp = y[ho_mask][mask], p[mask]
+        return {"rows": int(mask.sum()), "auc": roc_auc_score(yy, pp), "logloss": log_loss(yy, pp),
+                "O_over_E": float(yy.sum() / pp.sum())}
+
+    missing_np = ho["is_missing"].to_numpy()
+    boot_masks = bin_masks | {"missing_group": pl.col("is_missing"), "nonmissing_all": nm,
+                              "all_rows": pl.lit(True)}
     report = {
         "file": Path(src).name,
         "note": "within-file user-cluster split; premise check only, not the study protocol",
         "rows": {"train": int(tr_mask.sum()), "early_stop": int(es_mask.sum()), "holdout": int(ho_mask.sum())},
         "lgb_params": params, "best_iteration": booster.best_iteration,
-        "holdout_overall": {"auc": roc_auc_score(y[ho_mask], p), "logloss": log_loss(y[ho_mask], p),
-                            "O_over_E": float(y[ho_mask].sum() / p.sum())},
-        "group_calibration_by_bin": {k: group_calibration(v) | {"clicks_share": v["ho_clicks"].sum() / ho_mask.sum()}
-                                     for k, v in bins.items()},
+        "holdout_overall": overall(np.ones_like(missing_np, dtype=bool)),
+        "holdout_overall_nonmissing": overall(~missing_np),
+        "group_calibration_by_bin": {
+            k: group_calibration(per_group(m)) | {"clicks_share": per_group(m)["ho_clicks"].sum() / ho_mask.sum()}
+            for k, m in bin_masks.items()},
+        "user_bootstrap_O_over_E": user_bootstrap_ratio(ho, boot_masks),
         "seconds": {"features": round(t_feat, 1), "train_predict": round(t_train, 1)},
         "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
     }
