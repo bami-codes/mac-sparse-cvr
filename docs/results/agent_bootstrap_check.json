@@ -1,0 +1,406 @@
+{
+  "meta": {
+    "seed": 20261118,
+    "sims_per_scale": 2000,
+    "alpha": 0.05,
+    "max_null_rejection": 0.065,
+    "min_coverage": 0.935,
+    "dgp": {
+      "a": -4.843741160664691,
+      "sd_u": 0.7,
+      "c": 0.3,
+      "weak_x": 0.6
+    },
+    "cluster_sizes": {
+      "users": 522922,
+      "mean": 12.85685054367573,
+      "q50_q90_q99_max": [
+        6.0,
+        30.0,
+        109.0,
+        1550
+      ]
+    },
+    "sanity": {
+      "intercept": -4.843741160664691,
+      "truth": -0.002366802993699726,
+      "truth_mc_se": 7.385190988626885e-06,
+      "realized_mean_2m_rows": -0.002342666033655405,
+      "realized_cvr_2m_rows": 0.015613945351191271
+    }
+  },
+  "results": [
+    {
+      "rows": 700,
+      "tool": "ablation_effect (null)",
+      "sims": 2000,
+      "computable": 1292,
+      "median_smallest_arm_positives": 11.0,
+      "rejection_rate": 0.07430340557275542,
+      "rejection_wilson95": [
+        0.06123005991213461,
+        0.08990075731120502
+      ],
+      "ci_coverage": 0.9241486068111455,
+      "coverage_wilson95": [
+        0.9084208547041852,
+        0.9373615310441963
+      ],
+      "pass": false
+    },
+    {
+      "rows": 700,
+      "tool": "interaction (null)",
+      "sims": 2000,
+      "computable": 36,
+      "median_smallest_arm_positives": 4.0,
+      "rejection_rate": 0.25,
+      "rejection_wilson95": [
+        0.13750323839225387,
+        0.41070767683203424
+      ],
+      "ci_coverage": 0.75,
+      "coverage_wilson95": [
+        0.5892923231679656,
+        0.8624967616077461
+      ],
+      "pass": false
+    },
+    {
+      "rows": 700,
+      "tool": "association (null)",
+      "sims": 2000,
+      "computable": 12,
+      "median_smallest_arm_positives": 3.0,
+      "rejection_rate": 0.25,
+      "rejection_wilson95": [
+        0.08894003962896138,
+        0.53231033912066
+      ],
+      "ci_coverage": 0.75,
+      "coverage_wilson95": [
+        0.46768966087934005,
+        0.9110599603710386
+      ],
+      "pass": false
+    },
+    {
+      "rows": 700,
+      "tool": "ablation_effect (alternative)",
+      "sims": 2000,
+      "computable": 1292,
+      "median_smallest_arm_positives": 11.0,
+      "rejection_rate": 0.18962848297213622,
+      "rejection_wilson95": [
+        0.16918486445564712,
+        0.21191233137446047
+      ],
+      "ci_coverage": 0.9527863777089783,
+      "coverage_wilson95": [
+        0.9398181876002917,
+        0.963069943171247
+      ],
+      "pass": true
+    },
+    {
+      "rows": 2000,
+      "tool": "ablation_effect (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 31.0,
+      "rejection_rate": 0.072,
+      "rejection_wilson95": [
+        0.061472954211237246,
+        0.08416809845480183
+      ],
+      "ci_coverage": 0.928,
+      "coverage_wilson95": [
+        0.9158319015451982,
+        0.9385270457887628
+      ],
+      "pass": false
+    },
+    {
+      "rows": 2000,
+      "tool": "interaction (null)",
+      "sims": 2000,
+      "computable": 1746,
+      "median_smallest_arm_positives": 13.0,
+      "rejection_rate": 0.07846506300114547,
+      "rejection_wilson95": [
+        0.06675713268885142,
+        0.09202386783142424
+      ],
+      "ci_coverage": 0.9209621993127147,
+      "coverage_wilson95": [
+        0.9073628864660184,
+        0.9327131524165866
+      ],
+      "pass": false
+    },
+    {
+      "rows": 2000,
+      "tool": "association (null)",
+      "sims": 2000,
+      "computable": 921,
+      "median_smallest_arm_positives": 9.0,
+      "rejection_rate": 0.04451682953311618,
+      "rejection_wilson95": [
+        0.03298266237408649,
+        0.0598349617466278
+      ],
+      "ci_coverage": 0.9543973941368078,
+      "coverage_wilson95": [
+        0.9389324369371188,
+        0.966087406460929
+      ],
+      "pass": true
+    },
+    {
+      "rows": 2000,
+      "tool": "ablation_effect (alternative)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 31.0,
+      "rejection_rate": 0.3435,
+      "rejection_wilson95": [
+        0.3230054408123686,
+        0.364594616996592
+      ],
+      "ci_coverage": 0.925,
+      "coverage_wilson95": [
+        0.9126239148948881,
+        0.935746535144676
+      ],
+      "pass": false
+    },
+    {
+      "rows": 7000,
+      "tool": "ablation_effect (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 109.0,
+      "rejection_rate": 0.066,
+      "rejection_wilson95": [
+        0.055929228036718084,
+        0.07773483004052716
+      ],
+      "ci_coverage": 0.932,
+      "coverage_wilson95": [
+        0.9201180659341153,
+        0.9422255444590417
+      ],
+      "pass": false
+    },
+    {
+      "rows": 7000,
+      "tool": "interaction (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 51.0,
+      "rejection_rate": 0.061,
+      "rejection_wilson95": [
+        0.051328817937849644,
+        0.07235441131540071
+      ],
+      "ci_coverage": 0.9375,
+      "coverage_wilson95": [
+        0.926029488270428,
+        0.9472930338291233
+      ],
+      "pass": true
+    },
+    {
+      "rows": 7000,
+      "tool": "association (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 33.0,
+      "rejection_rate": 0.0565,
+      "rejection_wilson95": [
+        0.04720528543896546,
+        0.06749519787268952
+      ],
+      "ci_coverage": 0.942,
+      "coverage_wilson95": [
+        0.9308831809521418,
+        0.9514220870890047
+      ],
+      "pass": true
+    },
+    {
+      "rows": 7000,
+      "tool": "ablation_effect (alternative)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 109.0,
+      "rejection_rate": 0.8565,
+      "rejection_wilson95": [
+        0.8404511410405705,
+        0.871181954110264
+      ],
+      "ci_coverage": 0.9425,
+      "coverage_wilson95": [
+        0.931423506198168,
+        0.9518798447253781
+      ],
+      "pass": true
+    },
+    {
+      "rows": 20000,
+      "tool": "ablation_effect (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 312.0,
+      "rejection_rate": 0.0535,
+      "rejection_wilson95": [
+        0.04446603619344547,
+        0.06424594982381258
+      ],
+      "ci_coverage": 0.945,
+      "coverage_wilson95": [
+        0.9341283999249005,
+        0.9541653654106429
+      ],
+      "pass": true
+    },
+    {
+      "rows": 20000,
+      "tool": "interaction (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 149.0,
+      "rejection_rate": 0.0485,
+      "rejection_wilson95": [
+        0.03991995050443902,
+        0.05881120668882416
+      ],
+      "ci_coverage": 0.949,
+      "coverage_wilson95": [
+        0.9384682511147582,
+        0.9578101772799812
+      ],
+      "pass": true
+    },
+    {
+      "rows": 20000,
+      "tool": "association (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 94.0,
+      "rejection_rate": 0.0585,
+      "rejection_wilson95": [
+        0.04903588224276366,
+        0.06965693259848928
+      ],
+      "ci_coverage": 0.9405,
+      "coverage_wilson95": [
+        0.9292634653592508,
+        0.9500475540346974
+      ],
+      "pass": true
+    },
+    {
+      "rows": 20000,
+      "tool": "ablation_effect (alternative)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 312.0,
+      "rejection_rate": 0.9995,
+      "rejection_wilson95": [
+        0.9971730649772383,
+        0.9999117345398496
+      ],
+      "ci_coverage": 0.9405,
+      "coverage_wilson95": [
+        0.9292634653592508,
+        0.9500475540346974
+      ],
+      "pass": true
+    },
+    {
+      "rows": 100000,
+      "tool": "ablation_effect (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 1557.0,
+      "rejection_rate": 0.057,
+      "rejection_wilson95": [
+        0.04766261190747434,
+        0.06803595428658013
+      ],
+      "ci_coverage": 0.941,
+      "coverage_wilson95": [
+        0.929803163026387,
+        0.9505059392499606
+      ],
+      "pass": true
+    },
+    {
+      "rows": 100000,
+      "tool": "interaction (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 763.0,
+      "rejection_rate": 0.054,
+      "rejection_wilson95": [
+        0.044922002716516085,
+        0.06478806618314145
+      ],
+      "ci_coverage": 0.9435,
+      "coverage_wilson95": [
+        0.9325048021273105,
+        0.9527947145610346
+      ],
+      "pass": true
+    },
+    {
+      "rows": 100000,
+      "tool": "association (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 466.5,
+      "rejection_rate": 0.0535,
+      "rejection_wilson95": [
+        0.04446603619344547,
+        0.06424594982381258
+      ],
+      "ci_coverage": 0.9455,
+      "coverage_wilson95": [
+        0.9346700514001471,
+        0.9546217968177959
+      ],
+      "pass": true
+    },
+    {
+      "rows": 100000,
+      "tool": "ablation_effect (alternative)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 1557.0,
+      "rejection_rate": 1.0,
+      "rejection_wilson95": [
+        0.9980828823994873,
+        1.0
+      ],
+      "ci_coverage": 0.9355,
+      "coverage_wilson95": [
+        0.9238773493378977,
+        0.9454528412320556
+      ],
+      "pass": true
+    }
+  ],
+  "decision": {
+    "all_pass_from_rows": 20000,
+    "medians_at_that_scale": {
+      "ablation_effect (null)": 312.0,
+      "interaction (null)": 149.0,
+      "association (null)": 94.0,
+      "ablation_effect (alternative)": 312.0
+    },
+    "current_min_positives": 10,
+    "failures_above_current_min": 5,
+    "min_positives": 312
+  }
+}

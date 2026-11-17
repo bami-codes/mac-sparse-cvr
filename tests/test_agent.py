@@ -10,13 +10,13 @@ import json
 import numpy as np
 import polars as pl
 
-from cvr.agent.experiments import FEATURE_GROUPS, NEGATIVE_GROUP, PLACEBO_REPLICATES, Menu
+from cvr.agent.experiments import FEATURE_GROUPS, NEGATIVE_GROUP, NOISE_REPLICATES, TEST_MODEL_COMPARISON, Menu
 from cvr.agent.llm import AuditLog
 from cvr.agent.scripted import scripted_factory
 from cvr.agent.session import check_text, render_result, run
 
 
-def _menu(tmp_path, n=20_000):
+def _menu(tmp_path, n=60_000):
     tmp_path.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     users = rng.integers(0, 2_000, n) * 10_000
@@ -31,7 +31,7 @@ def _menu(tmp_path, n=20_000):
           "high_visual": rng.uniform(size=n) < 0.2, "p_full": p_full.astype(np.float32)}
     for g in FEATURE_GROUPS:
         df[f"p_no_{g}"] = (np.full(n, y.mean()) if g == "history_match" else p_full).astype(np.float32)
-    for r in range(PLACEBO_REPLICATES):
+    for r in range(NOISE_REPLICATES):
         df[f"p_full_noise_{r}"] = np.clip(p_full + rng.normal(0, 0.002, n), 0.001, 0.5).astype(np.float32)
     pl.DataFrame(df).write_parquet(tmp_path / "confirmation_predictions.parquet")
     (tmp_path / "precompute.json").write_text(json.dumps({"config": {"data": {"confirmation": ["a", "b"]}}}))
@@ -91,12 +91,12 @@ def test_numbers_come_from_code_and_llm_text_is_checked(tmp_path):
     assert check_text("효과 추정치는 +0.012345였다", "confirmed")["digits"] > 0
 
 
-def test_negative_control_status_and_placebo_calibration(tmp_path):
+def test_negative_control_status_and_training_sensitivity(tmp_path):
     summary, records, _ = _run(tmp_path, sessions=2, negative=2)
     nc = summary["negative_control"]
-    assert nc["selected_by_planner"] and nc["status"] in ("not confirmed", "wrongly confirmed")
-    pc = summary["placebo_calibration"]
-    assert pc["tests"] == 2 * PLACEBO_REPLICATES and pc["computable"] == pc["tests"]
+    assert nc["selected_by_planner"] and nc["status"] in ("not confirmed", "confirmed despite false evidence")
+    ts = summary["training_sensitivity"]
+    assert ts["comparisons"] == 2 * NOISE_REPLICATES and ts["computable"] == ts["comparisons"]
     # a run without the control session reports "not run", never "passed"
     s2, _, _ = _run(tmp_path / "again", sessions=1, negative=None)
     assert s2["negative_control"]["status"] == "not run"
@@ -123,15 +123,14 @@ def test_identifiers_are_not_numbers():
     assert check_text("효과는 0.0123이다", "not_confirmed")["digits"] > 0
 
 
-def test_model_comparisons_are_judged_against_the_placebo_null(tmp_path):
+def test_model_comparisons_use_the_fixed_model_bootstrap_and_report_sensitivity(tmp_path):
     menu = Menu(_menu(tmp_path / "menu"))
     r = menu.ablation_effect("history_match", "sparse_G1")
-    assert r["test"].startswith("training-variance") and r["placebo_replicates"] == PLACEBO_REPLICATES
-    assert r["effect_vs_placebo"] == r["estimate"] - r["placebo_mean"] and r["p_value"] < 0.05
+    assert r["test"] == TEST_MODEL_COMPARISON and r["estimate"] < 0 and r["p_value"] < 0.05
+    assert r["training_sensitivity"]["replicates"] == NOISE_REPLICATES and r["beyond_sensitivity_range"]
     neg = menu.ablation_effect(NEGATIVE_GROUP, "sparse_G1", replicate=0)
-    assert neg["placebo_replicates"] == PLACEBO_REPLICATES - 1  # judged against the OTHER noise replicates
-    pc = menu.placebo_calibration()
-    assert "rejections_adjusted_leave_one_out" in pc
+    assert neg["training_sensitivity"]["replicates"] == NOISE_REPLICATES - 1  # described by the OTHER replicates
+    assert "not the false-positive rate" in menu.training_sensitivity()["note"]
 
 
 def test_per_test_plan_items_normalize_and_validate():
@@ -149,17 +148,40 @@ def test_per_test_plan_items_normalize_and_validate():
     assert len(plan_schema(["history_match"])["properties"]["hypotheses"]["items"]["anyOf"]) == 4
 
 
-def test_rms_placebo_null_cannot_flip_a_zero_effect(tmp_path):
-    # run 2 artefact: placebo models trained longer, their mean (-2.5e-5) was subtracted, and an uninformative
-    # ablation (~0) became a "significant opposite" effect. The fixed-rounds menu uses an RMS null at zero.
+def test_noise_models_never_change_a_verdict(tmp_path):
+    # review of 23ac4b3: a normal-reference null built from 4-5 noise models rejected 8-9% of the time at
+    # nominal 5% (synthetic null). Noise models are now descriptive: moving them changes only the sensitivity.
     folder = _menu(tmp_path / "menu")
+    before = Menu(folder).ablation_effect("visual_similarity", "all")
     df = pl.read_parquet(folder / "confirmation_predictions.parquet")
-    shifted = {f"p_full_noise_{r}": (df["p_full"] * 0.999).cast(pl.Float32) for r in range(PLACEBO_REPLICATES)}
-    df.with_columns(**shifted).write_parquet(folder / "confirmation_predictions.parquet")
-    meta = json.loads((folder / "precompute.json").read_text())
-    for mode, can_flip in (("mean_shift", True), ("rms", False)):
-        (folder / "precompute.json").write_text(json.dumps(meta | {"placebo_null": mode}))
-        r = Menu(folder).ablation_effect("visual_similarity", "all")  # truly uninformative here: estimate 0
-        assert r["estimate"] == 0.0
-        if not can_flip:
-            assert r["effect_vs_placebo"] == 0.0 and r["p_value"] == 1.0
+    df.with_columns(**{f"p_full_noise_{r}": (df["p_full"] * 0.9).cast(pl.Float32)
+                       for r in range(NOISE_REPLICATES)}).write_parquet(folder / "confirmation_predictions.parquet")
+    after = Menu(folder).ablation_effect("visual_similarity", "all")  # truly uninformative here: estimate 0
+    assert after["training_sensitivity"]["max_abs"] != before["training_sensitivity"]["max_abs"]
+    assert all(after[k] == before[k] for k in ("estimate", "ci95", "p_value")) and after["estimate"] == 0.0
+
+
+class _Reporter:
+    def structured(self, system, user, schema, role, **kw):
+        return {"items": [{"id": x["id"], "interpretation": "실험 설계가 필요하다", "next_step": "실험을 계획한다"}
+                          for x in json.loads(user)], "overall": "설계만 계산했다"}
+
+
+def test_requests_that_differ_in_any_argument_are_different_tests(tmp_path):
+    # review of 23ac4b3: A/B requests for a 1% and a 10% effect shared one key; both reported the 1% sample size
+    from cvr.agent.session import call_key, normalize
+
+    base = {"claim_type": "causal", "test": "ab_test_design", "segment": "all", "evidence": ["E3"], "statement": "s"}
+    h1, h2 = normalize(base | {"id": 1, "relative_mde": 0.01}), normalize(base | {"id": 2, "relative_mde": 0.10})
+    assert call_key(h1) != call_key(h2)
+    folder = _menu(tmp_path / "menu")
+    plans = tmp_path / "plans.json"
+    plans.write_text(json.dumps([{"session": 1, "negative_control": False, "plan": {"hypotheses": [h1, h2]}}]))
+    summary = run(folder, tmp_path / "run", lambda k: _Reporter(), 1, None, from_plans=plans)
+    records = json.loads((tmp_path / "run" / "records.json").read_text())
+    menu = Menu(folder)
+    assert summary["unique_tests"] == 2
+    for rec, mde in zip(records, (0.01, 0.10)):
+        assert rec["result"]["relative_mde"] == mde
+        assert rec["result"]["clicks_per_arm"] == menu.ab_test_design("all", mde)["clicks_per_arm"]
+    assert records[0]["result"]["clicks_per_arm"] > records[1]["result"]["clicks_per_arm"]

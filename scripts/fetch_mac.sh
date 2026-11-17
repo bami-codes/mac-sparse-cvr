@@ -21,8 +21,9 @@ f = [i for i in items if i['path'] == rel][0]
 print(f['size'], f['lfs']['oid'])" "$meta" "$rel")
 
   for attempt in $(seq 1 12); do
-    # abort a stalled transfer (< 100 KB/s for 60 s) so the loop resumes it instead of hanging
-    curl -sL --retry 3 --speed-limit 100000 --speed-time 60 -C - -o "$dest" \
+    # abort a stalled transfer (< 100 KB/s for 60 s) or a connection that never opens (30 s), so the loop
+    # resumes it instead of hanging (a 0-byte connect stall happened twice for train-05 / train-07)
+    curl -sL --retry 3 --connect-timeout 30 --speed-limit 100000 --speed-time 60 -C - -o "$dest" \
       "https://huggingface.co/datasets/$REPO/resolve/main/$rel" || true
     [ "$(stat -f %z "$dest")" = "$size" ] && break
     echo "$rel: attempt $attempt incomplete ($(stat -f %z "$dest") / $size bytes)"

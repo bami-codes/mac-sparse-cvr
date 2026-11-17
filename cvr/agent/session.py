@@ -9,8 +9,10 @@ What the code decides (never the LLM):
   claim type; causal claims are never tested on observational data (routed to ab_test_design,
   verdict "needs_experiment");
 - statistics: tools return "insufficient_data" when an arm is too small or non-finite; such results never
-  enter the multiple-testing step; Benjamini-Hochberg (q = 0.05) over ALL unique tested hypotheses of the
-  run (the family is fixed by the frozen plans);
+  enter the multiple-testing step; a test is a tool call (tool name + every argument it runs with), each runs
+  once, and Benjamini-Hochberg (q = 0.05) covers ALL unique tested calls of the run (the family is fixed by
+  the frozen plans). Model comparisons are judged by the paired user bootstrap with the fitted models held
+  fixed; noise-model sensitivity is shown next to them and never changes a verdict;
 - every number in the report: result sentences are rendered by code from the tool output.
 What the LLM writes: an interpretation and a next step per hypothesis, with NO digits (checked). A keyword
 scan flags causal wording on non-experimental results; it is a heuristic guard, not a verification of meaning.
@@ -94,8 +96,8 @@ REPORT_SCHEMA = {"type": "object", "required": ["items", "overall"], "properties
 
 PLANNER_SYSTEM = """너는 광고 전환 분석가다. 주어진 근거 자료만 보고, 클릭한 사용자를 전환으로 이끄는 단서에 대한 검증 가능한 가설을 3~8개 제안한다.
 검증 방법(test)은 네 가지이고, 각각 검증하는 것이 다르다:
-- ablation_effect (claim_type=predictive): 특성 그룹(group)을 빼고 다시 학습하면 그 세그먼트에서 예측이 나빠지는가 = 그 그룹이 예측에 도움이 되는가.
-- interaction (claim_type=predictive): 특성 그룹의 도움이 segment에서 segment_b보다 더 큰가.
+- ablation_effect (claim_type=predictive): 같은 학습 조건(같은 데이터·시드·반복 횟수)에서 특성 그룹(group)을 빼고 학습한 모델이, 확증 자료의 그 세그먼트에서 전체 모델보다 LogLoss가 나쁜가. 이번에 학습한 두 모델의 비교이며, 그 특성이 일반적으로 전환 정보를 가진다는 증명은 아니다.
+- interaction (claim_type=predictive): 위 두 모델의 차이가 segment에서 segment_b보다 더 큰가.
 - association (claim_type=associational): 특성(feature)이 있는 클릭과 없는 클릭의 전환율이 다른가. direction에 전환율이 높을지(higher) 낮을지(lower)를 쓴다. 인과가 아니다.
 - ab_test_design (claim_type=causal): 무언가를 바꾸면 전환이 늘어나는지는 관측 데이터로 확인할 수 없으므로, 필요한 실험 규모만 계산한다.
 규칙:
@@ -108,14 +110,32 @@ REPORTER_SYSTEM = """너는 분석 보고서 작성자다. 가설별로 코드�
 - 숫자(아라비아 숫자)를 전혀 쓰지 않는다. 결과 수치와 판정 문장은 코드가 따로 붙인다.
 - 판정을 바꾸거나 더 강하게 표현하지 않는다. '확인되지 않음', '자료 부족', 'A/B 필요'인 가설을 사실처럼 쓰지 않는다.
 - associational 결과는 인과로 해석하지 않는다. 예측에 도움이 된다는 결과도 '바꾸면 전환이 늘어난다'는 뜻이 아니다.
+- predictive 결과는 '같은 학습 조건으로 한 번 학습한 두 모델의 확증 자료상 성능 차이'다. 다른 학습 실행이나 다른 날짜에서도 같다거나, 특성 자체가 전환 정보를 가진다는 뜻으로 넓히지 않는다. 결과 문장의 '학습 민감도'는 정보 없는 잡음 특성을 넣었을 때의 차이로, 판정에는 쓰이지 않은 참고 정보다.
 - interpretation에는 이 결과가 무엇을 뜻하고 무엇을 뜻하지 않는지, next_step에는 다음에 할 실험이나 확인을 한 문장씩 쓴다."""
 
 
 # ------------------------------------------------------------------ helpers
-def hypothesis_key(h: dict) -> tuple:
-    """Identity of a test: two hypotheses with the same key are the same comparison."""
-    return (h["claim_type"], h["tool"], h.get("group", "none"), h.get("feature", "none"), h["segment"],
-            h.get("segment_b", "none") if h["tool"] == "interaction" else "none", h["expected"])
+def tool_call(h: dict) -> tuple[str, dict]:
+    """The exact tool call a valid hypothesis runs: tool name and every argument. Execution and the test key
+    both come from here, so two requests that differ in any argument can never share a result (in review,
+    A/B requests for a 1% and a 10% effect shared one key and both got the 1% sample size)."""
+    if h["claim_type"] == "causal":  # always an experiment design, whatever observational tool was proposed
+        return "ab_test_design", {"segment": h["segment"], "relative_mde": float(h.get("relative_mde") or 0.05)}
+    if h["tool"] == "ablation_effect":
+        return "ablation_effect", {"group": h["group"], "segment": h["segment"]}
+    if h["tool"] == "interaction":
+        return "interaction", {"group": h["group"], "segment": h["segment"], "segment_b": h["segment_b"]}
+    return "association", {"feature": h["feature"], "segment": h["segment"]}
+
+
+def call_key(h: dict) -> str:
+    """Identity of a test (execution, deduplication, one BH entry): the tool call."""
+    return json.dumps(tool_call(h), sort_keys=True)
+
+
+def hypothesis_key(h: dict) -> str:
+    """Identity of a hypothesis for the stability metric: the test plus its claim type and expected direction."""
+    return json.dumps([h["claim_type"], h["expected"], tool_call(h)], sort_keys=True)
 
 
 def validate(h: dict, known_ev: set[str]) -> list[str]:
@@ -140,14 +160,8 @@ def validate(h: dict, known_ev: set[str]) -> list[str]:
 
 
 def run_tool(h: dict, menu: Menu) -> dict:
-    t = h["tool"]
-    if h["claim_type"] == "causal":
-        return menu.ab_test_design(h["segment"], float(h.get("relative_mde") or 0.05))
-    if t == "ablation_effect":
-        return menu.ablation_effect(h["group"], h["segment"])
-    if t == "interaction":
-        return menu.interaction(h["group"], h["segment"], h["segment_b"])
-    return menu.association(h["feature"], h["segment"])
+    name, args = tool_call(h)
+    return getattr(menu, name)(**args)
 
 
 def bh(p: np.ndarray, q: float = 0.05) -> tuple[np.ndarray, np.ndarray]:
@@ -175,14 +189,17 @@ def render_result(rec: dict) -> str:
                 f"그룹당 필요 클릭 {r['clicks_per_arm']:,} (설계 효과 {r['design_effect']:.2f} 반영, 독립 가정 시 "
                 f"{r['clicks_per_arm_iid']:,}){days}")
     unit = {"ablation_effect": "LogLoss 차이", "interaction": "제거 효과의 차이", "association": "전환율 차이"}[r["tool"]]
-    if "effect_vs_placebo" in r:  # retrained-model comparison: judged against the placebo (noise) null
-        lo, hi = r["ci95_vs_placebo"]
-        return (f"{head}. {unit} {r['estimate']:+.6f} (위약 평균 {r['placebo_mean']:+.6f}, 위약 {r['placebo_replicates']}개), "
-                f"위약 대비 효과 {r['effect_vs_placebo']:+.6f} [95% 근사 구간 {lo:+.6f}, {hi:+.6f}], "
-                f"BH 조정 p = {rec['bh_adjusted_p']:.3f}")
-    extra = (f", 전환율 {r['cvr_with']:.4f} vs {r['cvr_without']:.4f}" if r["tool"] == "association" else "")
-    return (f"{head}. {unit} {r['estimate']:+.6f} [95% CI {r['ci95'][0]:+.6f}, {r['ci95'][1]:+.6f}], "
-            f"BH 조정 p = {rec['bh_adjusted_p']:.3f}{extra}")
+    body = (f"{head}. {unit} {r['estimate']:+.6f} [95% CI {r['ci95'][0]:+.6f}, {r['ci95'][1]:+.6f}], "
+            f"BH 조정 p = {rec['bh_adjusted_p']:.3f}")
+    if r["tool"] == "association":
+        return body + f", 전환율 {r['cvr_with']:.4f} vs {r['cvr_without']:.4f}"
+    sens = r.get("training_sensitivity")
+    scope = " (고정 학습 조건으로 학습한 두 모델의 비교, 확증 자료 사용자 부트스트랩)"
+    if not sens:
+        return body + scope
+    where = "밖" if r["beyond_sensitivity_range"] else "안"
+    return (body + scope + f". 학습 민감도 (판정에 쓰지 않음): 잡음 특성 하나만 추가한 모델 {sens['replicates']}개의 "
+            f"같은 비교 최대 절댓값 {sens['max_abs']:.6f}, 이번 추정치는 그 범위 {where}")
 
 
 IDENTIFIER = re.compile(r"[A-Za-z_]+\d+[A-Za-z_\d]*")  # ad_feat1, sparse_G1, G1, E3: names, not numbers
@@ -223,11 +240,11 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
         for raw in p["plan"]["hypotheses"]:
             h = normalize(raw)
             issues = validate(h, known)
-            rec = {"session": p["session"], "hypothesis": h, "issues": issues, "key": list(hypothesis_key(h))}
+            rec = {"session": p["session"], "hypothesis": h, "issues": issues, "hypothesis_key": hypothesis_key(h)}
             if issues:
                 rec["verdict"] = "invalid"
             else:
-                key = hypothesis_key(h)
+                key = rec["key"] = call_key(h)
                 if key not in unique:
                     unique[key] = run_tool(h, menu)
                 rec["result"] = unique[key]
@@ -240,21 +257,20 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
                 else:
                     rec["verdict"] = None
             records.append(rec)
-    tested_keys = sorted({tuple(r["key"]) for r in records if r["verdict"] is None})
+    tested_keys = sorted({r["key"] for r in records if r["verdict"] is None})
     if tested_keys:
         sig, adj = bh(np.array([unique[k]["p_value"] for k in tested_keys]))
         bh_by_key = {k: (bool(s), float(a)) for k, s, a in zip(tested_keys, sig, adj)}
         for r in records:
             if r["verdict"] is None:
-                s, a = bh_by_key[tuple(r["key"])]
+                s, a = bh_by_key[r["key"]]
                 r["bh_significant"], r["bh_adjusted_p"] = s, a
                 want_negative = r["hypothesis"]["expected"] in ("group_helps", "group_helps_more_in_segment",
                                                                 "lower_cvr_with_feature")
-                eff = r["result"].get("effect_vs_placebo", r["result"]["estimate"])
                 if not s:
                     r["verdict"] = "not_confirmed"
                 else:
-                    r["verdict"] = "confirmed" if (eff < 0) == want_negative else "opposite_direction"
+                    r["verdict"] = "confirmed" if (r["result"]["estimate"] < 0) == want_negative else "opposite_direction"
 
     # 3) reports: LLM interpretation without digits + code-rendered results; checks
     reports = []
@@ -289,13 +305,13 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
 
 def summarize(plans, records, reports, unique, menu) -> dict:
     normal = [p["session"] for p in plans if not p["negative_control"]]
-    keysets = [{tuple(r["key"]) for r in records if r["session"] == s} for s in normal]
+    keysets = [{r["hypothesis_key"] for r in records if r["session"] == s} for s in normal]
     jacc = [len(a & b) / len(a | b) for i, a in enumerate(keysets) for b in keysets[i + 1:] if a | b]
     neg = [r for r in records if r["hypothesis"].get("group") == NEGATIVE_GROUP]
     items = [it for rep in reports for it in rep["items"]]
     return {
         "sessions": len(plans), "hypotheses": len(records), "unique_tests": len(unique),
-        "tested_in_bh_family": len({tuple(r["key"]) for r in records if "bh_adjusted_p" in r}),
+        "tested_in_bh_family": len({r["key"] for r in records if "bh_adjusted_p" in r}),
         "verdicts": {v: sum(r["verdict"] == v for r in records) for v in VERDICTS},
         "executable_share": float(np.mean([r["verdict"] != "invalid" for r in records])),
         "planner_rule_compliance": float(np.mean([not r["issues"] for r in records])),
@@ -309,14 +325,14 @@ def summarize(plans, records, reports, unique, menu) -> dict:
                              "verdicts": [r["verdict"] for r in neg],
                              "status": ("not run" if not any(p["negative_control"] for p in plans) else
                                         "not conducted (planner did not select it)" if not neg else
-                                        "wrongly confirmed" if any(r["verdict"] == "confirmed" for r in neg) else
-                                        "not confirmed")},
-        "placebo_calibration": menu.placebo_calibration(),
+                                        "confirmed despite false evidence" if any(r["verdict"] == "confirmed" for r in neg)
+                                        else "not confirmed")},
+        "training_sensitivity": menu.training_sensitivity(),
     }
 
 
 def render_markdown(reports: list[dict], summary: dict) -> str:
-    pc = summary["placebo_calibration"]
+    ts = summary["training_sensitivity"]
     lines = ["# Hypothesis agent run", "",
              f"- sessions {summary['sessions']}, hypotheses {summary['hypotheses']}, unique tests {summary['unique_tests']}, "
              f"BH family {summary['tested_in_bh_family']} (q = 0.05, one family for the whole run, plans frozen "
@@ -326,9 +342,10 @@ def render_markdown(reports: list[dict], summary: dict) -> str:
              f"LLM text with digits {summary['llm_text_with_digits']}, causal-word flags {summary['llm_text_causal_word_flags']}",
              f"- stability (mean Jaccard of tests across sessions) {summary['stability_mean_jaccard']}",
              f"- negative control: {summary['negative_control']['status']}",
-             f"- placebo calibration (pure-noise features, alpha {pc['alpha']}): evaluation-only test "
-             f"{pc['rejections']}/{pc['computable']} rejections (noise looked helpful in {pc['rejections_noise_helps']}); "
-             f"training-variance adjusted test (leave-one-out null) {pc['rejections_adjusted_leave_one_out']}/{pc['computable']}",
+             f"- training sensitivity (full + one noise feature vs full, same training conditions, alpha {ts['alpha']}, "
+             f"descriptive): {ts['different_at_alpha']}/{ts['computable']} comparisons differ (noise model better in "
+             f"{ts['noise_model_better_at_alpha']}), largest |difference| "
+             f"{'-' if ts['max_abs_estimate'] is None else format(ts['max_abs_estimate'], '.6f')}",
              ""]
     for rep in reports:
         lines += [f"## Session {rep['session']}", ""]
@@ -361,7 +378,7 @@ if __name__ == "__main__":
     if a.scripted:
         from .scripted import scripted_factory
 
-        factory = scripted_factory(audit)
+        factory = scripted_factory(audit, a.negative_control)
     else:
         def factory(k: int):
             return ClovaClient(audit, seed=k)

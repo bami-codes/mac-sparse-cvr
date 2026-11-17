@@ -1,16 +1,25 @@
 """Fixed experiment menu for the hypothesis agent, computed by code only.
 
-Split (docs/DESIGN.md §14): models are trained on DISCOVERY files (train-08, 09) and every tool
-is evaluated on CONFIRMATION files (train-10, 11), which no earlier study opened. The LLM sees
-only first-study evidence (other days); confirmation numbers exist only as tool outputs.
+Split (docs/DESIGN.md §14, files set in the config): models are trained on DISCOVERY files and every
+tool is evaluated on CONFIRMATION files. The LLM sees only first-study evidence (other days);
+confirmation numbers exist only as tool outputs.
 
-Pre-computed once (`precompute`): LightGBM (first-study settings) on all inputs and with one
-feature group removed at a time; predictions and segment flags on the confirmation rows.
-Tools (all with user-level bootstrap 95% intervals, B = 500):
-    ablation_effect(group, segment)       LogLoss(full) - LogLoss(without group); < 0: the group helps
+Pre-computed once (`precompute`): LightGBM on all inputs and with one feature group removed at a time;
+predictions and segment flags on the confirmation rows.
+Tools (all with paired user-level bootstrap 95% intervals, B = 500):
+    ablation_effect(group, segment)       LogLoss(full) - LogLoss(without group); < 0: the full model is better
     association(feature, segment)         CVR(feature present) - CVR(absent)  [associational only]
     interaction(group, segment, segment_b) ablation effect in segment minus in segment_b
     ab_test_design(segment, relative_mde) two-proportion sample size per arm and days of traffic
+
+Estimand of the model comparisons (ablation_effect, interaction): the mean confirmation LogLoss
+difference between the TWO MODELS THAT WERE TRAINED, under fixed training conditions. The bootstrap
+resamples confirmation users with the fitted models held fixed (inference conditional on the fit, as in
+LOCO, Lei et al. 2018 §6). It does not cover other training runs or other days, and it is not a test
+of whether a feature carries conversion information in general.
+Noise models (an uninformative extra feature, same training conditions) are a TRAINING SENSITIVITY
+analysis: they show how much held-out LogLoss moves when training changes without new information.
+They are reported next to each comparison and never enter a verdict.
 """
 
 import json
@@ -38,8 +47,10 @@ FEATURE_GROUPS = {
     "item_attributes": ["ad_feat3", "ad_feat4", "ad_feat5"],
 }
 NEGATIVE_GROUP = "user_score"  # shown to the planner in the negative-control session; backed by noise replicate 0
-PLACEBO_REPLICATES = 5
-MIN_ROWS, MIN_POSITIVES = 200, 10  # per compared arm; below this a tool returns insufficient_data
+NOISE_REPLICATES = 5
+# per compared arm; below this a tool returns insufficient_data. 312 positives: from the known-answer check
+# (docs/results/agent_bootstrap_check.md) - with fewer, the model-comparison bootstrap rejected 6.6-7.4% at 5%
+MIN_ROWS, MIN_POSITIVES = 200, 312
 SEGMENTS = ["all", "sparse_G1", "dense", "no_history", "has_history", "same_category_in_history",
             "no_same_category_in_history", "high_visual_similarity", "low_visual_similarity"]
 ASSOC_FEATURES = {  # binary feature -> expression on the confirmation frame
@@ -50,6 +61,7 @@ ASSOC_FEATURES = {  # binary feature -> expression on the confirmation frame
     "empty_history": pl.col("hist_empty") == 1,
 }
 BOOT_REPS, BOOT_SEED = 500, 20261118
+TEST_MODEL_COMPARISON = "paired user bootstrap, fitted models held fixed"
 
 
 def boot_p(reps: np.ndarray) -> float:
@@ -85,10 +97,10 @@ def precompute(config_path: str) -> Path:
     models = {"full": full} | {f"no_{g}": [c for c in full if c not in cols] for g, cols in FEATURE_GROUPS.items()}
     keep = conf.select("user_key", "y", GROUP_KEY, "group_class", "hist_empty", "match_ad_feat0", "match_ad_feat1",
                        "match_ad_feat2", "high_visual")
-    # placebo / negative control: independent random-noise features, seeded, unrelated to the label.
-    # Retraining with noise need not give exactly zero difference (training changes, finite evaluation
-    # sample), so several replicates are used to estimate how often the ablation test rejects under the null.
-    for r in range(PLACEBO_REPLICATES):
+    # training sensitivity / negative control: independent random-noise features, seeded, unrelated to the
+    # label. A model retrained with one of them is a different fitted model, so its held-out LogLoss can
+    # really differ from the full model's; the replicates show how large such differences are.
+    for r in range(NOISE_REPLICATES):
         rng = np.random.default_rng(cfg["seed"] + 100 + r)
         disc = disc.with_columns(pl.Series(f"noise_{r}", rng.uniform(size=disc.height)))
         conf = conf.with_columns(pl.Series(f"noise_{r}", rng.uniform(size=conf.height)))
@@ -109,8 +121,7 @@ def precompute(config_path: str) -> Path:
         print(f"{name}: {info[name]}", flush=True)
     keep.write_parquet(out / "confirmation_predictions.parquet")
     meta = {"config": cfg, "rows": {"discovery": disc.height, "confirmation": conf.height},
-            "fixed_rounds": fixed, "placebo_null": "rms" if fixed else "mean_shift",
-            "discovery_rate": float(disc["y"].mean()), "visual_threshold_q80_discovery": q80, "models": info,
+            "fixed_rounds": fixed, "discovery_rate": float(disc["y"].mean()), "visual_threshold_q80_discovery": q80, "models": info,
             "seconds": round(time.time() - t0, 1)}
     (out / "precompute.json").write_text(json.dumps(meta, indent=2, default=str))
     return out
@@ -125,8 +136,18 @@ class Menu:
     """
 
     def __init__(self, folder: Path):
-        self.df = pl.read_parquet(folder / "confirmation_predictions.parquet")
-        self.meta = json.loads((folder / "precompute.json").read_text())
+        self._setup(pl.read_parquet(folder / "confirmation_predictions.parquet"),
+                    json.loads((folder / "precompute.json").read_text()))
+
+    @classmethod
+    def from_frame(cls, df: pl.DataFrame, meta: dict) -> "Menu":
+        """Same tools on an in-memory frame (synthetic checks of the tests, scripts/agent_bootstrap_check.py)."""
+        menu = cls.__new__(cls)
+        menu._setup(df, meta)
+        return menu
+
+    def _setup(self, df: pl.DataFrame, meta: dict):
+        self.df, self.meta = df, meta
         users = self.df["user_key"].to_numpy()
         self._uidx = np.unique(users, return_inverse=True)[1]
         self._U = self._uidx.max() + 1
@@ -176,63 +197,46 @@ class Menu:
             return bce(y, self.df["p_full"].to_numpy()) - bce(y, self.df[f"p_no_{group}"].to_numpy())
         raise ValueError(f"unknown feature group {group!r}; allowed: {list(FEATURE_GROUPS)}")
 
-    def _eval_only(self, delta: np.ndarray, m: np.ndarray) -> tuple[float, np.ndarray]:
+    def _point(self, delta: np.ndarray, m: np.ndarray) -> float:
+        s, c = self._sums(delta, m)
+        return float(s.sum() / c.sum())
+
+    def _boot(self, delta: np.ndarray, m: np.ndarray) -> tuple[float, np.ndarray]:
+        """Paired user bootstrap of a mean row difference: the fitted models stay fixed, users are resampled."""
         s, c = self._sums(delta, m)
         return float(s.sum() / c.sum()), np.array([(w @ s) / (w @ c) for w in self._w])
 
-    def _placebo(self, segment: str, segment_b: str | None = None, exclude: int | None = None) -> np.ndarray:
-        """Estimates for 'retraining with an uninformative extra feature' (with minus without), per noise replicate."""
+    def _sensitivity(self, segment: str, segment_b: str | None = None, exclude: int | None = None) -> dict:
+        """The same comparison for 'full + one noise feature' vs 'full', per noise replicate (point estimates).
+
+        Descriptive only: how far held-out LogLoss moves when training changes without new information.
+        It is NOT a null distribution and never enters a verdict (a normal-reference test built from 4-5 such
+        replicates rejected 8-9% of the time at nominal 5% in a synthetic null; review of 23ac4b3)."""
         ma = self._seg(segment)
         mb = self._seg(segment_b) if segment_b else None
-        out = []
-        for r in range(PLACEBO_REPLICATES):
-            if r == exclude:
+        est = []
+        for r in range(NOISE_REPLICATES):
+            if r == exclude:  # the negative control is described by the OTHER noise replicates
                 continue
             d = self._loss_delta(NEGATIVE_GROUP, r)
-            a = self._eval_only(d, ma)[0]
-            out.append(a - self._eval_only(d, mb)[0] if mb is not None else a)
-        return np.array(out)
+            a = self._point(d, ma)
+            est.append(a - self._point(d, mb) if mb is not None else a)
+        return {"replicates": len(est), "estimates": est, "max_abs": float(np.max(np.abs(est))),
+                "meaning": "same comparison, full + one noise feature vs full (same training conditions); "
+                           "descriptive, not used in the verdict"}
 
-    def _train_adjusted(self, point: float, reps: np.ndarray, null: np.ndarray) -> dict:
-        """Compare a retrained-model difference with the placebo null.
-
-        The evaluation bootstrap treats the fitted models as fixed, so it misses the variation that retraining
-        alone causes (in the first agent run, pure-noise features were "significant" in 8 of 10 placebo tests).
-        Approximation: under the null, estimate ~ N(mean(null), var_boot + var_train), with var_train the
-        variance of the placebo estimates (plus its own uncertainty, var_train / R). Only R = 4-5 replicates.
-        """
-        mu0, sd_t = float(null.mean()), float(null.std(ddof=1))
-        if self.meta.get("placebo_null", "mean_shift") == "rms":
-            # fixed-rounds menus: centred at zero, the placebo mean square (bias + spread) is added to the
-            # variance; nothing is subtracted, so a placebo shift cannot flip the sign of an effect
-            ms = float(np.mean(null ** 2))
-            se = float(np.sqrt(reps.var() + ms * (1 + 1 / null.size)))
-            eff = point
-        else:  # earlier menus (runs 1-2), kept so their records reproduce
-            se = float(np.sqrt(reps.var() + sd_t ** 2 * (1 + 1 / null.size)))
-            eff = point - mu0
-        if se == 0:  # no variation at all: only an exactly zero effect is "no evidence"
-            z = 0.0 if eff == 0 else float(np.sign(eff)) * np.inf
-        else:
-            z = eff / se
-        return {"placebo_mean": mu0, "placebo_sd": sd_t, "placebo_rms": float(np.sqrt(np.mean(null ** 2))),
-                "placebo_null": self.meta.get("placebo_null", "mean_shift"), "placebo_replicates": int(null.size),
-                "effect_vs_placebo": eff, "ci95_vs_placebo": [eff - 1.96 * se, eff + 1.96 * se],
-                "p_value": float(2 * norm.sf(abs(z))), "test": "training-variance adjusted (placebo null)"}
-
-    def ablation_effect(self, group: str, segment: str, replicate: int = 0, adjust: bool = True) -> dict:
+    def ablation_effect(self, group: str, segment: str, replicate: int = 0, sensitivity: bool = True) -> dict:
         m = self._seg(segment)
         extra = {"group": group, "segment": segment, "rows": int(m.sum()),
-                 "meaning": "mean LogLoss(full) - LogLoss(without group); < 0 = group helps"}
+                 "meaning": "mean LogLoss(full) - LogLoss(without group) of the two fitted models; "
+                            "< 0 = the full model is better on these confirmation rows"}
         if (bad := self._arm_problem(segment, m)):
             return insufficient("ablation_effect", bad, **extra)
-        point, reps = self._eval_only(self._loss_delta(group, replicate), m)
-        out = self._finish("ablation_effect", point, reps, extra)
-        if out["status"] == "ok":
-            out["p_value_eval_only"] = out["p_value"]
-            if adjust:  # the negative control is judged against the OTHER noise replicates
-                out |= self._train_adjusted(point, reps, self._placebo(
-                    segment, exclude=replicate if group == NEGATIVE_GROUP else None))
+        point, reps = self._boot(self._loss_delta(group, replicate), m)
+        out = self._finish("ablation_effect", point, reps, extra | {"test": TEST_MODEL_COMPARISON})
+        if out["status"] == "ok" and sensitivity:
+            sens = self._sensitivity(segment, exclude=replicate if group == NEGATIVE_GROUP else None)
+            out |= {"training_sensitivity": sens, "beyond_sensitivity_range": abs(point) > sens["max_abs"]}
         return out
 
     def association(self, feature: str, segment: str) -> dict:
@@ -254,7 +258,8 @@ class Menu:
     def interaction(self, group: str, segment: str, segment_b: str) -> dict:
         ma, mb = self._seg(segment), self._seg(segment_b)
         extra = {"group": group, "segment": segment, "segment_b": segment_b,
-                 "meaning": "ablation effect in segment minus in segment_b; < 0 = group helps MORE in segment"}
+                 "meaning": "ablation effect in segment minus in segment_b (same two fitted models); "
+                            "< 0 = the full model gains MORE in segment"}
         if segment == segment_b:
             return insufficient("interaction", "segment and segment_b are the same", **extra)
         if (bad := self._arm_problem(segment, ma) or self._arm_problem(segment_b, mb)):
@@ -262,12 +267,12 @@ class Menu:
         d = self._loss_delta(group)
         sa, ca = self._sums(d, ma)
         sb, cb = self._sums(d, mb)
-        reps = np.array([(w @ sa) / (w @ ca) - (w @ sb) / (w @ cb) for w in self._w])
-        point = sa.sum() / ca.sum() - sb.sum() / cb.sum()
-        out = self._finish("interaction", point, reps, extra)
+        reps = np.array([(w @ sa) / (w @ ca) - (w @ sb) / (w @ cb) for w in self._w])  # same users in both arms
+        point = float(sa.sum() / ca.sum() - sb.sum() / cb.sum())
+        out = self._finish("interaction", point, reps, extra | {"test": TEST_MODEL_COMPARISON})
         if out["status"] == "ok":
-            out["p_value_eval_only"] = out["p_value"]
-            out |= self._train_adjusted(float(point), reps, self._placebo(segment, segment_b))
+            sens = self._sensitivity(segment, segment_b)
+            out |= {"training_sensitivity": sens, "beyond_sensitivity_range": abs(point) > sens["max_abs"]}
         return out
 
     def ab_test_design(self, segment: str, relative_mde: float, alpha: float = 0.05, power: float = 0.8) -> dict:
@@ -296,20 +301,26 @@ class Menu:
                 "days_at_50_50_split": float(2 * n / seg_daily) if seg_daily > 0 else None,
                 "meaning": "sample size to test a CAUSAL claim with a randomized experiment (approximation)"}
 
-    def placebo_calibration(self, segments: tuple[str, ...] = ("all", "sparse_G1"), alpha: float = 0.05) -> dict:
-        """How often the ablation test rejects for pure-noise features (null true), uncorrected alpha."""
+    def training_sensitivity(self, segments: tuple[str, ...] = ("all", "sparse_G1"), alpha: float = 0.05) -> dict:
+        """Each noise model vs the full model, with the same fixed-model bootstrap as every comparison.
+
+        A row with p < alpha is a real difference between two fitted models, not a false positive of the test:
+        it shows that an uninformative change to training alone moves held-out LogLoss that much. The error
+        rate of the test itself is checked on synthetic data with a known answer (scripts/agent_bootstrap_check.py).
+        """
         out = []
-        for r in range(PLACEBO_REPLICATES):
+        for r in range(NOISE_REPLICATES):
             for seg in segments:
-                res = self.ablation_effect(NEGATIVE_GROUP, seg, replicate=r)
+                res = self.ablation_effect(NEGATIVE_GROUP, seg, replicate=r, sensitivity=False)
                 out.append({"replicate": r, "segment": seg, "status": res["status"], "estimate": res.get("estimate"),
-                            "p_eval_only": res.get("p_value_eval_only"), "p_adjusted": res.get("p_value")})
+                            "ci95": res.get("ci95"), "p_value": res.get("p_value")})
         ok = [o for o in out if o["status"] == "ok"]
-        return {"tests": len(out), "computable": len(ok), "alpha": alpha,
-                "rejections": sum(o["p_eval_only"] < alpha for o in ok),
-                "rejections_noise_helps": sum(o["p_eval_only"] < alpha and o["estimate"] < 0 for o in ok),
-                "rejections_adjusted_leave_one_out": sum(o["p_adjusted"] < alpha for o in ok),
-                "note": "eval-only = fixed-model user bootstrap; adjusted = against the other noise replicates",
+        return {"comparisons": len(out), "computable": len(ok), "alpha": alpha,
+                "different_at_alpha": sum(o["p_value"] < alpha for o in ok),
+                "noise_model_better_at_alpha": sum(o["p_value"] < alpha and o["estimate"] < 0 for o in ok),
+                "max_abs_estimate": max((abs(o["estimate"]) for o in ok), default=None),
+                "note": "noise model minus full model, uncorrected alpha; describes training sensitivity, "
+                        "not the false-positive rate of the test",
                 "detail": out}
 
 
