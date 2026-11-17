@@ -66,3 +66,16 @@ name = "smooth100_l2"
 cat_smooth = 100.0
 min_data_per_group = 500
 cat_l2 = 50.0
+
+# M3: lightweight neural model referencing MAC BASE (settings fixed before any V2 result,
+# from the feasibility probe scripts/m3_probe.py)
+[models.m3]
+enabled = true
+variants = ["attn", "mean"]
+dim = 16
+epochs = 1
+batch = 4096
+lr = 0.001
+id_min_count = 2
+device = "cpu"
+threads = 8

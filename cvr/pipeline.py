@@ -9,6 +9,7 @@ on V2 only and frozen in selection.json before any test evaluation.
 import json
 import platform
 import resource
+import shutil
 import subprocess
 import sys
 import time
@@ -22,15 +23,18 @@ import polars as pl
 import scipy
 import sklearn
 
+from . import artifacts as A
 from . import groups as G
 from . import metrics as M
 from . import vocab as V
-from .calibration import FreqAware, GlobalPlatt, GroupShrunkPlatt
+from .calibration import FreqAware, GlobalPlatt, GroupShrunkPlatt, load_calibrators, save_calibrators
 from .features import featurize, read_raw
 from .models import GBDT, LogReg, SmoothedRate
-from .schema import CAT_INPUTS, GROUP_KEY, NUM_INPUTS, SHOP_KEY, VOCAB_COLS
+from .m3data import ID_COLS, OTHER_CATS, concat_arrays, count_ids, encode_m3, save_arrays
+from .schema import CAT_INPUTS, GROUP_KEY, NUM_INPUTS, SEQ_PAIRS, SHOP_KEY, VOCAB_COLS
 
 ROLES = ["train", "v1", "v2"]
+RELOAD_ROWS = 50_000  # V2 rows used to compare in-memory vs reloaded predictions
 
 
 def git_state() -> dict:
@@ -82,6 +86,7 @@ def mean_sd(xs: list[float]) -> dict:
 
 def main(config_path: str) -> Path:
     t0 = time.time()
+    git_at_start = git_state()  # recorded before any work, so later edits do not leak into provenance
     cfg = tomllib.loads(Path(config_path).read_text())
     run_dir = Path("runs") / cfg["name"] / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True)
@@ -100,12 +105,35 @@ def main(config_path: str) -> Path:
     del counts
     V.save(vocab, run_dir / "vocab")
     sizes = V.sizes(vocab)
+    # M3 has its own id vocabulary (targets AND purchase sequences); M1/M2 codes are untouched
+    m3c = cfg["models"].get("m3", {})
+    use_m3 = bool(m3c.get("enabled"))
+    if use_m3:
+        idc = None
+        for p, b in srcs["train"]:
+            frame = read_raw(p, b, user_pct, columns=[t for t, _ in SEQ_PAIRS] + [s for _, s in SEQ_PAIRS])
+            idc = count_ids(frame, idc)
+            del frame
+        id_vocab = V.build_vocab(idc, min_count=m3c["id_min_count"])
+        del idc
+        V.save(id_vocab, run_dir / "id_vocab")
     timings["vocab"] = time.time() - t0
 
-    # 2) compact features per role, all encoded with the same vocabulary
+    # 2) compact features per role, all encoded with the same vocabulary (+ M3 arrays from the same raw rows)
     data: dict[str, pl.DataFrame] = {}
+    arrays: dict = {}
     for role in ROLES:
-        data[role] = pl.concat([featurize(read_raw(p, b, user_pct), vocab) for p, b in srcs[role]])
+        parts, aparts = [], []
+        for p, b in srcs[role]:
+            raw = read_raw(p, b, user_pct)
+            f = featurize(raw, vocab)
+            parts.append(f)
+            if use_m3:
+                aparts.append(encode_m3(raw, f, id_vocab))
+            del raw
+        data[role] = pl.concat(parts)
+        if use_m3:
+            arrays[role] = concat_arrays(aparts) if len(aparts) > 1 else aparts[0]
     timings["features"] = time.time() - t0 - sum(timings.values())
 
     # 3) groups from training statistics only
@@ -119,10 +147,19 @@ def main(config_path: str) -> Path:
     group_summary["rows_by_class"] = {r: data[r]["group_class"].value_counts().sort("group_class").to_dicts()
                                       for r in ROLES}
 
-    # 4) base models
+    # 4) base models (first-seed models are saved and immediately reloaded to check predictions)
     mc = cfg["models"]
     preds: dict[str, dict[str, np.ndarray]] = {r: {} for r in ("v1", "v2")}
     fitted_info: dict[str, dict] = {}
+    models_dir = run_dir / "models"
+    models_dir.mkdir()
+    reload_check: dict[str, float] = {}
+
+    def v2_head() -> pl.DataFrame:
+        return data["v2"].head(RELOAD_ROWS)
+
+    def max_abs_diff(p_reloaded: np.ndarray, p_memory: np.ndarray) -> float:
+        return float(np.abs(p_reloaded - p_memory[: p_reloaded.size]).max())
     for name, key in (("M0a", GROUP_KEY), ("M0b", SHOP_KEY)):
         m = SmoothedRate.fit(data["train"], key)
         fitted_info[name] = {"key": key, "p0": m.p0, "prior_strength_m": m.m}
@@ -137,6 +174,9 @@ def main(config_path: str) -> Path:
                               "dims": lr.n_onehot + len(num_inputs), "seconds": time.time() - t1}
         for r in preds:
             preds[r][vname] = lr.predict(data[r])
+        if vname == "M1":
+            A.save_logreg(lr, models_dir / "M1")
+            reload_check["M1"] = max_abs_diff(A.load_logreg(models_dir / "M1").predict(v2_head()), preds["v2"]["M1"])
     # LightGBM: compare the PRE-DEFINED candidates with the first seed on V2 (raw primary metric),
     # then train every seed with the chosen candidate. Candidates override the shared `lgb` params.
     lgb_search = {}
@@ -164,6 +204,35 @@ def main(config_path: str) -> Path:
                                                "seconds": time.time() - t1}
             for r in preds:
                 preds[r][f"{vname}_s{seed}"] = gb.predict(data[r])
+            if vname == "M2" and seed == mc["seeds"][0]:
+                A.save_gbdt(gb, models_dir / f"M2_s{seed}")
+                reload_check[f"M2_s{seed}"] = max_abs_diff(
+                    A.load_gbdt(models_dir / f"M2_s{seed}").predict(v2_head()), preds["v2"][f"M2_s{seed}"])
+    # M3 variants run in a separate PyTorch-only process (cvr/m3_worker.py): this process uses LightGBM,
+    # and the two OpenMP runtimes crash or hang when used in one process on this machine.
+    m3_coverage = {}
+    if use_m3:
+        job = run_dir / "m3_job"
+        for r in ROLES:
+            save_arrays(arrays[r], job / r)
+        np.save(job / "y_train.npy", data["train"]["y"].to_numpy().astype(np.float32))
+        m3_coverage = {r: arrays[r].coverage for r in ROLES} | {"id_vocab_sizes": V.sizes(id_vocab),
+                                                                 "id_min_count": m3c["id_min_count"]}
+        arrays.clear()
+        (job / "job.json").write_text(json.dumps({
+            "variants": m3c["variants"], "seeds": mc["seeds"], "dim": m3c["dim"], "epochs": m3c["epochs"],
+            "batch": m3c["batch"], "lr": m3c["lr"], "device": m3c["device"], "threads": m3c["threads"],
+            "other_sizes": [sizes[c] for c in OTHER_CATS], "id_sizes": [V.sizes(id_vocab)[c] for c in ID_COLS],
+            "models_dir": str(models_dir), "reload_rows": RELOAD_ROWS}))
+        subprocess.run([sys.executable, "-m", "cvr.m3_worker", str(job)], check=True)
+        res = json.loads((job / "result.json").read_text())
+        for name, info in res["fitted"].items():
+            fitted_info[name] = info
+            for r in preds:
+                preds[r][name] = np.load(job / "preds" / f"{name}_{r}.npy")
+        reload_check |= res["reload_check"]
+        for r in ROLES:  # the input arrays are large; predictions and result.json are kept
+            shutil.rmtree(job / r)
     timings["models"] = time.time() - t0 - sum(timings.values())
 
     # 5) calibration on V1, evaluation on V2
@@ -172,22 +241,33 @@ def main(config_path: str) -> Path:
     g1_codes, g2_codes = v1[GROUP_KEY].to_numpy(), v2[GROUP_KEY].to_numpy()
     n1, n2 = v1["tr_clicks"].to_numpy(), v2["tr_clicks"].to_numpy()
     lambdas = cfg["calibration"]["lambdas"]
-    base_names = ["M1"] + [f"M2_s{s}" for s in mc["seeds"]]
+    # model families that can be selected as the base model (seed-matched lists of prediction keys)
+    fams = {"M1": ["M1"], "M2": [f"M2_s{s}" for s in mc["seeds"]]}
+    if use_m3:
+        fams |= {f"M3_{v}": [f"M3_{v}_s{s}" for s in mc["seeds"]] for v in m3c["variants"]}
+    base_names = [n for names in fams.values() for n in names]
+    g1m = v2["group_class"].to_numpy() == "G1"
     rows: dict[str, dict] = {}
+    g1_pred: dict[str, np.ndarray] = {}  # V2 G1-row predictions per "model|calibration" (for paired bootstraps)
+
+    def record(key: str, p: np.ndarray) -> None:
+        rows[key] = evaluate(v2, p)
+        g1_pred[key] = p[g1m]
+
     for name in ["M0a", "M0b"] + list(preds["v2"]):
-        rows[f"{name}|raw"] = evaluate(v2, preds["v2"][name])
+        record(f"{name}|raw", preds["v2"][name])
     cal_info: dict[str, dict] = {}
     for name in base_names:
         p1, p2 = preds["v1"][name], preds["v2"][name]
         glob = GlobalPlatt.fit(p1, y1)
-        rows[f"{name}|ii"] = evaluate(v2, glob.predict(p2))
+        record(f"{name}|ii", glob.predict(p2))
         for lam in lambdas:
             gs = GroupShrunkPlatt.fit(p1, y1, g1_codes, glob, lam)
-            rows[f"{name}|iii_lam{lam:g}"] = evaluate(v2, gs.predict(p2, g2_codes))
+            record(f"{name}|iii_lam{lam:g}", gs.predict(p2, g2_codes))
             cal_info[f"{name}|iii_lam{lam:g}"] = {"nonpositive_slopes": gs.n_nonpositive_slopes,
                                                   "converged": gs.converged, "groups": int(gs.group_ids.size)}
         fa = FreqAware.fit(p1, y1, n1)
-        rows[f"{name}|iv"] = evaluate(v2, fa.predict(p2, n2))
+        record(f"{name}|iv", fa.predict(p2, n2))
         cal_info[name] = {"ii": {"a": glob.a, "b": glob.b}, "iv": {"w": fa.w.tolist(), "w0": fa.w0}}
     timings["calibration"] = time.time() - t0 - sum(timings.values())
 
@@ -196,31 +276,45 @@ def main(config_path: str) -> Path:
         return rows[key]["G1"]["macro_logloss"]
 
     def seed_mean(family: str, suffix: str) -> float:
-        names = ["M1"] if family == "M1" else [f"M2_s{s}" for s in mc["seeds"]]
-        return float(np.mean([primary(f"{n}|{suffix}") for n in names]))
+        return float(np.mean([primary(f"{n}|{suffix}") for n in fams[family]]))
 
-    base = min(["M1", "M2"], key=lambda f: seed_mean(f, "raw"))
+    base = min(fams, key=lambda f: seed_mean(f, "raw"))
     lam = min(lambdas, key=lambda l: seed_mean(base, f"iii_lam{l:g}"))
     method = min([f"iii_lam{lam:g}", "iv"], key=lambda s: seed_mean(base, s))
     selection = {
         "selected_on": "V2 primary metric (G1 macro LogLoss), averaged over base-model seeds",
-        "base_model": base, "lambda_iii": lam, "calibration_method": method,
-        "seed_means": {f"{f}|{s}": seed_mean(f, s) for f in ("M1", "M2")
+        "base_candidates": list(fams), "base_model": base, "lambda_iii": lam, "calibration_method": method,
+        "seed_means": {f"{f}|{s}": seed_mean(f, s) for f in fams
                        for s in ["raw", "ii", "iv"] + [f"iii_lam{l:g}" for l in lambdas]},
         "groups": group_summary["definition"], "vocab_fingerprint": V.fingerprint(vocab),
+        "id_vocab_fingerprint": V.fingerprint(id_vocab) if use_m3 else None,
+        "lgb_params": lgb_params, "m3": m3c or None,
     }
 
-    # informational paired bootstrap on V2 (selection data, NOT a confirmatory test)
+    # save the calibrators (with the selected lambda) of every saved base model, then reload-check them
+    group_clicks = stats.select(GROUP_KEY, "tr_clicks")
+    for name in list(reload_check):
+        p1, p2h = preds["v1"][name], preds["v2"][name][:RELOAD_ROWS]
+        gl = GlobalPlatt.fit(p1, y1)
+        gsh, fah = GroupShrunkPlatt.fit(p1, y1, g1_codes, gl, lam), FreqAware.fit(p1, y1, n1)
+        save_calibrators(gl, gsh, fah, group_clicks, models_dir / f"calib_{name}")
+        gl2, gs2, fa2, _ = load_calibrators(models_dir / f"calib_{name}")
+        gh, nh = g2_codes[:RELOAD_ROWS], n2[:RELOAD_ROWS]
+        reload_check[f"calib_{name}"] = max(
+            float(np.abs(gl2.predict(p2h) - gl.predict(p2h)).max()),
+            float(np.abs(gs2.predict(p2h, gh) - gsh.predict(p2h, gh)).max()),
+            float(np.abs(fa2.predict(p2h, nh) - fah.predict(p2h, nh)).max()))
+
+    # informational paired bootstrap on V2 (selection data, NOT a confirmatory test). It covers the SAME
+    # seeds as the selection: every seed of the selected family, seed-paired, one user resample per replicate.
+    # Models are held fixed, so only the evaluation-user sampling uncertainty is covered.
     bs = cfg["bootstrap"]
-    first = "M1" if base == "M1" else f"M2_s{mc['seeds'][0]}"
-    glob = GlobalPlatt.fit(preds["v1"][first], y1)
-    p_ii = glob.predict(preds["v2"][first])
-    p_sel = (FreqAware.fit(preds["v1"][first], y1, n1).predict(preds["v2"][first], n2) if method == "iv" else
-             GroupShrunkPlatt.fit(preds["v1"][first], y1, g1_codes, glob, lam).predict(preds["v2"][first], g2_codes))
-    g1m = v2["group_class"].to_numpy() == "G1"
-    boot = M.paired_bootstrap_macro_diff(v2["y"].to_numpy()[g1m], p_sel[g1m], p_ii[g1m], g2_codes[g1m],
-                                         v2["user_key"].to_numpy()[g1m], bs["reps"], bs["seed"])
-    boot["note"] = f"{first}: selected ({method}) minus (ii) on V2 G1 rows; selection data, not a test"
+    y_g1, g_g1, u_g1 = v2["y"].to_numpy()[g1m], g2_codes[g1m], v2["user_key"].to_numpy()[g1m]
+    boot = M.paired_bootstrap_macro_diff(
+        y_g1, [g1_pred[f"{n}|{method}"] for n in fams[base]], [g1_pred[f"{n}|ii"] for n in fams[base]],
+        g_g1, u_g1, bs["reps"], bs["seed"])
+    boot["note"] = (f"{base} ({len(fams[base])} seed(s)): selected ({method}) minus (ii) on V2 G1 rows; "
+                    "selection data, not a test; models fixed (evaluation-user uncertainty only)")
 
     # purchase-history ablation (raw predictions): same model with vs without history inputs.
     # V2 is not used to choose anything in this comparison; M2 pairs seed k with seed k.
@@ -234,10 +328,19 @@ def main(config_path: str) -> Path:
             [preds["v2"][f"M2_nohist_s{s}"][g1m] for s in mc["seeds"]], g_g1, u_g1, bs["reps"], bs["seed"])
         for v in hist_ablation.values():
             v["note"] = "with minus without history inputs, raw predictions, V2 G1 rows; negative = history helps"
+
+    # M3 component comparison: attention vs mean pooling with identical inputs, seed-paired
+    m3_pooling = {}
+    if use_m3 and {"attn", "mean"} <= set(m3c["variants"]):
+        m3_pooling = M.paired_bootstrap_macro_diff(
+            v2["y"].to_numpy()[g1m], [preds["v2"][f"M3_attn_s{s}"][g1m] for s in mc["seeds"]],
+            [preds["v2"][f"M3_mean_s{s}"][g1m] for s in mc["seeds"]], g2_codes[g1m],
+            v2["user_key"].to_numpy()[g1m], bs["reps"], bs["seed"])
+        m3_pooling["note"] = "attention minus mean pooling, raw predictions, V2 G1 rows; negative = attention helps"
     timings["selection_bootstrap"] = time.time() - t0 - sum(timings.values())
 
     meta = {
-        "config": config_path, "git": git_state(), "created_utc": run_dir.name,
+        "config": config_path, "git": git_at_start, "created_utc": run_dir.name,
         "data": {r: [{"file": str(p), "buckets": b, "sha256": sha_of(p)} for p, b in srcs[r]] for r in ROLES},
         "smoke_user_pct": user_pct, "rows": {r: data[r].height for r in ROLES},
         "vocab": {"fingerprint": V.fingerprint(vocab), "sizes": sizes, "min_count": cfg["vocab"]["min_count"]},
@@ -247,8 +350,11 @@ def main(config_path: str) -> Path:
         "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
         "fitted": fitted_info, "calibration": cal_info,
     }
+    meta["m3_id_coverage"] = m3_coverage
+    meta["reload_check_max_abs_diff"] = reload_check | {"rows": RELOAD_ROWS}
     out = {"meta": meta, "groups": group_summary, "selection": selection, "lgb_search": lgb_search,
-           "v2_bootstrap_info": boot, "v2_history_ablation": hist_ablation, "v2_rows": rows}
+           "v2_bootstrap_info": boot, "v2_history_ablation": hist_ablation, "v2_m3_pooling": m3_pooling,
+           "v2_rows": rows}
     (run_dir / "results.json").write_text(json.dumps(out, indent=2, default=str))
     (run_dir / "selection.json").write_text(json.dumps(selection, indent=2, default=str))
     (run_dir / "results.md").write_text(render_markdown(out, mc["seeds"], lambdas))
@@ -273,7 +379,8 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     families = {"M0a": ["M0a"], "M0b": ["M0b"], "M1": ["M1"], "M1_nohist": ["M1_nohist"],
-                "M2": [f"M2_s{s}" for s in seeds], "M2_nohist": [f"M2_nohist_s{s}" for s in seeds]}
+                "M2": [f"M2_s{s}" for s in seeds], "M2_nohist": [f"M2_nohist_s{s}" for s in seeds],
+                "M3_attn": [f"M3_attn_s{s}" for s in seeds], "M3_mean": [f"M3_mean_s{s}" for s in seeds]}
     suffixes = ["raw", "ii"] + [f"iii_lam{l:g}" for l in lambdas] + ["iv"]
     for fam, names in families.items():
         for suf in suffixes:
@@ -301,6 +408,18 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
         lines.append(f"History ablation {fam} ({h['note']}): diff = {h['diff']:+.6f}, 95% CI "
                      f"[{h['ci95'][0]:+.6f}, {h['ci95'][1]:+.6f}], seed pairs {h['seed_pairs']}, "
                      f"per pair {[round(x, 6) for x in h['per_pair_diff']]}.")
+    mp = out.get("v2_m3_pooling") or {}
+    if mp:
+        lines.append(f"M3 pooling comparison ({mp['note']}): diff = {mp['diff']:+.6f}, 95% CI "
+                     f"[{mp['ci95'][0]:+.6f}, {mp['ci95'][1]:+.6f}], seed pairs {mp['seed_pairs']}, "
+                     f"per pair {[round(x, 6) for x in mp['per_pair_diff']]}.")
+    cov = meta.get("m3_id_coverage") or {}
+    if cov:
+        v2c = cov.get("v2", {})
+        v2c = v2c.get("per_file", [v2c])[0] if isinstance(v2c, dict) else {}
+        lines.append(f"M3 id vocabulary (min_count {cov['id_min_count']}): sizes "
+                     f"{ {k: cov['id_vocab_sizes'][k] for k in ('ad_feat0', 'ad_feat1', 'ad_feat2')} }; V2 unknown shares "
+                     f"{ {k: round(v['target_unknown_share'], 4) for k, v in v2c.items()} } (targets).")
     ls = out.get("lgb_search") or {}
     if ls:
         lines += ["", f"LightGBM candidates ({ls['rule']}; chosen **{ls['chosen']}**):"]

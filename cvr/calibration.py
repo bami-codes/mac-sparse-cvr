@@ -4,14 +4,18 @@
 (iii) GroupShrunkPlatt:  logit(p') = (a + da_g) * logit(p) + (b + db_g), with an L2 penalty
                          lam * sum(da_g^2 + db_g^2) pulling every group toward (ii)'s (a, b)
 (iv)  FreqAware:         logit(p') = w1 * logit(p) + w2 * log(1 + training clicks of g) + w0
+
+scikit-learn is imported only inside fit(), so serving / PyTorch processes that only predict
+do not load another OpenMP runtime.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+import polars as pl
 from scipy.optimize import minimize
 from scipy.special import expit
-from sklearn.linear_model import LogisticRegression
 
 EPS = 1e-7
 MIN_SLOPE = 1e-3
@@ -29,6 +33,8 @@ class GlobalPlatt:
 
     @classmethod
     def fit(cls, p: np.ndarray, y: np.ndarray) -> "GlobalPlatt":
+        from sklearn.linear_model import LogisticRegression
+
         lr = LogisticRegression(C=1e8, solver="lbfgs", max_iter=1000, tol=1e-10).fit(logit(p)[:, None], y)
         return cls(float(lr.coef_[0, 0]), float(lr.intercept_[0]))
 
@@ -91,8 +97,25 @@ class FreqAware:
 
     @classmethod
     def fit(cls, p: np.ndarray, y: np.ndarray, train_clicks: np.ndarray) -> "FreqAware":
+        from sklearn.linear_model import LogisticRegression
+
         lr = LogisticRegression(C=1e8, solver="lbfgs", max_iter=1000, tol=1e-10).fit(cls._x(p, train_clicks), y)
         return cls(lr.coef_[0].copy(), float(lr.intercept_[0]))
 
     def predict(self, p: np.ndarray, train_clicks: np.ndarray) -> np.ndarray:
         return expit(self._x(p, train_clicks) @ self.w + self.w0)
+
+
+def save_calibrators(glob: GlobalPlatt, gs: GroupShrunkPlatt, fa: FreqAware, group_clicks: pl.DataFrame,
+                     path: Path) -> None:
+    np.savez(path, a=glob.a, b=glob.b, lam=gs.lam, group_ids=gs.group_ids, da=gs.da, db=gs.db,
+             fa_w=fa.w, fa_w0=fa.w0)
+    group_clicks.write_parquet(path.with_suffix(".group_clicks.parquet"))
+
+
+def load_calibrators(path: Path) -> tuple[GlobalPlatt, GroupShrunkPlatt, FreqAware, pl.DataFrame]:
+    z = np.load(path.with_suffix(".npz"))
+    glob = GlobalPlatt(float(z["a"]), float(z["b"]))
+    gs = GroupShrunkPlatt(glob.a, glob.b, float(z["lam"]), z["group_ids"], z["da"], z["db"], 0, True)
+    fa = FreqAware(z["fa_w"], float(z["fa_w0"]))
+    return glob, gs, fa, pl.read_parquet(path.with_suffix(".group_clicks.parquet"))
