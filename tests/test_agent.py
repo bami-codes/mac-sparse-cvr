@@ -147,3 +147,19 @@ def test_per_test_plan_items_normalize_and_validate():
                      "test": "ablation_effect", "segment": "sparse_G1", "group": "history_match"})
     assert abl["expected"] == "group_helps" and any("not allowed" in i for i in validate(abl, {"E2"}))
     assert len(plan_schema(["history_match"])["properties"]["hypotheses"]["items"]["anyOf"]) == 4
+
+
+def test_rms_placebo_null_cannot_flip_a_zero_effect(tmp_path):
+    # run 2 artefact: placebo models trained longer, their mean (-2.5e-5) was subtracted, and an uninformative
+    # ablation (~0) became a "significant opposite" effect. The fixed-rounds menu uses an RMS null at zero.
+    folder = _menu(tmp_path / "menu")
+    df = pl.read_parquet(folder / "confirmation_predictions.parquet")
+    shifted = {f"p_full_noise_{r}": (df["p_full"] * 0.999).cast(pl.Float32) for r in range(PLACEBO_REPLICATES)}
+    df.with_columns(**shifted).write_parquet(folder / "confirmation_predictions.parquet")
+    meta = json.loads((folder / "precompute.json").read_text())
+    for mode, can_flip in (("mean_shift", True), ("rms", False)):
+        (folder / "precompute.json").write_text(json.dumps(meta | {"placebo_null": mode}))
+        r = Menu(folder).ablation_effect("visual_similarity", "all")  # truly uninformative here: estimate 0
+        assert r["estimate"] == 0.0
+        if not can_flip:
+            assert r["effect_vs_placebo"] == 0.0 and r["p_value"] == 1.0

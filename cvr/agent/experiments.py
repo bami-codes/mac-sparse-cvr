@@ -94,14 +94,22 @@ def precompute(config_path: str) -> Path:
         conf = conf.with_columns(pl.Series(f"noise_{r}", rng.uniform(size=conf.height)))
         models[f"full_noise_{r}"] = full + [f"noise_{r}"]
     info = {}
+    fixed = bool(cfg.get("fixed_rounds"))
+    params = cfg["lgb"] | ({"feature_fraction": 1.0, "bagging_fraction": 1.0, "bagging_freq": 0} if fixed else {})
+    rounds = None
     for name, inputs in models.items():
         t = time.time()
-        m = GBDT.fit(disc, cfg["lgb"], cfg["seed"], 2000, 50, inputs)
+        if fixed and rounds is not None:  # same budget and deterministic settings for every variant
+            m = GBDT.fit_fixed(disc, params, cfg["seed"], rounds, inputs)
+        else:
+            m = GBDT.fit(disc, params, cfg["seed"], 2000, 50, inputs)
+            rounds = m.rounds  # the full model fixes the budget (early stopping on discovery users only)
         keep = keep.with_columns(pl.Series(f"p_{name}", m.predict(conf).astype(np.float32)))
         info[name] = {"rounds": m.rounds, "seconds": round(time.time() - t, 1), "inputs": len(inputs)}
         print(f"{name}: {info[name]}", flush=True)
     keep.write_parquet(out / "confirmation_predictions.parquet")
     meta = {"config": cfg, "rows": {"discovery": disc.height, "confirmation": conf.height},
+            "fixed_rounds": fixed, "placebo_null": "rms" if fixed else "mean_shift",
             "discovery_rate": float(disc["y"].mean()), "visual_threshold_q80_discovery": q80, "models": info,
             "seconds": round(time.time() - t0, 1)}
     (out / "precompute.json").write_text(json.dumps(meta, indent=2, default=str))
@@ -194,10 +202,21 @@ class Menu:
         variance of the placebo estimates (plus its own uncertainty, var_train / R). Only R = 4-5 replicates.
         """
         mu0, sd_t = float(null.mean()), float(null.std(ddof=1))
-        se = float(np.sqrt(reps.var() + sd_t ** 2 * (1 + 1 / null.size)))
-        eff = point - mu0
-        z = eff / se
-        return {"placebo_mean": mu0, "placebo_sd": sd_t, "placebo_replicates": int(null.size),
+        if self.meta.get("placebo_null", "mean_shift") == "rms":
+            # fixed-rounds menus: centred at zero, the placebo mean square (bias + spread) is added to the
+            # variance; nothing is subtracted, so a placebo shift cannot flip the sign of an effect
+            ms = float(np.mean(null ** 2))
+            se = float(np.sqrt(reps.var() + ms * (1 + 1 / null.size)))
+            eff = point
+        else:  # earlier menus (runs 1-2), kept so their records reproduce
+            se = float(np.sqrt(reps.var() + sd_t ** 2 * (1 + 1 / null.size)))
+            eff = point - mu0
+        if se == 0:  # no variation at all: only an exactly zero effect is "no evidence"
+            z = 0.0 if eff == 0 else float(np.sign(eff)) * np.inf
+        else:
+            z = eff / se
+        return {"placebo_mean": mu0, "placebo_sd": sd_t, "placebo_rms": float(np.sqrt(np.mean(null ** 2))),
+                "placebo_null": self.meta.get("placebo_null", "mean_shift"), "placebo_replicates": int(null.size),
                 "effect_vs_placebo": eff, "ci95_vs_placebo": [eff - 1.96 * se, eff + 1.96 * se],
                 "p_value": float(2 * norm.sf(abs(z))), "test": "training-variance adjusted (placebo null)"}
 

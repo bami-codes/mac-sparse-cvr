@@ -123,5 +123,19 @@ class GBDT:
                          num_boost_round=rounds)
         return cls(full, inputs, rounds)
 
+    @classmethod
+    def fit_fixed(cls, train: pl.DataFrame, params: dict, seed: int, rounds: int, inputs: list[str],
+                  label: str = "y") -> "GBDT":
+        """Train on all rows with a GIVEN number of rounds (no early stopping), for ablation protocols where
+        every variant must share the same training budget so differences come from the inputs only."""
+        import lightgbm as lgb
+
+        assert_no_label_inputs(inputs)
+        cat_idx = [i for i, c in enumerate(inputs) if c in CAT_INPUTS]
+        X, y = train.select(inputs).to_numpy().astype(np.float64), train[label].to_numpy()
+        p = dict(params, seed=seed, objective="binary", deterministic=True, force_row_wise=True, verbose=-1)
+        booster = lgb.train(p, lgb.Dataset(X, y, categorical_feature=cat_idx, free_raw_data=True), num_boost_round=rounds)
+        return cls(booster, inputs, rounds)
+
     def predict(self, df: pl.DataFrame) -> np.ndarray:
         return self.booster.predict(df.select(self.inputs).to_numpy().astype(np.float64))
