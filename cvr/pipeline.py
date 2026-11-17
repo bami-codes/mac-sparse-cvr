@@ -27,6 +27,7 @@ from . import artifacts as A
 from . import groups as G
 from . import metrics as M
 from . import vocab as V
+from .checks import RELOAD_TOL, require_close
 from .calibration import FreqAware, GlobalPlatt, GroupShrunkPlatt, load_calibrators, save_calibrators
 from .features import featurize, read_raw
 from .models import GBDT, LogReg, SmoothedRate
@@ -158,8 +159,10 @@ def main(config_path: str) -> Path:
     def v2_head() -> pl.DataFrame:
         return data["v2"].head(RELOAD_ROWS)
 
-    def max_abs_diff(p_reloaded: np.ndarray, p_memory: np.ndarray) -> float:
-        return float(np.abs(p_reloaded - p_memory[: p_reloaded.size]).max())
+    def reload_diff(name: str, p_reloaded: np.ndarray, p_memory: np.ndarray) -> float:
+        """Max |reloaded - in-memory| on the V2 head; raises CheckFailed above RELOAD_TOL."""
+        return require_close(f"reload {name}", float(np.abs(p_reloaded - p_memory[: p_reloaded.size]).max()),
+                             RELOAD_TOL)
     for name, key in (("M0a", GROUP_KEY), ("M0b", SHOP_KEY)):
         m = SmoothedRate.fit(data["train"], key)
         fitted_info[name] = {"key": key, "p0": m.p0, "prior_strength_m": m.m}
@@ -174,9 +177,10 @@ def main(config_path: str) -> Path:
                               "dims": lr.n_onehot + len(num_inputs), "seconds": time.time() - t1}
         for r in preds:
             preds[r][vname] = lr.predict(data[r])
-        if vname == "M1":
-            A.save_logreg(lr, models_dir / "M1")
-            reload_check["M1"] = max_abs_diff(A.load_logreg(models_dir / "M1").predict(v2_head()), preds["v2"]["M1"])
+        # every model is saved so the final test can reuse exactly these fits
+        A.save_logreg(lr, models_dir / vname)
+        reload_check[vname] = reload_diff(vname, A.load_logreg(models_dir / vname).predict(v2_head()),
+                                          preds["v2"][vname])
     # LightGBM: compare the PRE-DEFINED candidates with the first seed on V2 (raw primary metric),
     # then train every seed with the chosen candidate. Candidates override the shared `lgb` params.
     lgb_search = {}
@@ -204,10 +208,10 @@ def main(config_path: str) -> Path:
                                                "seconds": time.time() - t1}
             for r in preds:
                 preds[r][f"{vname}_s{seed}"] = gb.predict(data[r])
-            if vname == "M2" and seed == mc["seeds"][0]:
-                A.save_gbdt(gb, models_dir / f"M2_s{seed}")
-                reload_check[f"M2_s{seed}"] = max_abs_diff(
-                    A.load_gbdt(models_dir / f"M2_s{seed}").predict(v2_head()), preds["v2"][f"M2_s{seed}"])
+            name = f"{vname}_s{seed}"
+            A.save_gbdt(gb, models_dir / name)
+            reload_check[name] = reload_diff(name, A.load_gbdt(models_dir / name).predict(v2_head()),
+                                             preds["v2"][name])
     # M3 variants run in a separate PyTorch-only process (cvr/m3_worker.py): this process uses LightGBM,
     # and the two OpenMP runtimes crash or hang when used in one process on this machine.
     m3_coverage = {}
@@ -230,7 +234,8 @@ def main(config_path: str) -> Path:
             fitted_info[name] = info
             for r in preds:
                 preds[r][name] = np.load(job / "preds" / f"{name}_{r}.npy")
-        reload_check |= res["reload_check"]
+        for name, diff in res["reload_check"].items():  # the worker already checked; re-check here too
+            reload_check[name] = require_close(f"reload {name}", diff, RELOAD_TOL)
         for r in ROLES:  # the input arrays are large; predictions and result.json are kept
             shutil.rmtree(job / r)
     timings["models"] = time.time() - t0 - sum(timings.values())
@@ -257,16 +262,20 @@ def main(config_path: str) -> Path:
     for name in ["M0a", "M0b"] + list(preds["v2"]):
         record(f"{name}|raw", preds["v2"][name])
     cal_info: dict[str, dict] = {}
+    cal_objs: dict[str, dict] = {}  # fitted calibrators, kept so the selected ones are saved without refitting
     for name in base_names:
         p1, p2 = preds["v1"][name], preds["v2"][name]
         glob = GlobalPlatt.fit(p1, y1)
         record(f"{name}|ii", glob.predict(p2))
+        cal_objs[name] = {"ii": glob, "iii": {}}
         for lam in lambdas:
             gs = GroupShrunkPlatt.fit(p1, y1, g1_codes, glob, lam)
+            cal_objs[name]["iii"][lam] = gs
             record(f"{name}|iii_lam{lam:g}", gs.predict(p2, g2_codes))
             cal_info[f"{name}|iii_lam{lam:g}"] = {"nonpositive_slopes": gs.n_nonpositive_slopes,
                                                   "converged": gs.converged, "groups": int(gs.group_ids.size)}
         fa = FreqAware.fit(p1, y1, n1)
+        cal_objs[name]["iv"] = fa
         record(f"{name}|iv", fa.predict(p2, n2))
         cal_info[name] = {"ii": {"a": glob.a, "b": glob.b}, "iv": {"w": fa.w.tolist(), "w0": fa.w0}}
     timings["calibration"] = time.time() - t0 - sum(timings.values())
@@ -293,17 +302,16 @@ def main(config_path: str) -> Path:
 
     # save the calibrators (with the selected lambda) of every saved base model, then reload-check them
     group_clicks = stats.select(GROUP_KEY, "tr_clicks")
-    for name in list(reload_check):
-        p1, p2h = preds["v1"][name], preds["v2"][name][:RELOAD_ROWS]
-        gl = GlobalPlatt.fit(p1, y1)
-        gsh, fah = GroupShrunkPlatt.fit(p1, y1, g1_codes, gl, lam), FreqAware.fit(p1, y1, n1)
+    for name in base_names:
+        p2h = preds["v2"][name][:RELOAD_ROWS]
+        gl, gsh, fah = cal_objs[name]["ii"], cal_objs[name]["iii"][lam], cal_objs[name]["iv"]
         save_calibrators(gl, gsh, fah, group_clicks, models_dir / f"calib_{name}")
         gl2, gs2, fa2, _ = load_calibrators(models_dir / f"calib_{name}")
         gh, nh = g2_codes[:RELOAD_ROWS], n2[:RELOAD_ROWS]
-        reload_check[f"calib_{name}"] = max(
+        reload_check[f"calib_{name}"] = require_close(f"reload calib_{name}", max(
             float(np.abs(gl2.predict(p2h) - gl.predict(p2h)).max()),
             float(np.abs(gs2.predict(p2h, gh) - gsh.predict(p2h, gh)).max()),
-            float(np.abs(fa2.predict(p2h, nh) - fah.predict(p2h, nh)).max()))
+            float(np.abs(fa2.predict(p2h, nh) - fah.predict(p2h, nh)).max())), RELOAD_TOL)
 
     # informational paired bootstrap on V2 (selection data, NOT a confirmatory test). It covers the SAME
     # seeds as the selection: every seed of the selected family, seed-paired, one user resample per replicate.

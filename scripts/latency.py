@@ -1,9 +1,9 @@
 """Online/offline consistency check and single-thread latency for the saved models of one run.
 
 For each saved base model (M1, first-seed M2 / M3 variants) with the run's selected calibration:
-1) consistency: the serving path (cvr/serving.py, pure python/numpy) and the evaluation path
-   (cvr/features.py + saved artifacts) must give the same features and calibrated predictions
-   on the same raw rows;
+1) consistency (hard check, cvr/checks.py): the serving path (cvr/serving.py, pure python/numpy)
+   and the evaluation path (cvr/features.py + saved artifacts) must give the same features and
+   calibrated predictions on the same raw rows; any mismatch raises before timing;
 2) latency: raw row dict -> mapping -> history features -> model -> calibration, in-process,
    single thread; batch=1 (1,000 requests) and batch=100 (100 requests). Network, feature-store
    lookups and parsing of the request are excluded.
@@ -26,6 +26,7 @@ import numpy as np
 import polars as pl
 import pyarrow.parquet as pq
 
+from cvr.checks import serving_consistency
 from cvr.features import RAW_COLUMNS, featurize, user_columns
 from cvr.m3data import encode_m3
 from cvr.schema import GROUP_KEY, NUM_INPUTS, VOCAB_COLS
@@ -64,10 +65,11 @@ def measure(run_dir: Path, v2_file: str, base: str, method: str) -> dict:
     feats = featurize(raw, load_vocab_frames(run_dir / "vocab"))
     server = Server(run_dir, base, method)
     codes, num = server.features(rows)
-    feat_diff = {"codes_mismatch": int(sum((codes[c] != feats[c].to_numpy()).sum() for c in VOCAB_COLS)),
-                 "num_max_abs_diff": float(np.abs(num - feats.select(NUM_INPUTS).to_numpy()).max())}
     online = server.predict(rows)
     offline = offline_predict(server, run_dir, raw, feats)
+    # hard check: raises CheckFailed (and stops before any timing) if the two paths disagree
+    consistency = serving_consistency(codes, {c: feats[c].to_numpy() for c in VOCAB_COLS},
+                                      num, feats.select(NUM_INPUTS).to_numpy(), online, offline)
     for _ in range(50):  # warm-up
         server.predict(rows[:1])
     b1 = []
@@ -81,15 +83,14 @@ def measure(run_dir: Path, v2_file: str, base: str, method: str) -> dict:
         t = time.perf_counter()
         server.predict(chunk)
         b100.append(1000 * (time.perf_counter() - t))
-    return {"feature_consistency": feat_diff,
-            "prediction_max_abs_diff_online_vs_offline": float(np.abs(online - offline).max()),
-            "batch1": pct(b1), "batch100": pct(b100)}
+    return {"consistency": consistency, "batch1": pct(b1), "batch100": pct(b100)}
 
 
 def main(run: str, v2_file: str) -> None:
     run_dir = Path(run)
     sel = selection(run_dir)
-    bases = sorted(p.stem for p in (run_dir / "models").glob("M*.json"))
+    # a served model is "base model + calibrator": measure every base that has saved calibrators
+    bases = sorted(p.name[len("calib_"):-len(".npz")] for p in (run_dir / "models").glob("calib_*.npz"))
     report = {"run": str(run_dir), "calibration_method": sel["calibration_method"], "rows": N_ROWS,
               "env": {"cpu": subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True,
                                             text=True).stdout.strip(),

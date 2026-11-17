@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .checks import RELOAD_TOL, require_close
 from .m3data import M3Arrays, load_arrays
 from .nn import M3Model, load_m3, save_m3
 
@@ -46,11 +47,13 @@ def main(job_dir: str) -> None:
             for r, p in preds.items():
                 np.save(job_path / "preds" / f"{name}_{r}.npy", p)
             result["fitted"][name] = m.info | {"seconds": time.time() - t}
-            if seed == job["seeds"][0]:
-                save_m3(m, job["other_sizes"], job["id_sizes"], models_dir / name)
-                k = min(job["reload_rows"], evals["v2"].n)
-                head = M3Arrays(*(np.asarray(getattr(evals["v2"], f)[:k]) for f in ("other", "target", "seq", "mm", "num")))
-                result["reload_check"][name] = float(np.abs(load_m3(models_dir / name).predict(head) - preds["v2"][:k]).max())
+            # every seed is saved so the final test can reuse exactly these fits
+            save_m3(m, job["other_sizes"], job["id_sizes"], models_dir / name)
+            k = min(job["reload_rows"], evals["v2"].n)
+            head = M3Arrays(*(np.asarray(getattr(evals["v2"], f)[:k]) for f in ("other", "target", "seq", "mm", "num")))
+            result["reload_check"][name] = require_close(
+                f"reload {name}", float(np.abs(load_m3(models_dir / name).predict(head) - preds["v2"][:k]).max()),
+                RELOAD_TOL)
             print(f"{name} done in {time.time() - t:.0f}s", flush=True)
     (job_path / "result.json").write_text(json.dumps(result, indent=2))
 
