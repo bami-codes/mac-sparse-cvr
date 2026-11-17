@@ -3,9 +3,11 @@
 ClovaClient calls HyperCLOVA X through the CLOVA Studio Chat Completions v3 API:
     POST https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-007
     Authorization: Bearer $CLOVASTUDIO_API_KEY
-Structured outputs (`responseFormat` with a JSON schema) are used for the planner; the JSON comes
-back as a string in result.message.content. The key is read from the environment only and is
-never written to disk or logs.
+Structured outputs (`responseFormat` with a JSON schema) are used for the planner and the reporter;
+reasoning is explicitly disabled (`thinking.effort = "none"`) because the docs do not allow reasoning
+together with structured outputs. The JSON comes back as a string in result.message.content.
+The key is read from $CLOVASTUDIO_API_KEY or, if unset, from ~/.config/clovastudio/api_key (outside the
+repository). It is never written to logs.
 
 ScriptedLLM returns fixed outputs so the whole pipeline can be tested without an API key.
 """
@@ -13,6 +15,7 @@ ScriptedLLM returns fixed outputs so the whole pipeline can be tested without an
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -38,8 +41,11 @@ class ClovaClient:
     def __init__(self, audit: AuditLog, model: str = "HCX-007", temperature: float = 0.3, seed: int = 0,
                  timeout: int = 120):
         self.key = os.environ.get("CLOVASTUDIO_API_KEY")
+        key_file = Path.home() / ".config" / "clovastudio" / "api_key"
+        if not self.key and key_file.exists():
+            self.key = key_file.read_text().strip()
         if not self.key:
-            raise LLMError("set CLOVASTUDIO_API_KEY (CLOVA Studio test or service API key)")
+            raise LLMError("set CLOVASTUDIO_API_KEY or write the key to ~/.config/clovastudio/api_key")
         self.audit, self.model, self.temperature, self.seed, self.timeout = audit, model, temperature, seed, timeout
 
     def _post(self, body: dict, role: str) -> str:
@@ -49,8 +55,14 @@ class ClovaClient:
             headers={"Authorization": f"Bearer {self.key}", "X-NCP-CLOVASTUDIO-REQUEST-ID": req_id,
                      "Content-Type": "application/json"})
         t = time.time()
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            out = json.loads(r.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                out = json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:  # keep the API's error message (never the key)
+            detail = e.read().decode(errors="replace")[:500]
+            self.audit.write({"role": role, "model": self.model, "request_id": req_id, "http_status": e.code,
+                              "error": detail, "request": body})
+            raise LLMError(f"HTTP {e.code}: {detail}") from e
         status = out.get("status", {}).get("code")
         content = (out.get("result") or {}).get("message", {}).get("content")
         self.audit.write({"role": role, "model": self.model, "request_id": req_id, "seconds": round(time.time() - t, 2),
@@ -63,7 +75,7 @@ class ClovaClient:
     def structured(self, system: str, user: str, schema: dict, role: str, max_tokens: int = 4096) -> dict:
         body = {"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "responseFormat": {"type": "json", "schema": schema}, "maxCompletionTokens": max_tokens,
-                "temperature": self.temperature, "seed": self.seed}
+                "thinking": {"effort": "none"}, "temperature": self.temperature, "seed": self.seed}
         text = self._post(body, role)
         try:
             return json.loads(text)

@@ -228,7 +228,7 @@ def evaluate_file(run: Path, eval_file: Path, mode: str) -> dict:
                       "overall_auc_selected_minus_ii": auc_drop, "auc_criterion_met": bool(auc_drop >= -0.002),
                       "G1_median_abs_ratio_dev": {"selected": cal_sel, "ii": cal_ii},
                       "group_calibration_criterion_met": bool(cal_sel <= cal_ii),
-                      "G1_bid_error_share": {"treatment": bid_t, "control": bid_c}}
+                      "G1_aggregate_error_share": {"treatment": bid_t, "control": bid_c}}
 
     # ---------------- secondary comparisons (pre-defined)
     secondary = {}
@@ -266,7 +266,7 @@ def render(r: dict, manifest: dict) -> str:
              f"{[round(x, 6) for x in p['per_pair_diff']]} → success: {p['success']}**",
              f"- overall AUC (selected − ii) {p['overall_auc_selected_minus_ii']:+.5f} (criterion met: {p['auc_criterion_met']}); "
              f"G1 median |O/E−1| treatment {p['G1_median_abs_ratio_dev']['selected']:.4f} vs control {p['G1_median_abs_ratio_dev']['ii']:.4f}; "
-             f"G1 bid-error share treatment {p['G1_bid_error_share']['treatment']:.4f} vs control {p['G1_bid_error_share']['control']:.4f}", "",
+             f"G1 group aggregate error sum|E-O|/sum O treatment {p['G1_aggregate_error_share']['treatment']:.4f} vs control {p['G1_aggregate_error_share']['control']:.4f}", "",
              "| family | calib | G1 macro LogLoss | G1exp macro LogLoss | AUC (non-missing) | GAUC | O/E (non-missing) |",
              "|---|---|---|---|---|---|---|"]
     fams = {"M1": ["M1"], "M1_nohist": ["M1_nohist"], "M2": [f"M2_s{s}" for s in seeds],

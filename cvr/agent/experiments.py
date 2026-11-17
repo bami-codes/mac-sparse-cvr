@@ -37,7 +37,9 @@ FEATURE_GROUPS = {
     "context": CTX_COLS,
     "item_attributes": ["ad_feat3", "ad_feat4", "ad_feat5"],
 }
-NEGATIVE_GROUP = "user_score"  # random noise feature: its true contribution is zero (negative control)
+NEGATIVE_GROUP = "user_score"  # shown to the planner in the negative-control session; backed by noise replicate 0
+PLACEBO_REPLICATES = 5
+MIN_ROWS, MIN_POSITIVES = 200, 10  # per compared arm; below this a tool returns insufficient_data
 SEGMENTS = ["all", "sparse_G1", "dense", "no_history", "has_history", "same_category_in_history",
             "no_same_category_in_history", "high_visual_similarity", "low_visual_similarity"]
 ASSOC_FEATURES = {  # binary feature -> expression on the confirmation frame
@@ -51,8 +53,13 @@ BOOT_REPS, BOOT_SEED = 500, 20261118
 
 
 def boot_p(reps: np.ndarray) -> float:
-    """Two-sided bootstrap p-value for 'estimate = 0', floored at 1 / BOOT_REPS."""
-    return float(max(2 * min((reps <= 0).mean(), (reps >= 0).mean()), 1 / BOOT_REPS))
+    """Two-sided bootstrap p-value for 'estimate = 0', floored at 1 / BOOT_REPS and capped at 1.
+    Callers must check that every replicate is finite first."""
+    return float(min(1.0, max(2 * min((reps <= 0).mean(), (reps >= 0).mean()), 1 / BOOT_REPS)))
+
+
+def insufficient(tool: str, reason: str, **kw) -> dict:
+    return {"tool": tool, "status": "insufficient_data", "reason": reason, **kw}
 
 
 def precompute(config_path: str) -> Path:
@@ -78,11 +85,14 @@ def precompute(config_path: str) -> Path:
     models = {"full": full} | {f"no_{g}": [c for c in full if c not in cols] for g, cols in FEATURE_GROUPS.items()}
     keep = conf.select("user_key", "y", GROUP_KEY, "group_class", "hist_empty", "match_ad_feat0", "match_ad_feat1",
                        "match_ad_feat2", "high_visual")
-    # negative control: a random-noise feature ("user_score"), seeded, unrelated to the label by construction
-    rng = np.random.default_rng(cfg["seed"] + 7)
-    disc = disc.with_columns(pl.Series("noise_score", rng.uniform(size=disc.height)))
-    conf = conf.with_columns(pl.Series("noise_score", rng.uniform(size=conf.height)))
-    models["full_noise"] = full + ["noise_score"]
+    # placebo / negative control: independent random-noise features, seeded, unrelated to the label.
+    # Retraining with noise need not give exactly zero difference (training changes, finite evaluation
+    # sample), so several replicates are used to estimate how often the ablation test rejects under the null.
+    for r in range(PLACEBO_REPLICATES):
+        rng = np.random.default_rng(cfg["seed"] + 100 + r)
+        disc = disc.with_columns(pl.Series(f"noise_{r}", rng.uniform(size=disc.height)))
+        conf = conf.with_columns(pl.Series(f"noise_{r}", rng.uniform(size=conf.height)))
+        models[f"full_noise_{r}"] = full + [f"noise_{r}"]
     info = {}
     for name, inputs in models.items():
         t = time.time()
@@ -99,7 +109,12 @@ def precompute(config_path: str) -> Path:
 
 
 class Menu:
-    """Loads the pre-computed confirmation predictions and answers tool calls."""
+    """Loads the pre-computed confirmation predictions and answers tool calls.
+
+    Every tool checks its compared arms first (rows >= MIN_ROWS and positives >= MIN_POSITIVES, finite
+    estimate and replicates). Otherwise it returns status "insufficient_data", which never reaches the
+    multiple-testing step.
+    """
 
     def __init__(self, folder: Path):
         self.df = pl.read_parquet(folder / "confirmation_predictions.parquet")
@@ -107,6 +122,7 @@ class Menu:
         users = self.df["user_key"].to_numpy()
         self._uidx = np.unique(users, return_inverse=True)[1]
         self._U = self._uidx.max() + 1
+        self._y = self.df["y"].to_numpy().astype(float)
         self.daily_clicks = self.df.height / len(self.meta["config"]["data"]["confirmation"])
 
     @property
@@ -117,7 +133,6 @@ class Menu:
             yield np.bincount(rng.integers(self._U, size=self._U), minlength=self._U)
 
     def _seg(self, segment: str) -> np.ndarray:
-        d = self.df
         expr = {
             "all": pl.lit(True), "sparse_G1": pl.col("group_class") == "G1", "dense": pl.col("group_class") == "dense",
             "no_history": pl.col("hist_empty") == 1, "has_history": pl.col("hist_empty") == 0,
@@ -127,75 +142,110 @@ class Menu:
         }
         if segment not in expr:
             raise ValueError(f"unknown segment {segment!r}; allowed: {SEGMENTS}")
-        return d.with_columns(expr[segment].alias("_seg"))["_seg"].to_numpy()  # with_columns broadcasts literals
+        return self.df.with_columns(expr[segment].alias("_seg"))["_seg"].to_numpy()  # broadcasts literals
 
-    def _boot(self, num: np.ndarray, den: np.ndarray, mask: np.ndarray) -> tuple[float, list[float], np.ndarray]:
-        """Ratio of sums sum(num)/sum(den) over `mask` rows, resampling users."""
-        n_u = np.bincount(self._uidx[mask], weights=num[mask], minlength=self._U)
-        d_u = np.bincount(self._uidx[mask], weights=den[mask], minlength=self._U)
-        point = float(n_u.sum() / d_u.sum())
-        reps = np.array([(w @ n_u) / (w @ d_u) for w in self._w])
-        return point, np.quantile(reps, [0.025, 0.975]).tolist(), reps
+    def _arm_problem(self, name: str, mask: np.ndarray) -> str | None:
+        rows, pos = int(mask.sum()), int(self._y[mask].sum())
+        if rows < MIN_ROWS or pos < MIN_POSITIVES:
+            return f"{name}: {rows} rows, {pos} positives (need >= {MIN_ROWS} rows and >= {MIN_POSITIVES} positives)"
+        return None
 
-    def _loss_diff(self, group: str, mask: np.ndarray) -> tuple[float, list[float], np.ndarray]:
-        y = self.df["y"].to_numpy().astype(float)
+    def _sums(self, values: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return (np.bincount(self._uidx[mask], weights=values[mask], minlength=self._U),
+                np.bincount(self._uidx[mask], minlength=self._U).astype(float))
+
+    def _finish(self, tool: str, point: float, reps: np.ndarray, extra: dict) -> dict:
+        if not (np.isfinite(point) and np.isfinite(reps).all()):
+            return insufficient(tool, "non-finite estimate or bootstrap replicates", **extra)
+        return {"tool": tool, "status": "ok", **extra, "estimate": float(point),
+                "ci95": np.quantile(reps, [0.025, 0.975]).tolist(), "p_value": boot_p(reps)}
+
+    def _loss_delta(self, group: str, replicate: int = 0) -> np.ndarray:
+        y = self._y
         if group == NEGATIVE_GROUP:  # with the noise feature minus without it
-            d = bce(y, self.df["p_full_noise"].to_numpy()) - bce(y, self.df["p_full"].to_numpy())
-        elif group in FEATURE_GROUPS:
-            d = bce(y, self.df["p_full"].to_numpy()) - bce(y, self.df[f"p_no_{group}"].to_numpy())
-        else:
-            raise ValueError(f"unknown feature group {group!r}; allowed: {list(FEATURE_GROUPS)}")
-        point, ci, reps = self._boot(d, np.ones_like(d), mask)
-        return point, ci, d, reps
+            return bce(y, self.df[f"p_full_noise_{replicate}"].to_numpy()) - bce(y, self.df["p_full"].to_numpy())
+        if group in FEATURE_GROUPS:
+            return bce(y, self.df["p_full"].to_numpy()) - bce(y, self.df[f"p_no_{group}"].to_numpy())
+        raise ValueError(f"unknown feature group {group!r}; allowed: {list(FEATURE_GROUPS)}")
 
-    def ablation_effect(self, group: str, segment: str) -> dict:
+    def ablation_effect(self, group: str, segment: str, replicate: int = 0) -> dict:
         m = self._seg(segment)
-        point, ci, _, reps = self._loss_diff(group, m)
-        return {"tool": "ablation_effect", "group": group, "segment": segment, "rows": int(m.sum()),
-                "estimate": point, "ci95": ci, "p_value": boot_p(reps), "meaning": "mean LogLoss(full) - LogLoss(without group); < 0 = group helps"}
+        extra = {"group": group, "segment": segment, "rows": int(m.sum()),
+                 "meaning": "mean LogLoss(full) - LogLoss(without group); < 0 = group helps"}
+        if (bad := self._arm_problem(segment, m)):
+            return insufficient("ablation_effect", bad, **extra)
+        s, c = self._sums(self._loss_delta(group, replicate), m)
+        reps = np.array([(w @ s) / (w @ c) for w in self._w])
+        return self._finish("ablation_effect", s.sum() / c.sum(), reps, extra)
 
     def association(self, feature: str, segment: str) -> dict:
         if feature not in ASSOC_FEATURES:
             raise ValueError(f"unknown feature {feature!r}; allowed: {list(ASSOC_FEATURES)}")
         m = self._seg(segment)
-        f = self.df.select(ASSOC_FEATURES[feature]).to_series().to_numpy()
-        y = self.df["y"].to_numpy().astype(float)
-        a = float(y[m & f].mean())
-        b = float(y[m & ~f].mean())
-        # interval of the difference with the same user resamples
-        ya, yb = (np.bincount(self._uidx[m & f], weights=y[m & f], minlength=self._U),
-                  np.bincount(self._uidx[m & ~f], weights=y[m & ~f], minlength=self._U))
-        na, nb = (np.bincount(self._uidx[m & f], minlength=self._U), np.bincount(self._uidx[m & ~f], minlength=self._U))
+        f = self.df.with_columns(ASSOC_FEATURES[feature].alias("_f"))["_f"].to_numpy()
+        a_m, b_m = m & f, m & ~f
+        extra = {"feature": feature, "segment": segment, "rows_with": int(a_m.sum()), "rows_without": int(b_m.sum()),
+                 "meaning": "CVR(feature) - CVR(no feature); associational, NOT causal"}
+        if (bad := self._arm_problem("with feature", a_m) or self._arm_problem("without feature", b_m)):
+            return insufficient("association", bad, **extra)
+        ya, na = self._sums(self._y, a_m)
+        yb, nb = self._sums(self._y, b_m)
+        extra |= {"cvr_with": float(ya.sum() / na.sum()), "cvr_without": float(yb.sum() / nb.sum())}
         reps = np.array([(w @ ya) / (w @ na) - (w @ yb) / (w @ nb) for w in self._w])
-        return {"tool": "association", "feature": feature, "segment": segment, "rows_with": int((m & f).sum()),
-                "rows_without": int((m & ~f).sum()), "cvr_with": a, "cvr_without": b, "estimate": a - b,
-                "ci95": np.quantile(reps, [0.025, 0.975]).tolist(), "p_value": boot_p(reps),
-                "meaning": "CVR(feature) - CVR(no feature); associational, NOT causal"}
+        return self._finish("association", extra["cvr_with"] - extra["cvr_without"], reps, extra)
 
     def interaction(self, group: str, segment: str, segment_b: str) -> dict:
         ma, mb = self._seg(segment), self._seg(segment_b)
-        _, _, d, _ = self._loss_diff(group, ma)
-        sa, ca_ = np.bincount(self._uidx[ma], weights=d[ma], minlength=self._U), np.bincount(self._uidx[ma], minlength=self._U)
-        sb, cb_ = np.bincount(self._uidx[mb], weights=d[mb], minlength=self._U), np.bincount(self._uidx[mb], minlength=self._U)
-        point = float(sa.sum() / ca_.sum() - sb.sum() / cb_.sum())
-        reps = np.array([(w @ sa) / (w @ ca_) - (w @ sb) / (w @ cb_) for w in self._w])
-        return {"tool": "interaction", "group": group, "segment": segment, "segment_b": segment_b,
-                "estimate": point, "ci95": np.quantile(reps, [0.025, 0.975]).tolist(), "p_value": boot_p(reps),
-                "meaning": "ablation effect in segment minus in segment_b; < 0 = group helps MORE in segment"}
+        extra = {"group": group, "segment": segment, "segment_b": segment_b,
+                 "meaning": "ablation effect in segment minus in segment_b; < 0 = group helps MORE in segment"}
+        if segment == segment_b:
+            return insufficient("interaction", "segment and segment_b are the same", **extra)
+        if (bad := self._arm_problem(segment, ma) or self._arm_problem(segment_b, mb)):
+            return insufficient("interaction", bad, **extra)
+        d = self._loss_delta(group)
+        sa, ca = self._sums(d, ma)
+        sb, cb = self._sums(d, mb)
+        reps = np.array([(w @ sa) / (w @ ca) - (w @ sb) / (w @ cb) for w in self._w])
+        return self._finish("interaction", sa.sum() / ca.sum() - sb.sum() / cb.sum(), reps, extra)
 
     def ab_test_design(self, segment: str, relative_mde: float, alpha: float = 0.05, power: float = 0.8) -> dict:
+        """Two-proportion sample size, inflated by a design effect for clicks clustered within users.
+
+        Approximation: the design effect is the user-bootstrap variance of the segment CVR divided by the
+        binomial variance; a real experiment would randomize users and be planned on its own data.
+        """
         if not 0 < relative_mde < 1:
             raise ValueError("relative_mde must be in (0, 1)")
         m = self._seg(segment)
-        p1 = float(self.df["y"].to_numpy()[m].mean())
+        extra = {"segment": segment, "relative_mde": relative_mde, "alpha": alpha, "power": power}
+        if (bad := self._arm_problem(segment, m)):
+            return insufficient("ab_test_design", bad, **extra)
+        y_u, n_u = self._sums(self._y, m)
+        p1 = float(y_u.sum() / n_u.sum())
+        boot_var = float(np.var([(w @ y_u) / (w @ n_u) for w in self._w]))
+        deff = max(1.0, boot_var / (p1 * (1 - p1) / m.sum()))
         p2 = p1 * (1 + relative_mde)
         z = norm.ppf(1 - alpha / 2) + norm.ppf(power)
-        n = int(np.ceil(z ** 2 * (p1 * (1 - p1) + p2 * (1 - p2)) / (p2 - p1) ** 2))
+        n_iid = int(np.ceil(z ** 2 * (p1 * (1 - p1) + p2 * (1 - p2)) / (p2 - p1) ** 2))
+        n = int(np.ceil(n_iid * deff))
         seg_daily = m.mean() * self.daily_clicks
-        return {"tool": "ab_test_design", "segment": segment, "baseline_cvr": p1, "relative_mde": relative_mde,
-                "alpha": alpha, "power": power, "clicks_per_arm": n,
+        return {"tool": "ab_test_design", "status": "ok", **extra, "baseline_cvr": p1, "design_effect": deff,
+                "clicks_per_arm_iid": n_iid, "clicks_per_arm": n,
                 "days_at_50_50_split": float(2 * n / seg_daily) if seg_daily > 0 else None,
-                "meaning": "two-proportion z-test sample size; needed to test a CAUSAL claim with a randomized experiment"}
+                "meaning": "sample size to test a CAUSAL claim with a randomized experiment (approximation)"}
+
+    def placebo_calibration(self, segments: tuple[str, ...] = ("all", "sparse_G1"), alpha: float = 0.05) -> dict:
+        """How often the ablation test rejects for pure-noise features (null true), uncorrected alpha."""
+        out = []
+        for r in range(PLACEBO_REPLICATES):
+            for seg in segments:
+                res = self.ablation_effect(NEGATIVE_GROUP, seg, replicate=r)
+                out.append({"replicate": r, "segment": seg, "status": res["status"],
+                            "estimate": res.get("estimate"), "p_value": res.get("p_value")})
+        ok = [o for o in out if o["status"] == "ok"]
+        return {"tests": len(out), "computable": len(ok), "alpha": alpha,
+                "rejections": sum(o["p_value"] < alpha for o in ok),
+                "rejections_noise_helps": sum(o["p_value"] < alpha and o["estimate"] < 0 for o in ok), "detail": out}
 
 
 if __name__ == "__main__":
