@@ -85,6 +85,9 @@ def test_numbers_come_from_code_and_llm_text_is_checked(tmp_path):
     sentence = render_result(rec)
     assert f"{rec['result']['estimate']:+.6f}" in sentence  # sign and value come from the tool output
     assert summary["llm_text_with_digits"] == 0 and summary["llm_text_causal_word_flags"] == 0
+    assert summary["items_missing_from_report"] == 0  # the checks above saw real text (test double bug, fixed)
+    reports = json.loads((out / "reports.json").read_text())
+    assert all(it["interpretation"] for rep in reports for it in rep["items"])
     # what the review injected into a report: a sign flip / invented number and a causal claim
     bad = check_text("광고 이미지를 바꾸면 전환율이 15% 상승한다는 인과 효과가 입증됐다", "not_confirmed")
     assert bad["digits"] > 0 and {"인과", "입증"} <= set(bad["causal_words"])
@@ -94,7 +97,9 @@ def test_numbers_come_from_code_and_llm_text_is_checked(tmp_path):
 def test_negative_control_status_and_training_sensitivity(tmp_path):
     summary, records, _ = _run(tmp_path, sessions=2, negative=2)
     nc = summary["negative_control"]
-    assert nc["selected_by_planner"] and nc["status"] in ("not confirmed", "confirmed despite false evidence")
+    assert nc["selected_by_planner"] and nc["status"] in ("planted false claim not confirmed",
+                                                          "planted false claim confirmed (not caught)")
+    assert "does not detect" in nc["note"]
     ts = summary["training_sensitivity"]
     assert ts["comparisons"] == 2 * NOISE_REPLICATES and ts["computable"] == ts["comparisons"]
     # a run without the control session reports "not run", never "passed"
@@ -185,3 +190,47 @@ def test_requests_that_differ_in_any_argument_are_different_tests(tmp_path):
         assert rec["result"]["relative_mde"] == mde
         assert rec["result"]["clicks_per_arm"] == menu.ab_test_design("all", mde)["clicks_per_arm"]
     assert records[0]["result"]["clicks_per_arm"] > records[1]["result"]["clicks_per_arm"]
+
+
+def test_verdict_answers_the_code_question_not_the_planner_sentence(tmp_path):
+    # review of c421398: a statement saying the OPPOSITE of what the tool tests was reported "confirmed" with
+    # 100% rule compliance. The verdict now attaches to a code-written question; LLM text is shown as unverified.
+    from cvr.agent.session import normalize
+
+    h = normalize({"id": 1, "statement": "구매 이력 특성을 포함한 모델은 제외한 모델보다 확증 자료의 LogLoss가 높다.",
+                   "claim_type": "predictive", "evidence": ["E2"], "test": "ablation_effect",
+                   "group": "history_match", "segment": "sparse_G1"})
+    folder = _menu(tmp_path / "menu")
+    plans = tmp_path / "plans.json"
+    plans.write_text(json.dumps([{"session": 1, "negative_control": False, "plan": {"hypotheses": [h]}}]))
+    summary = run(folder, tmp_path / "run", lambda k: _Reporter(), 1, None, from_plans=plans)
+    rec = json.loads((tmp_path / "run" / "records.json").read_text())[0]
+    assert rec["verdict"] == "confirmed" and rec["result"]["estimate"] < 0
+    assert "넣은 모델의 확증 자료 평균 LogLoss가 뺀 모델보다 낮은가" in rec["test_question"]
+    md = (tmp_path / "run" / "report.md").read_text()
+    assert "검정 질문 (코드)" in md and "플래너 제안 문장 (LLM, 의미 검증 안 함)" in md
+    assert "NOT verified" in summary["verdict_scope"] and "planner_structural_compliance" in summary
+
+
+def test_user_bootstrap_needs_more_than_one_user(tmp_path):
+    # review of c421398: 60,000 clicks from ONE user passed the row/positive gate and gave a zero-width
+    # interval with p = 0.002
+    df = pl.read_parquet(_menu(tmp_path / "menu") / "confirmation_predictions.parquet")
+    meta = {"config": {"data": {"confirmation": ["synthetic"]}}}
+    one = Menu.from_frame(df.with_columns(pl.lit(0).alias("user_key")), meta)
+    r = one.ablation_effect("history_match", "all", sensitivity=False)
+    assert r["status"] == "insufficient_data" and r["arms"]["all"]["users"] == 1 and "p_value" not in r
+    ok = Menu.from_frame(df, meta).ablation_effect("history_match", "all", sensitivity=False)
+    a = ok["arms"]["all"]
+    assert ok["status"] == "ok" and a["users"] > 1000 and 0 < a["max_user_positive_share"] < 0.05
+    assert a["converting_users"] <= a["users"] and a["effective_users"] <= a["users"]
+
+
+def test_gate_is_an_explicit_parameter(tmp_path):
+    # the synthetic check must state which gate it used: same data, different gate, different computable set
+    df = pl.read_parquet(_menu(tmp_path / "menu") / "confirmation_predictions.parquet").head(3000)
+    meta = {"config": {"data": {"confirmation": ["synthetic"]}}}
+    default = Menu.from_frame(df, meta).ablation_effect("history_match", "all", sensitivity=False)
+    loose = Menu.from_frame(df, meta, min_positives=10, min_users=1).ablation_effect("history_match", "all",
+                                                                                     sensitivity=False)
+    assert default["status"] == "insufficient_data" and loose["status"] == "ok"

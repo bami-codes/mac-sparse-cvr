@@ -48,9 +48,13 @@ FEATURE_GROUPS = {
 }
 NEGATIVE_GROUP = "user_score"  # shown to the planner in the negative-control session; backed by noise replicate 0
 NOISE_REPLICATES = 5
-# per compared arm; below this a tool returns insufficient_data. 312 positives: from the known-answer check
-# (docs/results/agent_bootstrap_check.md) - with fewer, the model-comparison bootstrap rejected 6.6-7.4% at 5%
-MIN_ROWS, MIN_POSITIVES = 200, 312
+# Per compared arm; below these a tool returns insufficient_data (the operating gate).
+# - 312 positives: a PROVISIONAL threshold from one synthetic configuration (docs/results/agent_bootstrap_check.md:
+#   with fewer, the model-comparison bootstrap rejected 6.6-7.4% at 5%). Not a general sample-size guarantee.
+# - 2 users and 2 converting users: blocks only the obviously degenerate cases of a USER bootstrap (with one user
+#   every resample is identical: zero-width interval, p at its floor). Users, converting users and concentration
+#   are reported for every arm; no claim is made that these floors are sufficient.
+MIN_ROWS, MIN_POSITIVES, MIN_USERS = 200, 312, 2
 SEGMENTS = ["all", "sparse_G1", "dense", "no_history", "has_history", "same_category_in_history",
             "no_same_category_in_history", "high_visual_similarity", "low_visual_similarity"]
 ASSOC_FEATURES = {  # binary feature -> expression on the confirmation frame
@@ -135,19 +139,22 @@ class Menu:
     multiple-testing step.
     """
 
-    def __init__(self, folder: Path):
+    def __init__(self, folder: Path, **gate):
         self._setup(pl.read_parquet(folder / "confirmation_predictions.parquet"),
-                    json.loads((folder / "precompute.json").read_text()))
+                    json.loads((folder / "precompute.json").read_text()), **gate)
 
     @classmethod
-    def from_frame(cls, df: pl.DataFrame, meta: dict) -> "Menu":
+    def from_frame(cls, df: pl.DataFrame, meta: dict, **gate) -> "Menu":
         """Same tools on an in-memory frame (synthetic checks of the tests, scripts/agent_bootstrap_check.py)."""
         menu = cls.__new__(cls)
-        menu._setup(df, meta)
+        menu._setup(df, meta, **gate)
         return menu
 
-    def _setup(self, df: pl.DataFrame, meta: dict):
+    def _setup(self, df: pl.DataFrame, meta: dict, min_rows: int = MIN_ROWS, min_positives: int = MIN_POSITIVES,
+               min_users: int = MIN_USERS):
         self.df, self.meta = df, meta
+        self.gate = {"min_rows": min_rows, "min_positives": min_positives, "min_users": min_users,
+                     "min_converting_users": min_users}
         users = self.df["user_key"].to_numpy()
         self._uidx = np.unique(users, return_inverse=True)[1]
         self._U = self._uidx.max() + 1
@@ -173,11 +180,28 @@ class Menu:
             raise ValueError(f"unknown segment {segment!r}; allowed: {SEGMENTS}")
         return self.df.with_columns(expr[segment].alias("_seg"))["_seg"].to_numpy()  # broadcasts literals
 
-    def _arm_problem(self, name: str, mask: np.ndarray) -> str | None:
-        rows, pos = int(mask.sum()), int(self._y[mask].sum())
-        if rows < MIN_ROWS or pos < MIN_POSITIVES:
-            return f"{name}: {rows} rows, {pos} positives (need >= {MIN_ROWS} rows and >= {MIN_POSITIVES} positives)"
-        return None
+    def _arm_stats(self, mask: np.ndarray) -> dict:
+        """Size and concentration of one compared arm, in the unit the bootstrap resamples (users)."""
+        clicks = np.bincount(self._uidx[mask], minlength=self._U)
+        pos = np.bincount(self._uidx[mask], weights=self._y[mask], minlength=self._U)
+        rows, positives = int(clicks.sum()), int(pos.sum())
+        return {"rows": rows, "positives": positives, "users": int((clicks > 0).sum()),
+                "converting_users": int((pos > 0).sum()),
+                "max_user_click_share": float(clicks.max() / rows) if rows else None,
+                "max_user_positive_share": float(pos.max() / positives) if positives else None,
+                "effective_users": float(rows ** 2 / (clicks.astype(float) ** 2).sum()) if rows else 0.0}
+
+    def _check(self, **arms: np.ndarray) -> tuple[str | None, dict]:
+        """Operating gate for every compared arm: (first problem or None, per-arm statistics)."""
+        g, stats, problems = self.gate, {}, []
+        for name, mask in arms.items():
+            st = stats[name] = self._arm_stats(mask)
+            if (st["rows"] < g["min_rows"] or st["positives"] < g["min_positives"] or st["users"] < g["min_users"]
+                    or st["converting_users"] < g["min_converting_users"]):
+                problems.append(f"{name}: {st['rows']} rows, {st['positives']} positives, {st['users']} users, "
+                                f"{st['converting_users']} converting users (need >= {g['min_rows']}, "
+                                f">= {g['min_positives']}, >= {g['min_users']}, >= {g['min_converting_users']})")
+        return (problems[0] if problems else None), stats
 
     def _sums(self, values: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return (np.bincount(self._uidx[mask], weights=values[mask], minlength=self._U),
@@ -186,6 +210,8 @@ class Menu:
     def _finish(self, tool: str, point: float, reps: np.ndarray, extra: dict) -> dict:
         if not (np.isfinite(point) and np.isfinite(reps).all()):
             return insufficient(tool, "non-finite estimate or bootstrap replicates", **extra)
+        if np.ptp(reps) == 0 and point != 0:  # resampling cannot vary (e.g. one user): no interval, no p-value
+            return insufficient(tool, "bootstrap replicates do not vary", **extra)
         return {"tool": tool, "status": "ok", **extra, "estimate": float(point),
                 "ci95": np.quantile(reps, [0.025, 0.975]).tolist(), "p_value": boot_p(reps)}
 
@@ -227,10 +253,11 @@ class Menu:
 
     def ablation_effect(self, group: str, segment: str, replicate: int = 0, sensitivity: bool = True) -> dict:
         m = self._seg(segment)
-        extra = {"group": group, "segment": segment, "rows": int(m.sum()),
+        bad, arms = self._check(**{segment: m})
+        extra = {"group": group, "segment": segment, "rows": int(m.sum()), "arms": arms,
                  "meaning": "mean LogLoss(full) - LogLoss(without group) of the two fitted models; "
                             "< 0 = the full model is better on these confirmation rows"}
-        if (bad := self._arm_problem(segment, m)):
+        if bad:
             return insufficient("ablation_effect", bad, **extra)
         point, reps = self._boot(self._loss_delta(group, replicate), m)
         out = self._finish("ablation_effect", point, reps, extra | {"test": TEST_MODEL_COMPARISON})
@@ -245,9 +272,10 @@ class Menu:
         m = self._seg(segment)
         f = self.df.with_columns(ASSOC_FEATURES[feature].alias("_f"))["_f"].to_numpy()
         a_m, b_m = m & f, m & ~f
+        bad, arms = self._check(with_feature=a_m, without_feature=b_m)
         extra = {"feature": feature, "segment": segment, "rows_with": int(a_m.sum()), "rows_without": int(b_m.sum()),
-                 "meaning": "CVR(feature) - CVR(no feature); associational, NOT causal"}
-        if (bad := self._arm_problem("with feature", a_m) or self._arm_problem("without feature", b_m)):
+                 "arms": arms, "meaning": "CVR(feature) - CVR(no feature); associational, NOT causal"}
+        if bad:
             return insufficient("association", bad, **extra)
         ya, na = self._sums(self._y, a_m)
         yb, nb = self._sums(self._y, b_m)
@@ -262,7 +290,8 @@ class Menu:
                             "< 0 = the full model gains MORE in segment"}
         if segment == segment_b:
             return insufficient("interaction", "segment and segment_b are the same", **extra)
-        if (bad := self._arm_problem(segment, ma) or self._arm_problem(segment_b, mb)):
+        bad, extra["arms"] = self._check(**{segment: ma, segment_b: mb})
+        if bad:
             return insufficient("interaction", bad, **extra)
         d = self._loss_delta(group)
         sa, ca = self._sums(d, ma)
@@ -284,8 +313,9 @@ class Menu:
         if not 0 < relative_mde < 1:
             raise ValueError("relative_mde must be in (0, 1)")
         m = self._seg(segment)
-        extra = {"segment": segment, "relative_mde": relative_mde, "alpha": alpha, "power": power}
-        if (bad := self._arm_problem(segment, m)):
+        bad, arms = self._check(**{segment: m})
+        extra = {"segment": segment, "relative_mde": relative_mde, "alpha": alpha, "power": power, "arms": arms}
+        if bad:
             return insufficient("ab_test_design", bad, **extra)
         y_u, n_u = self._sums(self._y, m)
         p1 = float(y_u.sum() / n_u.sum())

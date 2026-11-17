@@ -13,7 +13,9 @@ What the code decides (never the LLM):
   once, and Benjamini-Hochberg (q = 0.05) covers ALL unique tested calls of the run (the family is fixed by
   the frozen plans). Model comparisons are judged by the paired user bootstrap with the fitted models held
   fixed; noise-model sensitivity is shown next to them and never changes a verdict;
-- every number in the report: result sentences are rendered by code from the tool output.
+- every number in the report: result sentences are rendered by code from the tool output;
+- what a verdict is about: a test question written by code from the tool call (`test_question`). The
+  planner's sentence and the reporter's text are shown as LLM text whose meaning is NOT verified.
 What the LLM writes: an interpretation and a next step per hypothesis, with NO digits (checked). A keyword
 scan flags causal wording on non-experimental results; it is a heuristic guard, not a verification of meaning.
 """
@@ -111,6 +113,7 @@ REPORTER_SYSTEM = """너는 분석 보고서 작성자다. 가설별로 코드�
 - 판정을 바꾸거나 더 강하게 표현하지 않는다. '확인되지 않음', '자료 부족', 'A/B 필요'인 가설을 사실처럼 쓰지 않는다.
 - associational 결과는 인과로 해석하지 않는다. 예측에 도움이 된다는 결과도 '바꾸면 전환이 늘어난다'는 뜻이 아니다.
 - predictive 결과는 '같은 학습 조건으로 한 번 학습한 두 모델의 확증 자료상 성능 차이'다. 다른 학습 실행이나 다른 날짜에서도 같다거나, 특성 자체가 전환 정보를 가진다는 뜻으로 넓히지 않는다. 결과 문장의 '학습 민감도'는 정보 없는 잡음 특성을 넣었을 때의 차이로, 판정에는 쓰이지 않은 참고 정보다.
+- 판정은 test_question(코드가 쓴 검정 질문)에 대한 것이다. planner_statement는 참고용 원래 제안이며 검정 질문과 다를 수 있다. 다르면 planner_statement를 사실처럼 쓰지 말고 검정 질문의 결과만 해석한다.
 - interpretation에는 이 결과가 무엇을 뜻하고 무엇을 뜻하지 않는지, next_step에는 다음에 할 실험이나 확인을 한 문장씩 쓴다."""
 
 
@@ -126,6 +129,27 @@ def tool_call(h: dict) -> tuple[str, dict]:
     if h["tool"] == "interaction":
         return "interaction", {"group": h["group"], "segment": h["segment"], "segment_b": h["segment_b"]}
     return "association", {"feature": h["feature"], "segment": h["segment"]}
+
+
+def test_question(h: dict) -> str:
+    """The question a verdict answers, written by code from the tool call and the expected direction.
+
+    Verdicts apply to THIS question, never to the planner's own sentence: in review, a statement saying the
+    opposite of what the tool tested ("the model WITH history has HIGHER LogLoss") was reported "confirmed"
+    with 100% rule compliance, because only the structured fields are validated, not the sentence's meaning."""
+    name, a = tool_call(h)
+    if name == "ablation_effect":
+        return (f"[{a['segment']}] 같은 학습 조건으로 한 번 학습한 두 모델 중, '{a['group']}' 그룹을 넣은 모델의 "
+                f"확증 자료 평균 LogLoss가 뺀 모델보다 낮은가?")
+    if name == "interaction":
+        return (f"'{a['group']}' 그룹을 넣은 모델이 뺀 모델보다 평균 LogLoss가 낮은 정도가 [{a['segment']}]에서 "
+                f"[{a['segment_b']}]보다 큰가? (같은 두 모델)")
+    if name == "association":
+        more = "높은가" if h["expected"] == "higher_cvr_with_feature" else "낮은가"
+        return (f"[{a['segment']}] 클릭에서 '{a['feature']}'가 있는 클릭의 전환율이 없는 클릭보다 {more}? "
+                f"(연관 비교, 인과 아님)")
+    return (f"[{a['segment']}]에서 상대 {a['relative_mde']:.0%} 변화를 검출하려면 사용자 무작위 실험에서 그룹당 클릭이 "
+            f"몇 건 필요한가? (관측 데이터로 인과를 판정하지 않음)")
 
 
 def call_key(h: dict) -> str:
@@ -175,6 +199,13 @@ def bh(p: np.ndarray, q: float = 0.05) -> tuple[np.ndarray, np.ndarray]:
     return adj <= q, adj
 
 
+def arm_note(r: dict) -> str:
+    """Size and concentration of the compared arms (users are what the bootstrap resamples)."""
+    parts = [f"{name} 사용자 {a['users']:,}명·전환 사용자 {a['converting_users']:,}명·한 사용자 최대 전환 비중 "
+             f"{(a['max_user_positive_share'] or 0):.1%}" for name, a in (r.get("arms") or {}).items()]
+    return f" [비교 집단: {'; '.join(parts)}]" if parts else ""
+
+
 def render_result(rec: dict) -> str:
     """The only place numbers enter the report."""
     v, r = rec["verdict"], rec.get("result") or {}
@@ -187,19 +218,19 @@ def render_result(rec: dict) -> str:
         days = f", 50:50 배분 시 약 {r['days_at_50_50_split']:.1f}일" if r.get("days_at_50_50_split") else ""
         return (f"{head}. 기준 전환율 {r['baseline_cvr']:.4f}, 상대 최소 검출 효과 {r['relative_mde']:.0%}, "
                 f"그룹당 필요 클릭 {r['clicks_per_arm']:,} (설계 효과 {r['design_effect']:.2f} 반영, 독립 가정 시 "
-                f"{r['clicks_per_arm_iid']:,}){days}")
+                f"{r['clicks_per_arm_iid']:,}){days}{arm_note(r)}")
     unit = {"ablation_effect": "LogLoss 차이", "interaction": "제거 효과의 차이", "association": "전환율 차이"}[r["tool"]]
     body = (f"{head}. {unit} {r['estimate']:+.6f} [95% CI {r['ci95'][0]:+.6f}, {r['ci95'][1]:+.6f}], "
             f"BH 조정 p = {rec['bh_adjusted_p']:.3f}")
     if r["tool"] == "association":
-        return body + f", 전환율 {r['cvr_with']:.4f} vs {r['cvr_without']:.4f}"
+        return body + f", 전환율 {r['cvr_with']:.4f} vs {r['cvr_without']:.4f}" + arm_note(r)
     sens = r.get("training_sensitivity")
     scope = " (고정 학습 조건으로 학습한 두 모델의 비교, 확증 자료 사용자 부트스트랩)"
     if not sens:
-        return body + scope
+        return body + scope + arm_note(r)
     where = "밖" if r["beyond_sensitivity_range"] else "안"
     return (body + scope + f". 학습 민감도 (판정에 쓰지 않음): 잡음 특성 하나만 추가한 모델 {sens['replicates']}개의 "
-            f"같은 비교 최대 절댓값 {sens['max_abs']:.6f}, 이번 추정치는 그 범위 {where}")
+            f"같은 비교 최대 절댓값 {sens['max_abs']:.6f}, 이번 추정치는 그 범위 {where}" + arm_note(r))
 
 
 IDENTIFIER = re.compile(r"[A-Za-z_]+\d+[A-Za-z_\d]*")  # ad_feat1, sparse_G1, G1, E3: names, not numbers
@@ -245,6 +276,7 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
                 rec["verdict"] = "invalid"
             else:
                 key = rec["key"] = call_key(h)
+                rec["test_question"] = test_question(h)
                 if key not in unique:
                     unique[key] = run_tool(h, menu)
                 rec["result"] = unique[key]
@@ -276,9 +308,10 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
     reports = []
     for p in plans:
         recs = [r for r in records if r["session"] == p["session"]]
-        payload = [{"id": r["hypothesis"]["id"], "statement": r["hypothesis"]["statement"],
+        payload = [{"id": r["hypothesis"]["id"], "test_question": r.get("test_question", "(검정하지 않음: 무효)"),
                     "claim_type": r["hypothesis"]["claim_type"], "verdict": VERDICT_KO[r["verdict"]],
-                    "result_sentence": render_result(r)} for r in recs]
+                    "result_sentence": render_result(r), "planner_statement": r["hypothesis"]["statement"]}
+                   for r in recs]
         rep = make_llm(p["session"]).structured(REPORTER_SYSTEM, json.dumps(payload, ensure_ascii=False), REPORT_SCHEMA,
                                                 role=f"reporter_s{p['session']}")
         by_id = {it["id"]: it for it in rep.get("items", [])}
@@ -286,7 +319,8 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
         for r in recs:
             it = by_id.get(r["hypothesis"]["id"], {"interpretation": "", "next_step": ""})
             chk = check_text(it["interpretation"] + " " + it["next_step"], r["verdict"])
-            items.append({"id": r["hypothesis"]["id"], "statement": r["hypothesis"]["statement"],
+            items.append({"id": r["hypothesis"]["id"], "test_question": r.get("test_question"),
+                          "statement": r["hypothesis"]["statement"],
                           "claim_type": r["hypothesis"]["claim_type"], "verdict": r["verdict"],
                           "result_sentence": render_result(r), "interpretation": it["interpretation"],
                           "next_step": it["next_step"], "text_check": chk,
@@ -314,7 +348,9 @@ def summarize(plans, records, reports, unique, menu) -> dict:
         "tested_in_bh_family": len({r["key"] for r in records if "bh_adjusted_p" in r}),
         "verdicts": {v: sum(r["verdict"] == v for r in records) for v in VERDICTS},
         "executable_share": float(np.mean([r["verdict"] != "invalid" for r in records])),
-        "planner_rule_compliance": float(np.mean([not r["issues"] for r in records])),
+        "planner_structural_compliance": float(np.mean([not r["issues"] for r in records])),
+        "verdict_scope": "each verdict answers the code-generated test question; the planner's sentence and the "
+                         "reporter's text are shown separately and their meaning is NOT verified",
         "llm_text_with_digits": sum(it["text_check"]["digits"] > 0 for it in items)
         + sum(rep["overall_check"]["digits"] > 0 for rep in reports),
         "llm_text_causal_word_flags": sum(bool(it["text_check"]["causal_words"]) for it in items),
@@ -325,8 +361,12 @@ def summarize(plans, records, reports, unique, menu) -> dict:
                              "verdicts": [r["verdict"] for r in neg],
                              "status": ("not run" if not any(p["negative_control"] for p in plans) else
                                         "not conducted (planner did not select it)" if not neg else
-                                        "confirmed despite false evidence" if any(r["verdict"] == "confirmed" for r in neg)
-                                        else "not confirmed")},
+                                        "planted false claim confirmed (not caught)"
+                                        if any(r["verdict"] == "confirmed" for r in neg)
+                                        else "planted false claim not confirmed"),
+                             "note": "the label comes from the experiment design (E8 was planted on purpose); "
+                                     "the agent does not detect false evidence"},
+        "arm_gate": menu.gate,
         "training_sensitivity": menu.training_sensitivity(),
     }
 
@@ -338,10 +378,13 @@ def render_markdown(reports: list[dict], summary: dict) -> str:
              f"BH family {summary['tested_in_bh_family']} (q = 0.05, one family for the whole run, plans frozen "
              f"`{summary['plans_sha256'][:12]}` before execution)",
              f"- verdicts {summary['verdicts']}",
-             f"- executable {summary['executable_share']:.0%}, planner rule compliance {summary['planner_rule_compliance']:.0%}, "
+             f"- verdict scope: {summary['verdict_scope']}",
+             f"- executable {summary['executable_share']:.0%}, planner structural-rule compliance "
+             f"{summary['planner_structural_compliance']:.0%} (fields only, not meaning), "
              f"LLM text with digits {summary['llm_text_with_digits']}, causal-word flags {summary['llm_text_causal_word_flags']}",
              f"- stability (mean Jaccard of tests across sessions) {summary['stability_mean_jaccard']}",
-             f"- negative control: {summary['negative_control']['status']}",
+             f"- negative control: {summary['negative_control']['status']} ({summary['negative_control']['note']})",
+             f"- arm gate (per compared arm): {summary['arm_gate']}",
              f"- training sensitivity (full + one noise feature vs full, same training conditions, alpha {ts['alpha']}, "
              f"descriptive): {ts['different_at_alpha']}/{ts['computable']} comparisons differ (noise model better in "
              f"{ts['noise_model_better_at_alpha']}), largest |difference| "
@@ -355,13 +398,15 @@ def render_markdown(reports: list[dict], summary: dict) -> str:
                 flags.append("LLM 문장에 숫자 포함")
             if it["text_check"]["causal_words"]:
                 flags.append(f"인과 표현 의심: {', '.join(it['text_check']['causal_words'])}")
-            lines += [f"**H{it['id']}** ({it['claim_type']}) {it['statement']}", "",
-                      f"- 결과 (코드): {it['result_sentence']}",
-                      f"- 해석 (LLM): {it['interpretation']}", f"- 다음 단계 (LLM): {it['next_step']}"]
+            lines += [f"**H{it['id']}** ({it['claim_type']}) 검정 질문 (코드): {it['test_question'] or '없음 (무효)'}", "",
+                      f"- 판정·결과 (코드, 위 질문에 대한 것): {it['result_sentence']}",
+                      f"- 플래너 제안 문장 (LLM, 의미 검증 안 함): {it['statement']}",
+                      f"- 해석 (LLM, 의미 검증 안 함): {it['interpretation']}",
+                      f"- 다음 단계 (LLM, 의미 검증 안 함): {it['next_step']}"]
             if flags:
                 lines.append(f"- ⚠️ {'; '.join(flags)}")
             lines.append("")
-        lines += [f"종합 (LLM): {rep['overall']}", ""]
+        lines += [f"종합 (LLM, 의미 검증 안 함): {rep['overall']}", ""]
     return "\n".join(lines) + "\n"
 
 

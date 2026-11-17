@@ -9,7 +9,8 @@
       "a": -4.843741160664691,
       "sd_u": 0.7,
       "c": 0.3,
-      "weak_x": 0.6
+      "weak_x": 0.6,
+      "cvr": 0.0156
     },
     "cluster_sizes": {
       "users": 522922,
@@ -25,8 +26,14 @@
       "intercept": -4.843741160664691,
       "truth": -0.002366802993699726,
       "truth_mc_se": 7.385190988626885e-06,
-      "realized_mean_2m_rows": -0.002342666033655405,
-      "realized_cvr_2m_rows": 0.015613945351191271
+      "realized_mean_2m_rows": -0.0023807475809007883,
+      "realized_cvr_2m_rows": 0.015676913776974225
+    },
+    "gate_name": "diagnostic",
+    "gate": {
+      "min_rows": 200,
+      "min_positives": 10,
+      "min_users": 1
     }
   },
   "results": [
@@ -34,17 +41,19 @@
       "rows": 700,
       "tool": "ablation_effect (null)",
       "sims": 2000,
-      "computable": 1292,
+      "computable": 1275,
       "median_smallest_arm_positives": 11.0,
-      "rejection_rate": 0.07430340557275542,
+      "median_smallest_arm_users": 57.0,
+      "median_smallest_arm_converting_users": 8.0,
+      "rejection_rate": 0.08705882352941176,
       "rejection_wilson95": [
-        0.06123005991213461,
-        0.08990075731120502
+        0.07279790129896234,
+        0.10380067040843287
       ],
-      "ci_coverage": 0.9241486068111455,
+      "ci_coverage": 0.9098039215686274,
       "coverage_wilson95": [
-        0.9084208547041852,
-        0.9373615310441963
+        0.8928241261113562,
+        0.9243216408077056
       ],
       "pass": false
     },
@@ -52,35 +61,39 @@
       "rows": 700,
       "tool": "interaction (null)",
       "sims": 2000,
-      "computable": 36,
+      "computable": 25,
       "median_smallest_arm_positives": 4.0,
-      "rejection_rate": 0.25,
+      "median_smallest_arm_users": 50.0,
+      "median_smallest_arm_converting_users": 3.0,
+      "rejection_rate": 0.04,
       "rejection_wilson95": [
-        0.13750323839225387,
-        0.41070767683203424
+        0.007096050386699165,
+        0.19544472405022525
       ],
-      "ci_coverage": 0.75,
+      "ci_coverage": 0.96,
       "coverage_wilson95": [
-        0.5892923231679656,
-        0.8624967616077461
+        0.8045552759497747,
+        0.9929039496133008
       ],
-      "pass": false
+      "pass": true
     },
     {
       "rows": 700,
       "tool": "association (null)",
       "sims": 2000,
-      "computable": 12,
+      "computable": 9,
       "median_smallest_arm_positives": 3.0,
-      "rejection_rate": 0.25,
+      "median_smallest_arm_users": 39.0,
+      "median_smallest_arm_converting_users": 3.0,
+      "rejection_rate": 0.1111111111111111,
       "rejection_wilson95": [
-        0.08894003962896138,
-        0.53231033912066
+        0.019890371327130535,
+        0.4350062147680601
       ],
-      "ci_coverage": 0.75,
+      "ci_coverage": 0.7777777777777778,
       "coverage_wilson95": [
-        0.46768966087934005,
-        0.9110599603710386
+        0.4525833436728054,
+        0.9367762376877727
       ],
       "pass": false
     },
@@ -88,17 +101,19 @@
       "rows": 700,
       "tool": "ablation_effect (alternative)",
       "sims": 2000,
-      "computable": 1292,
+      "computable": 1275,
       "median_smallest_arm_positives": 11.0,
-      "rejection_rate": 0.18962848297213622,
+      "median_smallest_arm_users": 57.0,
+      "median_smallest_arm_converting_users": 8.0,
+      "rejection_rate": 0.17098039215686275,
       "rejection_wilson95": [
-        0.16918486445564712,
-        0.21191233137446047
+        0.15131015827643043,
+        0.19262735517324156
       ],
-      "ci_coverage": 0.9527863777089783,
+      "ci_coverage": 0.9647058823529412,
       "coverage_wilson95": [
-        0.9398181876002917,
-        0.963069943171247
+        0.9531006520106254,
+        0.9735191889454399
       ],
       "pass": true
     },
@@ -108,15 +123,17 @@
       "sims": 2000,
       "computable": 2000,
       "median_smallest_arm_positives": 31.0,
-      "rejection_rate": 0.072,
+      "median_smallest_arm_users": 159.0,
+      "median_smallest_arm_converting_users": 22.0,
+      "rejection_rate": 0.0785,
       "rejection_wilson95": [
-        0.061472954211237246,
-        0.08416809845480183
+        0.06750412746874632,
+        0.0911120026684861
       ],
-      "ci_coverage": 0.928,
+      "ci_coverage": 0.9195,
       "coverage_wilson95": [
-        0.9158319015451982,
-        0.9385270457887628
+        0.9067562820442674,
+        0.9306352562889022
       ],
       "pass": false
     },
@@ -124,35 +141,39 @@
       "rows": 2000,
       "tool": "interaction (null)",
       "sims": 2000,
-      "computable": 1746,
-      "median_smallest_arm_positives": 13.0,
-      "rejection_rate": 0.07846506300114547,
+      "computable": 1763,
+      "median_smallest_arm_positives": 14.0,
+      "median_smallest_arm_users": 139.0,
+      "median_smallest_arm_converting_users": 11.0,
+      "rejection_rate": 0.06182643221781055,
       "rejection_wilson95": [
-        0.06675713268885142,
-        0.09202386783142424
+        0.05150864284956963,
+        0.07404964149238835
       ],
-      "ci_coverage": 0.9209621993127147,
+      "ci_coverage": 0.9364719228587635,
       "coverage_wilson95": [
-        0.9073628864660184,
-        0.9327131524165866
+        0.9241100616087301,
+        0.9469357638914164
       ],
-      "pass": false
+      "pass": true
     },
     {
       "rows": 2000,
       "tool": "association (null)",
       "sims": 2000,
-      "computable": 921,
+      "computable": 955,
       "median_smallest_arm_positives": 9.0,
-      "rejection_rate": 0.04451682953311618,
+      "median_smallest_arm_users": 106.0,
+      "median_smallest_arm_converting_users": 8.0,
+      "rejection_rate": 0.050261780104712044,
       "rejection_wilson95": [
-        0.03298266237408649,
-        0.0598349617466278
+        0.03811735869668169,
+        0.06600995492842594
       ],
-      "ci_coverage": 0.9543973941368078,
+      "ci_coverage": 0.9476439790575916,
       "coverage_wilson95": [
-        0.9389324369371188,
-        0.966087406460929
+        0.931637871085444,
+        0.9600631147708223
       ],
       "pass": true
     },
@@ -162,15 +183,17 @@
       "sims": 2000,
       "computable": 2000,
       "median_smallest_arm_positives": 31.0,
-      "rejection_rate": 0.3435,
+      "median_smallest_arm_users": 159.0,
+      "median_smallest_arm_converting_users": 22.0,
+      "rejection_rate": 0.336,
       "rejection_wilson95": [
-        0.3230054408123686,
-        0.364594616996592
+        0.3156307070109862,
+        0.3569981075619821
       ],
-      "ci_coverage": 0.925,
+      "ci_coverage": 0.922,
       "coverage_wilson95": [
-        0.9126239148948881,
-        0.935746535144676
+        0.9094212716784035,
+        0.9329606810667638
       ],
       "pass": false
     },
@@ -180,15 +203,17 @@
       "sims": 2000,
       "computable": 2000,
       "median_smallest_arm_positives": 109.0,
-      "rejection_rate": 0.066,
+      "median_smallest_arm_users": 547.5,
+      "median_smallest_arm_converting_users": 76.0,
+      "rejection_rate": 0.0735,
       "rejection_wilson95": [
-        0.055929228036718084,
-        0.07773483004052716
+        0.0628625230852384,
+        0.08577277822799914
       ],
-      "ci_coverage": 0.932,
+      "ci_coverage": 0.9255,
       "coverage_wilson95": [
-        0.9201180659341153,
-        0.9422255444590417
+        0.9131582003288339,
+        0.9362103325931297
       ],
       "pass": false
     },
@@ -197,83 +222,13 @@
       "tool": "interaction (null)",
       "sims": 2000,
       "computable": 2000,
-      "median_smallest_arm_positives": 51.0,
-      "rejection_rate": 0.061,
+      "median_smallest_arm_positives": 50.0,
+      "median_smallest_arm_users": 478.0,
+      "median_smallest_arm_converting_users": 41.0,
+      "rejection_rate": 0.0505,
       "rejection_wilson95": [
-        0.051328817937849644,
-        0.07235441131540071
-      ],
-      "ci_coverage": 0.9375,
-      "coverage_wilson95": [
-        0.926029488270428,
-        0.9472930338291233
-      ],
-      "pass": true
-    },
-    {
-      "rows": 7000,
-      "tool": "association (null)",
-      "sims": 2000,
-      "computable": 2000,
-      "median_smallest_arm_positives": 33.0,
-      "rejection_rate": 0.0565,
-      "rejection_wilson95": [
-        0.04720528543896546,
-        0.06749519787268952
-      ],
-      "ci_coverage": 0.942,
-      "coverage_wilson95": [
-        0.9308831809521418,
-        0.9514220870890047
-      ],
-      "pass": true
-    },
-    {
-      "rows": 7000,
-      "tool": "ablation_effect (alternative)",
-      "sims": 2000,
-      "computable": 2000,
-      "median_smallest_arm_positives": 109.0,
-      "rejection_rate": 0.8565,
-      "rejection_wilson95": [
-        0.8404511410405705,
-        0.871181954110264
-      ],
-      "ci_coverage": 0.9425,
-      "coverage_wilson95": [
-        0.931423506198168,
-        0.9518798447253781
-      ],
-      "pass": true
-    },
-    {
-      "rows": 20000,
-      "tool": "ablation_effect (null)",
-      "sims": 2000,
-      "computable": 2000,
-      "median_smallest_arm_positives": 312.0,
-      "rejection_rate": 0.0535,
-      "rejection_wilson95": [
-        0.04446603619344547,
-        0.06424594982381258
-      ],
-      "ci_coverage": 0.945,
-      "coverage_wilson95": [
-        0.9341283999249005,
-        0.9541653654106429
-      ],
-      "pass": true
-    },
-    {
-      "rows": 20000,
-      "tool": "interaction (null)",
-      "sims": 2000,
-      "computable": 2000,
-      "median_smallest_arm_positives": 149.0,
-      "rejection_rate": 0.0485,
-      "rejection_wilson95": [
-        0.03991995050443902,
-        0.05881120668882416
+        0.041735326906860444,
+        0.060988161816000704
       ],
       "ci_coverage": 0.949,
       "coverage_wilson95": [
@@ -283,20 +238,102 @@
       "pass": true
     },
     {
-      "rows": 20000,
+      "rows": 7000,
       "tool": "association (null)",
       "sims": 2000,
       "computable": 2000,
-      "median_smallest_arm_positives": 94.0,
-      "rejection_rate": 0.0585,
+      "median_smallest_arm_positives": 33.0,
+      "median_smallest_arm_users": 365.5,
+      "median_smallest_arm_converting_users": 27.0,
+      "rejection_rate": 0.0565,
       "rejection_wilson95": [
-        0.04903588224276366,
-        0.06965693259848928
+        0.04720528543896546,
+        0.06749519787268952
       ],
       "ci_coverage": 0.9405,
       "coverage_wilson95": [
         0.9292634653592508,
         0.9500475540346974
+      ],
+      "pass": true
+    },
+    {
+      "rows": 7000,
+      "tool": "ablation_effect (alternative)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 109.0,
+      "median_smallest_arm_users": 547.5,
+      "median_smallest_arm_converting_users": 76.0,
+      "rejection_rate": 0.85,
+      "rejection_wilson95": [
+        0.8336802797156251,
+        0.8649777379640158
+      ],
+      "ci_coverage": 0.9515,
+      "coverage_wilson95": [
+        0.9411887933111758,
+        0.960080049495561
+      ],
+      "pass": true
+    },
+    {
+      "rows": 20000,
+      "tool": "ablation_effect (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 312.0,
+      "median_smallest_arm_users": 1561.0,
+      "median_smallest_arm_converting_users": 218.0,
+      "rejection_rate": 0.051,
+      "rejection_wilson95": [
+        0.04218982272001876,
+        0.061531748885241856
+      ],
+      "ci_coverage": 0.947,
+      "coverage_wilson95": [
+        0.936296403548334,
+        0.9559896933168074
+      ],
+      "pass": true
+    },
+    {
+      "rows": 20000,
+      "tool": "interaction (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 149.0,
+      "median_smallest_arm_users": 1361.0,
+      "median_smallest_arm_converting_users": 120.0,
+      "rejection_rate": 0.058,
+      "rejection_wilson95": [
+        0.04857791291099535,
+        0.0691168190478581
+      ],
+      "ci_coverage": 0.9385,
+      "coverage_wilson95": [
+        0.9271066941696094,
+        0.9482119936947407
+      ],
+      "pass": true
+    },
+    {
+      "rows": 20000,
+      "tool": "association (null)",
+      "sims": 2000,
+      "computable": 2000,
+      "median_smallest_arm_positives": 93.0,
+      "median_smallest_arm_users": 1042.0,
+      "median_smallest_arm_converting_users": 77.0,
+      "rejection_rate": 0.058,
+      "rejection_wilson95": [
+        0.04857791291099535,
+        0.0691168190478581
+      ],
+      "ci_coverage": 0.94,
+      "coverage_wilson95": [
+        0.9287239719834315,
+        0.949588964528117
       ],
       "pass": true
     },
@@ -306,15 +343,17 @@
       "sims": 2000,
       "computable": 2000,
       "median_smallest_arm_positives": 312.0,
+      "median_smallest_arm_users": 1561.0,
+      "median_smallest_arm_converting_users": 218.0,
       "rejection_rate": 0.9995,
       "rejection_wilson95": [
         0.9971730649772383,
         0.9999117345398496
       ],
-      "ci_coverage": 0.9405,
+      "ci_coverage": 0.946,
       "coverage_wilson95": [
-        0.9292634653592508,
-        0.9500475540346974
+        0.9352119338168585,
+        0.955077997283484
       ],
       "pass": true
     },
@@ -323,16 +362,18 @@
       "tool": "ablation_effect (null)",
       "sims": 2000,
       "computable": 2000,
-      "median_smallest_arm_positives": 1557.0,
-      "rejection_rate": 0.057,
+      "median_smallest_arm_positives": 1561.0,
+      "median_smallest_arm_users": 7776.0,
+      "median_smallest_arm_converting_users": 1089.5,
+      "rejection_rate": 0.0615,
       "rejection_wilson95": [
-        0.04766261190747434,
-        0.06803595428658013
+        0.0517880063052593,
+        0.07289330583039055
       ],
-      "ci_coverage": 0.941,
+      "ci_coverage": 0.9365,
       "coverage_wilson95": [
-        0.929803163026387,
-        0.9505059392499606
+        0.9249530455366632,
+        0.946373310798089
       ],
       "pass": true
     },
@@ -341,16 +382,18 @@
       "tool": "interaction (null)",
       "sims": 2000,
       "computable": 2000,
-      "median_smallest_arm_positives": 763.0,
-      "rejection_rate": 0.054,
+      "median_smallest_arm_positives": 764.0,
+      "median_smallest_arm_users": 6786.0,
+      "median_smallest_arm_converting_users": 613.0,
+      "rejection_rate": 0.05,
       "rejection_wilson95": [
-        0.044922002716516085,
-        0.06478806618314145
+        0.04128108811097559,
+        0.06044431772948606
       ],
-      "ci_coverage": 0.9435,
+      "ci_coverage": 0.9495,
       "coverage_wilson95": [
-        0.9325048021273105,
-        0.9527947145610346
+        0.9390118381839994,
+        0.9582646730931397
       ],
       "pass": true
     },
@@ -359,16 +402,18 @@
       "tool": "association (null)",
       "sims": 2000,
       "computable": 2000,
-      "median_smallest_arm_positives": 466.5,
-      "rejection_rate": 0.0535,
+      "median_smallest_arm_positives": 468.0,
+      "median_smallest_arm_users": 5189.0,
+      "median_smallest_arm_converting_users": 384.0,
+      "rejection_rate": 0.058,
       "rejection_wilson95": [
-        0.04446603619344547,
-        0.06424594982381258
+        0.04857791291099535,
+        0.0691168190478581
       ],
-      "ci_coverage": 0.9455,
+      "ci_coverage": 0.9415,
       "coverage_wilson95": [
-        0.9346700514001471,
-        0.9546217968177959
+        0.9303430674015107,
+        0.9509641177572363
       ],
       "pass": true
     },
@@ -377,16 +422,18 @@
       "tool": "ablation_effect (alternative)",
       "sims": 2000,
       "computable": 2000,
-      "median_smallest_arm_positives": 1557.0,
+      "median_smallest_arm_positives": 1561.0,
+      "median_smallest_arm_users": 7776.0,
+      "median_smallest_arm_converting_users": 1089.5,
       "rejection_rate": 1.0,
       "rejection_wilson95": [
         0.9980828823994873,
         1.0
       ],
-      "ci_coverage": 0.9355,
+      "ci_coverage": 0.9535,
       "coverage_wilson95": [
-        0.9238773493378977,
-        0.9454528412320556
+        0.9433701034030341,
+        0.9618910709333007
       ],
       "pass": true
     }
@@ -396,11 +443,11 @@
     "medians_at_that_scale": {
       "ablation_effect (null)": 312.0,
       "interaction (null)": 149.0,
-      "association (null)": 94.0,
+      "association (null)": 93.0,
       "ablation_effect (alternative)": 312.0
     },
     "current_min_positives": 10,
-    "failures_above_current_min": 5,
+    "failures_above_current_min": 4,
     "min_positives": 312
   }
 }

@@ -48,8 +48,16 @@ class _Scripted(ScriptedLLM):
 
 
 def scripted_factory(audit, negative_session: int | None = None):
-    """make_llm(k): session k gets the base plan (plus the planted control in the negative session)."""
+    """make_llm(k): session k gets the base plan (plus the planted control in the negative session).
+
+    One instance per session: the run asks for session k's LLM twice (planner, then reporter), and each
+    instance answers its queue in order. (A fresh instance per call handed the PLAN to the reporter, so
+    every report item was missing and the LLM-text checks passed without checking any text.)"""
+    made = {}
+
     def make(k: int):
-        hyps = BASE + ([NEGATIVE] if k == negative_session else [])
-        return _Scripted(audit, [{"hypotheses": hyps}, _report], [])
+        if k not in made:
+            hyps = BASE + ([NEGATIVE] if k == negative_session else [])
+            made[k] = _Scripted(audit, [{"hypotheses": hyps}, _report], [])
+        return made[k]
     return make
