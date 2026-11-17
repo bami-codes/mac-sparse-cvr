@@ -1,8 +1,12 @@
-"""Base models: M0 (empirical-Bayes smoothed group rate), M1 (logistic regression), M2 (LightGBM)."""
+"""Base models: M0 (empirical-Bayes smoothed group rate), M1 (logistic regression), M2 (LightGBM).
+
+LightGBM is imported only inside GBDT.fit: merely loading its OpenMP runtime makes a later PyTorch
+call in the same process crash on this machine, so modules that do not train LightGBM must not load it.
+"""
 
 from dataclasses import dataclass
+from typing import Any
 
-import lightgbm as lgb
 import numpy as np
 import polars as pl
 from scipy import sparse
@@ -90,7 +94,7 @@ class LogReg:
 # ---------------------------------------------------------------- M2: LightGBM
 @dataclass
 class GBDT:
-    booster: lgb.Booster
+    booster: Any  # lightgbm.Booster
     inputs: list[str]
     rounds: int  # chosen by early stopping on held-out TRAINING users, then refit on all training rows
 
@@ -102,6 +106,8 @@ class GBDT:
         2) the model is refit on ALL training rows with that number of rounds. V1/V2 are never used.
         `label` is "y" for every CVR model; the auxiliary model of cvr/stacking.py uses "label_mta".
         """
+        import lightgbm as lgb
+
         inputs = inputs or (CAT_INPUTS + NUM_INPUTS)
         assert_no_label_inputs(inputs)
         cat_idx = [i for i, c in enumerate(inputs) if c in CAT_INPUTS]
