@@ -21,6 +21,15 @@ class CheckFailed(RuntimeError):
     pass
 
 
+def require_commit(git: dict, what: str = "the evaluation") -> None:
+    """`git_state` returns commit "" and no changed files when git fails (outside a repository), which used to
+    pass the clean-tree check silently (found while setting up the synthetic end-to-end test)."""
+    import re
+    if not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", str(git.get("commit", ""))):
+        raise CheckFailed(f"{what} is not inside a git repository (commit {git.get('commit')!r}); "
+                          "the clean-tree check cannot run")
+
+
 def require_close(name: str, diff: float, tol: float) -> float:
     if not np.isfinite(diff) or diff > tol:
         raise CheckFailed(f"{name}: max abs difference {diff!r} exceeds tolerance {tol!r}")

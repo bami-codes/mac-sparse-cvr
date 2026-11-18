@@ -9,7 +9,7 @@ import pytest
 from cvr import final_eval_c as F
 from cvr.checks import CheckFailed
 
-CLEAN = {"commit": "x", "dirty_files": []}
+CLEAN = {"commit": "c" * 40, "dirty_files": []}
 
 
 def _holdout(tmp_path: Path, content: dict[str, bytes]) -> list[Path]:
@@ -105,6 +105,19 @@ def test_input_problems_are_refused_before_the_single_run_is_claimed(setup, tmp_
     with pytest.raises(CheckFailed, match="SHA-256"):
         F.evaluate(run, same_size, "test")
     assert not (run / "final" / "test.lock").exists()  # every refusal above can be retried
+
+
+def test_outside_a_git_repository_the_test_is_refused(setup, monkeypatch):
+    run, files = setup
+    _dry(run)
+    monkeypatch.setattr(F, "git_state", lambda: {"commit": "", "dirty_files": []})  # what git_state returns there
+    with pytest.raises(CheckFailed, match="not inside a git repository"):
+        F.evaluate(run, files, "test")
+    monkeypatch.setattr(F, "git_state", lambda: CLEAN)
+    _dry(run, evaluation_git={"commit": "", "dirty_files": []})
+    with pytest.raises(CheckFailed, match="dry run is not inside a git repository"):
+        F.evaluate(run, files, "test")
+    assert not (run / "final" / "test.lock").exists()
 
 
 def test_only_one_process_claims_the_run(setup):
@@ -231,6 +244,25 @@ def test_the_kept_latency_attempt_is_the_first_accepted_one(tmp_path):
     for bad in (two_ok, none_ok, other_p99):
         with pytest.raises(CheckFailed, match="attempt"):
             F.check_latency_provenance(bad, run, sel)
+
+
+def test_at_most_three_latency_attempts_and_the_same_rule_as_the_measuring_script(tmp_path):
+    import copy
+
+    import scripts.latency_c as L
+    assert (F.LATENCY_MAX_ATTEMPTS, F.LATENCY_REQUESTS, F.ACCEPT_OTHER_CPU, F.LATENCY_PROTOCOL_VERSION) == (
+        L.MAX_ATTEMPTS, L.REQUESTS, L.ACCEPT_OTHER_CPU, L.PROTOCOL["version"])
+    run, sel, rep = _provenance_run(tmp_path)
+    busy = {"load_average": [5.0] * 3, "cpu_count": 10, "other_repo_python": [], "other_cpu_percent": 460.0}
+    ok = rep["families"]["G-int"]["attempts"][0]
+    rejected = {"accepted": False, "environment_start": busy, "environment_end": busy, "p99_ms_by_seed": {"2026": 0.5}}
+    third = copy.deepcopy(rep)
+    third["families"]["G-int"]["attempts"] = [rejected, rejected, ok]
+    F.check_latency_provenance(third, run, sel)  # accepted on the last allowed attempt
+    fourth = copy.deepcopy(rep)
+    fourth["families"]["G-int"]["attempts"] = [rejected, rejected, rejected, ok]  # measured again until accepted
+    with pytest.raises(CheckFailed, match="at most 3"):
+        F.check_latency_provenance(fourth, run, sel)
 
 
 def test_a_failed_process_table_is_a_failed_measurement(monkeypatch):

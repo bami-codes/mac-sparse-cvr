@@ -21,3 +21,5 @@ package = false
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]  # runs/ may hold review snapshots with their own copies of the tests
+markers = ["e2e: every command of both studies on synthetic files, a few minutes (uv run pytest -m e2e)"]
+addopts = "-m 'not e2e'"

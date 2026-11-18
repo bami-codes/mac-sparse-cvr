@@ -121,3 +121,9 @@ def test_paired_bootstrap_identical_models_give_zero():
     p = rng.uniform(0.01, 0.1, size=n)
     out = paired_bootstrap_macro_diff(y, p, p, rng.integers(20, size=n), rng.integers(300, size=n), reps=50)
     assert out["diff"] == 0 and out["ci95"] == [0.0, 0.0]
+
+
+def test_an_empty_group_definition_stops_with_a_reason():
+    from cvr.metrics import group_report
+    with pytest.raises(ValueError, match="selects no group"):  # it failed later as float(None) (synthetic e2e run)
+        group_report(np.array([], dtype=np.int8), np.array([]), np.array([], dtype=np.int64))

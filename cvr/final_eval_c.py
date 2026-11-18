@@ -39,7 +39,8 @@ import polars as pl
 from . import domain_eval as D
 from . import groups as G
 from .artifacts import load_gbdt
-from .checks import NN_SINGLE_VS_BATCH_TOL, NUM_TOL, PRED_TOL, CheckFailed, require_close, require_finite_probs
+from .checks import (NN_SINGLE_VS_BATCH_TOL, NUM_TOL, PRED_TOL, CheckFailed, require_close, require_commit,
+                     require_finite_probs)
 from .domain_models import load_domain_calibrators, load_gbdt_offset
 from .features import featurize, read_raw
 from .mddata import DOM_COL, encode_md, load_md, save_md
@@ -51,6 +52,7 @@ HOLDOUT = ["train-13.parquet", "train-14.parquet"]
 HF_TREE = "https://huggingface.co/api/datasets/alimamaTech/MAC/tree/main/train"
 LATENCY_FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"]
 LATENCY_PROTOCOL_VERSION, LATENCY_REQUESTS, ACCEPT_OTHER_CPU = 2, 5000, 400.0  # same values as scripts/latency_c.py
+LATENCY_MAX_ATTEMPTS = 3  # scripts/latency_c.MAX_ATTEMPTS: a family is measured at most this many times in all
 COMPARED_METRICS = [("small", "macro_logloss"), ("small", "click_weighted_logloss"), ("small", "within_domain_auc_macro"),
                     ("small", "poisson_deviance_mean"), ("large", "click_weighted_logloss"),
                     ("overall_nonmissing", "logloss"), ("overall_nonmissing", "auc"), ("G1_macro_logloss",)]
@@ -119,7 +121,7 @@ def latency_accepted(start: dict, end: dict) -> bool:
 def check_latency_provenance(report: dict, run: Path, sel: dict) -> None:
     """The latency report must come from THIS run's selected models and calibrators (review: a smoke report with
     lambda 100 was frozen as the development run's, whose lambda is 1), and the kept attempt must be the first one
-    that meets the acceptance rule, with every earlier attempt rejected."""
+    that meets the acceptance rule, with every earlier attempt rejected and at most LATENCY_MAX_ATTEMPTS in all."""
     if Path(report["run"]).resolve() != run.resolve():
         raise CheckFailed(f"latency report is for {report['run']}, not {run}")
     from .serving_c import model_path
@@ -135,6 +137,8 @@ def check_latency_provenance(report: dict, run: Path, sel: dict) -> None:
             if got != want:
                 raise CheckFailed(f"latency of {fam} seed {s} was measured on {got}, expected {want}")
         attempts = f.get("attempts") or []
+        if len(attempts) > LATENCY_MAX_ATTEMPTS:  # more tries would let a measurement be repeated until it is accepted
+            raise CheckFailed(f"latency of {fam}: {len(attempts)} attempts, at most {LATENCY_MAX_ATTEMPTS} are allowed")
         flags = [latency_accepted(a["environment_start"], a["environment_end"]) for a in attempts]
         if not attempts or True not in flags or flags.index(True) != len(attempts) - 1:
             raise CheckFailed(f"latency of {fam}: attempts {flags}; the kept one must be the first accepted")
@@ -300,6 +304,7 @@ def guard_test(run: Path, manifest: dict, files: list[Path], git: dict) -> dict[
         raise CheckFailed(f"{lock} or {out_dir} exists: the holdout files are evaluated only once")
     if git["dirty_files"]:
         raise CheckFailed(f"uncommitted changes; commit the evaluation code before the test: {git['dirty_files'][:5]}")
+    require_commit(git, "the test")
     dry_path = run / "final" / "dryrun" / "results.json"
     dry = json.loads(dry_path.read_text()) if dry_path.exists() else {}
     if not dry.get("dryrun_passed"):
@@ -310,6 +315,7 @@ def guard_test(run: Path, manifest: dict, files: list[Path], git: dict) -> dict[
         raise CheckFailed("the dry run used different evaluation code (cvr/*.py changed since the dry run)")
     if dry.get("evaluation_git", {}).get("dirty_files"):
         raise CheckFailed("the dry run was run on an uncommitted tree")
+    require_commit(dry.get("evaluation_git", {}), "the dry run")
     v2_rec = {Path(x["file"]).name: x["sha256"] for x in
               json.loads((run / "results.json").read_text())["meta"]["data"]["v2"]}  # frozen file
     if dry.get("files_sha256") != v2_rec or None in v2_rec.values():

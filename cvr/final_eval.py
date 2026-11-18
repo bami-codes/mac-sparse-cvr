@@ -28,7 +28,7 @@ from . import groups as G
 from . import metrics as M
 from .artifacts import load_gbdt, load_logreg, load_stacking
 from .calibration import load_calibrators
-from .checks import CheckFailed, require_close, require_finite_probs
+from .checks import CheckFailed, require_close, require_commit, require_finite_probs
 from .features import featurize, read_raw
 from .pipeline import evaluate, git_state, mean_sd, sources
 from .schema import GROUP_KEY, MISSING
@@ -140,6 +140,8 @@ def evaluate_file(run: Path, eval_file: Path, mode: str) -> dict:
         raise CheckFailed(f"{out_dir} exists: the test file is evaluated only once")
     if mode == "test" and git["dirty_files"]:
         raise CheckFailed(f"uncommitted changes; commit the evaluation code before the test: {git['dirty_files'][:5]}")
+    if mode == "test":
+        require_commit(git, "the test")
     out_dir.mkdir(parents=True, exist_ok=True)
     smoke = cfg["data"]["mode"] == "smoke"
     buckets = tuple(cfg["data"]["smoke_v2_buckets"]) if smoke and mode == "dryrun" else None
