@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import pytest
-from scipy.special import expit, logit
+from scipy.special import expit
 
 from cvr import metrics as M
 from cvr import study_e as E
