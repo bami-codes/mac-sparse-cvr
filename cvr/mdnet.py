@@ -2,30 +2,38 @@
 
 Domain = the DOMAIN_KEY (context_feat1) code. Inputs: CAT_INPUTS codes (embedded) + standardized NUM_INPUTS.
 
-variant     how the domain is used                                                    mini-batches
-int         no domain input; a per-domain logit intercept                             mixed
-shared      the domain embedding is one input of a shared MLP                         mixed
-head        shared body (domain is an input) + output (w + w_d)·h + (b + b_d)          mixed
-star        STAR (Sheng et al., CIKM 2021): partitioned normalization (PN) on the     one domain per batch
-            concatenated input, star-topology FCN in every layer (W ⊙ W_d, b + b_d),
-            auxiliary 2-layer network on the domain embedding added to the logit
-star_nopn   star FCN + auxiliary network, no normalization (secondary ablation)       mixed
+variant     how the domain is used                                                    optimizer steps
+int         no domain input; a per-domain logit intercept                             mixed batches
+shared      the domain embedding is one input of a shared MLP                         mixed batches
+head        shared body (domain is an input) + output (w + w_d)·h + (b + b_d)          mixed batches
+star        STAR (Sheng et al., CIKM 2021): partitioned normalization (PN) on the     single-domain chunks,
+            concatenated input, star-topology FCN in every layer (W ⊙ W_d, b + b_d),  accumulated to >= batch
+            auxiliary 2-layer network on the domain embedding added to the logit       rows per step
+star_nopn   star FCN + auxiliary network, no normalization (secondary ablation)       mixed batches
 
 Domain-specific parameters are ROWS OF SPARSE EMBEDDINGS looked up by the domain code and updated by
 SparseAdam, which changes only the rows present in the batch (values and moments, i.e. lazy Adam). One dense
 tensor with Adam would move domains absent from the batch through their old momentum (§16.4, review).
 
-Unseen domains (no training row; e.g. UNKNOWN): every domain-specific term is replaced by its identity
-(intercept 0, w_d = 0, b_d = 0, W_d = 1, gamma_d = 1, beta_d = 0, auxiliary logit 0) and PN uses the global
-running statistics, so the output is the shared network's output. Row UNKNOWN of every categorical embedding
-is zero (padding_idx), so an unseen value of any input contributes nothing.
+Unseen domains (no training row; UNKNOWN, or a code that never occurs in training) are mapped to UNKNOWN before
+anything else, including the shared input embedding (whose UNKNOWN row is zero, padding_idx). Every
+domain-specific term then takes its identity (intercept 0, w_d = 0, b_d = 0, W_d = 1, gamma_d = 1, beta_d = 0,
+auxiliary logit 0) and PN uses the global running statistics, so every unseen domain gets the same shared
+prediction (§16.4 revision 2: before, the shared input still carried a random embedding of the original code).
 
-PN statistics (implementation choices, §16.4): per-domain and global running mean / mean of squares, with
-momentum max(0.1, 1/k) at the k-th update, so the first update replaces the initial value and a domain seen
-in few batches is not pulled toward mean 0 / variance 1. A training batch with fewer than PN_MIN_ROWS rows is
-normalized with the global running statistics and updates nothing; at evaluation a domain whose statistics
-were never updated uses the global statistics (otherwise a near-zero variance from a handful of rows would
-blow up new rows of that domain).
+Numeric inputs: standardized with training mean / std; a column constant over the training rows is set to the
+neutral 0 at training AND inference (a new value there would otherwise be divided by ~1e-6), and the std is
+floored at NUM_STD_FLOOR.
+
+PN statistics (implementation choices, §16.4):
+- per-domain and global running mean / mean of squares, momentum max(0.1, 1/k) at the k-th update, so the first
+  update replaces the initial value;
+- a training batch with fewer than PN_MIN_ROWS rows of a domain is normalized with the global statistics and
+  updates nothing; at evaluation a domain whose statistics were never updated uses the global statistics;
+- PER DIMENSION, a domain (or batch) variance below PN_REL_VAR x the global variance is replaced by the global
+  mean and variance of that dimension: enough rows do not make every feature vary (e.g. a purchase-history
+  match that is always 0 in one group), and dividing by that near-zero variance blew up a later 1;
+- the global variance is floored at PN_VAR_FLOOR.
 
 Run this module in a process that does NOT use LightGBM (see cvr/m3_worker.py for why).
 """
@@ -43,10 +51,13 @@ from .mddata import MDArrays
 from .schema import UNKNOWN
 
 VARIANTS = ("int", "shared", "head", "star", "star_nopn")
-SINGLE_DOMAIN_BATCHES = {"star"}
+SINGLE_DOMAIN_CHUNKS = {"star"}
 PN_MIN_ROWS = 256
 PN_MOMENTUM = 0.1
 PN_EPS = 1e-5
+PN_REL_VAR = 0.01  # own variance must be >= 1% of the global variance (own std >= 10% of the global std)
+PN_VAR_FLOOR = 1e-2
+NUM_STD_FLOOR = 1e-2
 
 
 def _table(n: int, width: int, sparse: bool, fill: float | None) -> nn.Embedding:
@@ -94,6 +105,9 @@ class PartitionedNorm(nn.Module):
     def _var(mean: torch.Tensor, msq: torch.Tensor) -> torch.Tensor:
         return (msq - mean ** 2).clamp_min(0.0)
 
+    def global_stats(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.glob_mean.clone(), self._var(self.glob_mean, self.glob_msq).clamp_min(PN_VAR_FLOOR)
+
     @torch.no_grad()
     def _update(self, d: int, mu: torch.Tensor, msq: torch.Tensor) -> None:
         k = int(self.dom_updates[d]) + 1
@@ -112,16 +126,22 @@ class PartitionedNorm(nn.Module):
             return "batch" if (seen and n_rows >= PN_MIN_ROWS) else "global"
         return "domain" if (seen and int(self.dom_updates[d]) > 0) else "global"
 
-    def forward(self, z: torch.Tensor, d: torch.Tensor, seen: bool) -> torch.Tensor:
-        di = int(d)
-        src = self.stats_source(di, seen, z.shape[0])
+    def stats(self, z: torch.Tensor, d: int, seen: bool) -> tuple[torch.Tensor, torch.Tensor]:
+        """(mu, var) per dimension; updates the running statistics on a training batch."""
+        g_mu, g_var = self.global_stats()
+        src = self.stats_source(d, seen, z.shape[0])
+        if src == "global":
+            return g_mu, g_var
         if src == "batch":
             mu, var = z.mean(0), z.var(0, unbiased=False)
-            self._update(di, mu.detach(), (z.detach() ** 2).mean(0))
-        elif src == "domain":
-            mu, var = self.dom_mean[di], self._var(self.dom_mean[di], self.dom_msq[di])
+            self._update(d, mu.detach(), (z.detach() ** 2).mean(0))
         else:
-            mu, var = self.glob_mean, self._var(self.glob_mean, self.glob_msq)
+            mu, var = self.dom_mean[d].clone(), self._var(self.dom_mean[d], self.dom_msq[d])
+        own = var.detach() >= PN_REL_VAR * g_var  # a (near-)constant dimension of this domain uses the global stats
+        return torch.where(own, mu, g_mu), torch.where(own, var, g_var)
+
+    def forward(self, z: torch.Tensor, d: torch.Tensor, seen: bool) -> torch.Tensor:
+        mu, var = self.stats(z, int(d), seen)
         zn = (z - mu) / torch.sqrt(var + PN_EPS)
         if not seen:
             return zn * self.gamma + self.beta
@@ -159,8 +179,14 @@ class MDNet(nn.Module):
                 self.dom_w = _table(n_dom, dims[-2], sparse, 0.0)
                 self.dom_b = _table(n_dom, 1, sparse, 0.0)
 
-    def inputs(self, cat: torch.Tensor, num: torch.Tensor) -> torch.Tensor:
-        return torch.cat([self.emb[i](cat[:, i]) for i in self.in_cols] + [num], dim=-1)
+    def domain(self, cat: torch.Tensor) -> torch.Tensor:
+        """The domain code used everywhere: codes without training rows become UNKNOWN (seen[UNKNOWN] is False)."""
+        dom = cat[:, self.dom_col]
+        return torch.where(self.seen[dom], dom, torch.full_like(dom, UNKNOWN))
+
+    def inputs(self, cat: torch.Tensor, num: torch.Tensor, dom: torch.Tensor) -> torch.Tensor:
+        cols = [dom if i == self.dom_col else cat[:, i] for i in self.in_cols]
+        return torch.cat([self.emb[i](c) for i, c in zip(self.in_cols, cols)] + [num], dim=-1)
 
     def _star_one(self, x: torch.Tensor, d: torch.Tensor, seen: bool) -> torch.Tensor:
         z = self.pn(x, d, seen) if self.pn is not None else x
@@ -174,14 +200,13 @@ class MDNet(nn.Module):
         return s
 
     def forward(self, cat: torch.Tensor, num: torch.Tensor) -> torch.Tensor:
-        dom = cat[:, self.dom_col]
-        x = self.inputs(cat, num)
+        dom = self.domain(cat)
+        x = self.inputs(cat, num, dom)
         if self.variant in ("star", "star_nopn"):
             out = x.new_zeros(x.shape[0])
-            for d in torch.unique(dom):  # one iteration for a single-domain training batch
+            for d in torch.unique(dom):  # PN statistics and star weights are per domain
                 idx = (dom == d).nonzero().squeeze(1)
-                dd = d.view(1)
-                out = out.index_put((idx,), self._star_one(x[idx], dd, bool(self.seen[d])))
+                out = out.index_put((idx,), self._star_one(x[idx], d.view(1), bool(self.seen[d])))
             return out
         h = self.body(x)
         out = self.out(h).squeeze(-1)
@@ -200,9 +225,9 @@ def mixed_batches(rng: np.random.Generator, n: int, batch: int) -> list[np.ndarr
 
 
 def domain_batches(rng: np.random.Generator, dom_rows: list[np.ndarray], batch: int) -> list[np.ndarray]:
-    """One domain per batch (STAR). Each domain's rows are shuffled and cut into `batch`-sized chunks; a shorter
-    last chunk is merged into the previous one, so no batch is smaller than min(batch, domain rows). The batch
-    order is shuffled, so domains are visited in proportion to their size (implementation choice, §16.4)."""
+    """Single-domain chunks (STAR). Each domain's rows are shuffled and cut into `batch`-sized chunks; a shorter
+    last chunk is merged into the previous one, so no chunk is smaller than min(batch, domain rows). The chunk
+    order is shuffled."""
     out = []
     for rows in dom_rows:
         rows = rows[rng.permutation(rows.size)]
@@ -212,6 +237,28 @@ def domain_batches(rng: np.random.Generator, dom_rows: list[np.ndarray], batch: 
             chunks.pop()
         out += chunks
     return [out[i] for i in rng.permutation(len(out))]
+
+
+def accumulate_steps(chunks: list[np.ndarray], batch: int) -> list[np.ndarray]:
+    """Optimizer steps of >= `batch` rows built from consecutive single-domain chunks (a trailing short step is
+    merged into the previous one). The loss of a step is the mean over its rows, so every click has about the
+    same weight (step sizes stay within [batch, 4·batch)) and a 5-row domain no longer gets a full update of its
+    own (review of §16: one step per chunk gave 5 rows and 8,191 rows one update each). A domain appears in at
+    most one chunk of a step, so its PN statistics are still computed on that domain's rows only."""
+    steps, cur, n = [], [], 0
+    for c in chunks:
+        cur.append(c)
+        n += c.size
+        if n >= batch:
+            steps.append(np.concatenate(cur))
+            cur, n = [], 0
+    if cur:
+        tail = np.concatenate(cur)
+        if steps:
+            steps[-1] = np.concatenate([steps[-1], tail])
+        else:
+            steps.append(tail)
+    return steps
 
 
 def make_optimizers(net: nn.Module, lr: float) -> list[torch.optim.Optimizer]:
@@ -228,7 +275,7 @@ def make_optimizers(net: nn.Module, lr: float) -> list[torch.optim.Optimizer]:
 
 def train_step(net: nn.Module, opts: list, cat: torch.Tensor, num: torch.Tensor, y: torch.Tensor,
                loss_fn: nn.Module) -> torch.Tensor:
-    loss = loss_fn(net(cat, num), y)
+    loss = loss_fn(net(cat, num), y)  # mean over the step's rows
     for o in opts:
         o.zero_grad(set_to_none=True)
     loss.backward()
@@ -242,13 +289,21 @@ def train_step(net: nn.Module, opts: list, cat: torch.Tensor, num: torch.Tensor,
 class MDModel:
     net: MDNet
     num_mean: np.ndarray
-    num_std: np.ndarray
+    num_std: np.ndarray  # floored at NUM_STD_FLOOR
+    num_keep: np.ndarray  # 0 for columns constant over the training rows (always fed as the neutral 0)
     info: dict = field(default_factory=dict)
 
     def tensors(self, a: MDArrays, idx: np.ndarray | slice) -> tuple[torch.Tensor, torch.Tensor]:
         cat = torch.as_tensor(np.asarray(a.cat[idx]), dtype=torch.long)
-        num = torch.as_tensor((np.asarray(a.num[idx]) - self.num_mean) / self.num_std, dtype=torch.float32)
-        return cat, num
+        z = (np.asarray(a.num[idx]) - self.num_mean) / self.num_std * self.num_keep
+        return cat, torch.as_tensor(z, dtype=torch.float32)
+
+    @staticmethod
+    def numeric_scaler(num: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x = np.asarray(num, dtype=np.float64)
+        mean, std = x.mean(0), x.std(0)
+        keep = (std > 0).astype(np.float32)
+        return mean.astype(np.float32), np.maximum(std, NUM_STD_FLOOR).astype(np.float32), keep
 
     @classmethod
     def fit(cls, a: MDArrays, y: np.ndarray, cat_sizes: list[int], dom_col: int, variant: str, seed: int,
@@ -263,27 +318,37 @@ class MDModel:
         net = MDNet(cat_sizes, dom_col, a.num.shape[1], variant, dim=dim, sparse=sparse)
         dom = np.asarray(a.cat[:, dom_col])
         counts = np.bincount(dom, minlength=cat_sizes[dom_col])
+        if counts[UNKNOWN]:
+            raise ValueError("training rows with an UNKNOWN domain code: the vocabulary must come from these rows")
         net.seen.copy_(torch.as_tensor(counts > 0))
-        mean = a.num.mean(0).astype(np.float32)
-        std = (a.num.std(0) + 1e-6).astype(np.float32)
-        model = cls(net, mean, std)
+        model = cls(net, *cls.numeric_scaler(a.num))
         opts = make_optimizers(net, lr)
         loss_fn = nn.BCEWithLogitsLoss()
         yt = torch.as_tensor(y, dtype=torch.float32)
-        dom_rows = [np.flatnonzero(dom == d) for d in np.flatnonzero(counts)]
-        checkpoints, losses = [], []
+        dom_ids = np.flatnonzero(counts)
+        dom_rows = [np.flatnonzero(dom == d) for d in dom_ids]
+        checkpoints, losses, step_rows, dom_steps = [], [], [], np.zeros(len(counts), dtype=np.int64)
         net.train()
         for ep in range(epochs):
-            batches = (domain_batches(rng, dom_rows, batch) if variant in SINGLE_DOMAIN_BATCHES
-                       else mixed_batches(rng, a.n, batch))
-            for idx in batches:
+            if variant in SINGLE_DOMAIN_CHUNKS:
+                steps = accumulate_steps(domain_batches(rng, dom_rows, batch), batch)
+            else:
+                steps = mixed_batches(rng, a.n, batch)
+            for idx in steps:
                 cat, num = model.tensors(a, idx)
                 losses.append(train_step(net, opts, cat, num, yt[idx], loss_fn))
+                if ep == 0:
+                    step_rows.append(idx.size)
+                    dom_steps[np.unique(dom[idx])] += 1
             info = {"variant": variant, "seed": seed, "dim": dim, "epochs": ep + 1, "batch": batch, "lr": lr,
                     "steps": len(losses), "train_loss_last100_mean": float(torch.stack(losses[-100:]).mean()),
                     "params": int(sum(p.numel() for p in net.parameters())),
-                    "domains_seen": int((counts > 0).sum())}
-            checkpoints.append(cls(copy.deepcopy(net).eval(), mean, std, info))
+                    "domains_seen": int((counts > 0).sum()), "num_constant_columns": int((model.num_keep == 0).sum()),
+                    "step_rows_epoch1": {"min": int(min(step_rows)), "median": float(np.median(step_rows)),
+                                         "max": int(max(step_rows))},
+                    "domain_rows": {int(d): int(counts[d]) for d in dom_ids},
+                    "domain_steps_epoch1": {int(d): int(dom_steps[d]) for d in dom_ids}}
+            checkpoints.append(cls(copy.deepcopy(net).eval(), model.num_mean, model.num_std, model.num_keep, info))
         return checkpoints
 
     @torch.no_grad()
@@ -298,7 +363,7 @@ class MDModel:
 
 def save_md_model(m: MDModel, cat_sizes: list[int], dom_col: int, path: Path) -> None:
     torch.save(m.net.state_dict(), path.with_suffix(".pt"))
-    np.savez(path.with_suffix(".npz"), num_mean=m.num_mean, num_std=m.num_std)
+    np.savez(path.with_suffix(".npz"), num_mean=m.num_mean, num_std=m.num_std, num_keep=m.num_keep)
     path.with_suffix(".json").write_text(json.dumps({"cat_sizes": cat_sizes, "dom_col": dom_col, "info": m.info}))
 
 
@@ -309,4 +374,4 @@ def load_md_model(path: Path) -> MDModel:
     net = MDNet(meta["cat_sizes"], meta["dom_col"], n_num=len(z["num_mean"]), variant=info["variant"],
                 dim=info["dim"], sparse=False)
     net.load_state_dict(torch.load(path.with_suffix(".pt"), map_location="cpu"))
-    return MDModel(net.eval(), z["num_mean"], z["num_std"], info)
+    return MDModel(net.eval(), z["num_mean"], z["num_std"], z["num_keep"], info)

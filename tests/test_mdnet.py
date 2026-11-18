@@ -6,14 +6,15 @@ import torch
 from torch import nn
 
 from cvr.mddata import MDArrays
-from cvr.mdnet import (PN_EPS, PN_MIN_ROWS, MDModel, MDNet, PartitionedNorm, domain_batches, load_md_model,
-                       make_optimizers, save_md_model, train_step)
-from cvr.schema import UNKNOWN
+from cvr.checks import NN_SINGLE_VS_BATCH_TOL
+from cvr.mdnet import (PN_EPS, PN_MIN_ROWS, MDModel, MDNet, PartitionedNorm, accumulate_steps, domain_batches,
+                       load_md_model, make_optimizers, save_md_model, train_step)
+from cvr.schema import MISSING, UNKNOWN
 
 CAT_SIZES = [7, 10, 20]  # column 0 is the domain: codes 2..5 have training rows; 0 (UNKNOWN), 1 and 6 have none
 DOM_COL = 0
 ROWS = {2: 1500, 3: 600, 4: 300, 5: 3}  # domain 5 is below PN_MIN_ROWS
-UNSEEN = [UNKNOWN, 6]
+UNSEEN = [UNKNOWN, MISSING, 6]  # none has a training row
 
 
 def _data(seed=0):
@@ -85,31 +86,40 @@ def test_domain_never_updated_uses_global_statistics_at_evaluation():
 
 
 # ---------------------------------------------------------------- 2. unseen domains after training
-@pytest.mark.parametrize("variant", ["int", "head", "star", "star_nopn"])
-def test_unseen_domain_follows_the_shared_path_after_training(variant):
+def _shared_path(net, cat, num):
+    """The shared network written out by hand: the domain input is the zero (UNKNOWN) vector, no domain term."""
+    parts = [torch.zeros(cat.shape[0], net.emb[i].embedding_dim) if i == DOM_COL else net.emb[i](cat[:, i])
+             for i in net.in_cols]
+    x = torch.cat(parts + [num], dim=-1)
+    if net.variant in ("int", "shared", "head"):
+        return net.out(net.body(x)).squeeze(-1)
+    z = x
+    if net.pn is not None:
+        var = net.pn._var(net.pn.glob_mean, net.pn.glob_msq).clamp_min(1e-2)
+        z = (z - net.pn.glob_mean) / torch.sqrt(var + PN_EPS) * net.pn.gamma + net.pn.beta
+    for j, layer in enumerate(net.layers):
+        z = layer.shared(z)
+        if j < len(net.layers) - 1:
+            z = torch.relu(z)
+    return z.squeeze(-1)
+
+
+@pytest.mark.parametrize("variant", ["int", "shared", "head", "star", "star_nopn"])
+def test_unseen_domains_all_get_the_shared_prediction_after_training(variant):
     m = _fit(variant)[0]
     net = m.net
+    preds = {}
     for d in UNSEEN:
         sub = _rows_with_domain(d)
-        got = m.predict(sub)
+        preds[d] = m.predict(sub)
         cat, num = m.tensors(sub, slice(None))
         with torch.no_grad():
-            x = net.inputs(cat, num)
-            if variant in ("int", "head"):
-                expected = net.out(net.body(x)).squeeze(-1)
-            else:
-                z = x
-                if net.pn is not None:
-                    var = net.pn._var(net.pn.glob_mean, net.pn.glob_msq)
-                    z = (z - net.pn.glob_mean) / torch.sqrt(var + PN_EPS) * net.pn.gamma + net.pn.beta
-                for j, layer in enumerate(net.layers):
-                    z = layer.shared(z)
-                    if j < len(net.layers) - 1:
-                        z = torch.relu(z)
-                expected = z.squeeze(-1)
-        assert np.array_equal(got, torch.sigmoid(expected).numpy().astype(np.float64)), d
-        # the unseen domain's own parameter rows are still at their initial (identity) values
-        with torch.no_grad():
+            expected = torch.sigmoid(_shared_path(net, cat, num)).numpy().astype(np.float64)
+        assert np.allclose(preds[d], expected, rtol=0, atol=1e-7), d
+    # review counterexample: UNKNOWN and MISSING rows differed by up to 0.12 through the shared input embedding
+    assert np.array_equal(preds[UNKNOWN], preds[MISSING]) and np.array_equal(preds[UNKNOWN], preds[6])
+    with torch.no_grad():  # the unseen codes' own parameter rows are still at their initial (identity) values
+        for d in UNSEEN:
             if variant == "int":
                 assert float(net.dom_bias.weight[d].abs().max()) == 0.0
             if variant == "head":
@@ -231,3 +241,86 @@ def test_epoch1_checkpoint_of_a_two_epoch_run_equals_a_one_epoch_run(variant):
 def test_pn_min_rows_is_below_the_small_group_threshold():
     # every small group of the primary metric (>= 3,000 training clicks, §16.3) gets its own PN statistics
     assert PN_MIN_ROWS <= 3000
+
+
+# ---------------------------------------------------------------- review counterexamples (§16 revision 2)
+def _data_constant_features(seed=0):
+    """Domain 2: 5,000 rows where numeric input 2 is ALWAYS 0; domain 3: 3,000 rows where it is 0/1.
+    Numeric input 3 is 0 on every training row. The label does not depend on either input."""
+    rng = np.random.default_rng(seed)
+    dom = np.r_[np.full(5000, 2), np.full(3000, 3)]
+    n = dom.size
+    cat = np.column_stack([dom, rng.integers(2, 10, n), rng.integers(2, 20, n)]).astype(np.int32)
+    num = rng.normal(size=(n, 4)).astype(np.float32)
+    num[:, 2] = np.where(dom == 3, rng.integers(0, 2, n), 0)
+    num[:, 3] = 0.0
+    y = (rng.random(n) < 1 / (1 + np.exp(-(-2.5 + 0.8 * num[:, 0])))).astype(np.float32)
+    return MDArrays(cat, num), y
+
+
+def _fit_constant(variant):
+    a, y = _data_constant_features()
+    return a, MDModel.fit(a, y, CAT_SIZES, DOM_COL, variant, seed=1, dim=4, epochs=1, batch=1024, lr=3e-3,
+                          threads=1)[0]
+
+
+def test_pn_dimension_constant_in_a_domain_falls_back_to_the_global_statistics():
+    a, m = _fit_constant("star")
+    net = m.net
+    sub = a.take(np.flatnonzero(a.cat[:, DOM_COL] == 2)[:64])
+    flipped = MDArrays(sub.cat.copy(), sub.num.copy())
+    flipped.num[:, 2] = 1.0  # never seen in domain 2 during training
+    cat, num = m.tensors(flipped, slice(None))
+    with torch.no_grad():
+        dom = net.domain(cat)
+        x = net.inputs(cat, num, dom)
+        mu, var = net.pn.stats(x, 2, True)
+        zn = (x - mu) / torch.sqrt(var + PN_EPS)
+        g_mu, g_var = net.pn.global_stats()
+    j = net.emb[0].embedding_dim * len(net.in_cols) + 2
+    assert torch.allclose(zn[:, j], (x[:, j] - g_mu[j]) / torch.sqrt(g_var[j] + PN_EPS))
+    assert float(zn[:, j].abs().max()) < 10  # review: 736 before the fix
+    p = m.predict(flipped)
+    assert (p > 1e-4).all() and (p < 1 - 1e-4).all()  # review: 0.0586 -> 0.0 before the fix
+
+
+@pytest.mark.parametrize("variant", ["int", "shared", "head", "star"])
+def test_numeric_column_constant_in_training_is_neutral_at_inference(variant):
+    a, m = _fit_constant(variant)
+    assert m.num_keep[3] == 0 and m.num_keep[:3].all()
+    sub = a.take(np.arange(64))
+    changed = MDArrays(sub.cat.copy(), sub.num.copy())
+    changed.num[:, 3] = 1.0  # review: standardized to 1,000,000 before the fix
+    assert np.array_equal(m.predict(changed), m.predict(sub))
+
+
+def test_star_optimizer_steps_hold_at_least_one_batch_of_rows():
+    sizes = {2: 4096, 3: 8191, 4: 5}  # review: these became three single updates of 4,096 / 8,191 / 5 rows
+    dom = np.concatenate([np.full(n, d) for d, n in sizes.items()])
+    dom_rows = [np.flatnonzero(dom == d) for d in sizes]
+    for seed in range(20):
+        chunks = domain_batches(np.random.default_rng(seed), dom_rows, 4096)
+        chunk_of = np.empty(dom.size, dtype=np.int64)
+        for k, c in enumerate(chunks):
+            chunk_of[c] = k
+        steps = accumulate_steps(chunks, 4096)
+        assert np.array_equal(np.sort(np.concatenate(steps)), np.arange(dom.size))
+        for st in steps:
+            assert 4096 <= st.size < 4 * 4096
+            for d in np.unique(dom[st]):  # one chunk per domain per step, so PN statistics stay per chunk
+                assert np.unique(chunk_of[st[dom[st] == d]]).size == 1
+        tiny = [st for st in steps if (dom[st] == 4).any()]
+        assert len(tiny) == 1 and tiny[0].size > 5
+    m = _fit("star")[0]
+    assert m.info["step_rows_epoch1"]["min"] >= 256
+    assert set(m.info["domain_steps_epoch1"]) == set(ROWS)
+
+
+@pytest.mark.parametrize("variant", ["star", "head"])
+def test_single_row_and_batched_predictions_agree_within_the_float32_tolerance(variant):
+    m = _fit(variant)[0]
+    a, _ = _data(seed=5)
+    sub = a.take(np.arange(200))  # mixed domains, so each domain's share differs between the two paths
+    batched = m.predict(sub)
+    single = np.array([m.predict(sub.take(np.array([i])))[0] for i in range(sub.n)])
+    assert np.abs(single - batched).max() <= NN_SINGLE_VS_BATCH_TOL
