@@ -39,7 +39,7 @@ import polars as pl
 from . import domain_eval as D
 from . import groups as G
 from .artifacts import load_gbdt
-from .checks import CheckFailed, require_close, require_finite_probs
+from .checks import NN_SINGLE_VS_BATCH_TOL, NUM_TOL, PRED_TOL, CheckFailed, require_close, require_finite_probs
 from .domain_models import load_domain_calibrators, load_gbdt_offset
 from .features import featurize, read_raw
 from .mddata import DOM_COL, encode_md, load_md, save_md
@@ -50,6 +50,7 @@ FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star", "N-sta
 HOLDOUT = ["train-13.parquet", "train-14.parquet"]
 HF_TREE = "https://huggingface.co/api/datasets/alimamaTech/MAC/tree/main/train"
 LATENCY_FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"]
+LATENCY_PROTOCOL_VERSION, LATENCY_REQUESTS, ACCEPT_OTHER_CPU = 2, 5000, 400.0  # same values as scripts/latency_c.py
 COMPARED_METRICS = [("small", "macro_logloss"), ("small", "click_weighted_logloss"), ("small", "within_domain_auc_macro"),
                     ("small", "poisson_deviance_mean"), ("large", "click_weighted_logloss"),
                     ("overall_nonmissing", "logloss"), ("overall_nonmissing", "auc"), ("G1_macro_logloss",)]
@@ -111,24 +112,42 @@ def expect(run: Path) -> dict:
 
 
 def frozen_p99(lat: dict) -> tuple[dict, dict]:
-    """Per family and seed, the p99 (ms) of the uniform-traffic replay, taken from the DETAILED per-seed record
-    (review: a summary with a missing seed or a negative value used to be frozen as is)."""
+    """Per family and seed, the p99 (ms) of the uniform-traffic replay, taken from the DETAILED per-seed record.
+    Refused unless the record uses the pre-registered protocol (version 2, 5,000 timed requests per seed), passed
+    the serving check (codes, numeric features, probabilities) and meets the acceptance rule recomputed from its
+    recorded environment (reviews: one seed, a negative value, a NaN summary, a numeric-feature error of 1.0 and the
+    excluded 1,000-request measurement used to be frozen)."""
     p99, strat = {}, {}
     for fam in LATENCY_FAMILIES:
         f = lat[fam]
+        proto = f.get("protocol", {})
+        if proto.get("version") != LATENCY_PROTOCOL_VERSION or proto.get("requests") != LATENCY_REQUESTS:
+            raise CheckFailed(f"latency of {fam} was not measured with protocol v{LATENCY_PROTOCOL_VERSION} "
+                              f"({LATENCY_REQUESTS} requests): {proto}")
+        st, en = f.get("environment_start"), f.get("environment_end")
+        if not st or not en:
+            raise CheckFailed(f"latency of {fam} has no recorded environment")
+        ok = (not st["other_repo_python"] and not en["other_repo_python"]
+              and st["other_cpu_percent"] <= ACCEPT_OTHER_CPU and en["other_cpu_percent"] <= ACCEPT_OTHER_CPU)
+        if not ok or f.get("accepted") is not True:
+            raise CheckFailed(f"latency of {fam} does not meet the acceptance rule: start {st}, end {en}")
         if sorted(int(k) for k in f["seeds"]) != sorted(D.SEEDS):
             raise CheckFailed(f"latency of {fam} measured for seeds {sorted(f['seeds'])}, expected {D.SEEDS}")
+        tol = PRED_TOL if fam.startswith("G-") else NN_SINGLE_VS_BATCH_TOL
         p99[fam], strat[fam] = {}, {}
         for s in D.SEEDS:
             rec = f["seeds"][str(s)]
             c = rec["consistency"]
-            if not (c["codes_mismatch"] == 0 and c["prediction_max_abs_diff"] <= c["tolerances"]["pred"]):
-                raise CheckFailed(f"serving check of {fam} seed {s} did not pass")
+            if not (c["codes_mismatch"] == 0 and np.isfinite(c["num_max_abs_diff"]) and c["num_max_abs_diff"] <= NUM_TOL
+                    and np.isfinite(c["prediction_max_abs_diff"]) and c["prediction_max_abs_diff"] <= tol
+                    and c["tolerances"]["pred"] == tol):
+                raise CheckFailed(f"serving check of {fam} seed {s} did not pass: {c}")
+            if rec["batch1_traffic"].get("requests") != LATENCY_REQUESTS:
+                raise CheckFailed(f"{fam} seed {s}: {rec['batch1_traffic'].get('requests')} timed requests")
             v = float(rec["batch1_traffic"]["p99_ms"])
-            if not (np.isfinite(v) and v > 0):
-                raise CheckFailed(f"p99 of {fam} seed {s} must be finite and positive, got {v}")
-            if abs(float(f["p99_ms_by_seed"][str(s)]) - v) > 0:
-                raise CheckFailed(f"p99 summary of {fam} seed {s} differs from the detailed record")
+            summary = float(f["p99_ms_by_seed"][str(s)])
+            if not (np.isfinite(v) and v > 0 and np.isfinite(summary) and summary == v):
+                raise CheckFailed(f"p99 of {fam} seed {s}: detail {v}, summary {summary}")
             p99[fam][s] = v
             strat[fam][s] = float(rec["batch1_stratified"]["p99_ms"])
     return p99, strat
@@ -260,6 +279,10 @@ def guard_test(run: Path, manifest: dict, files: list[Path], git: dict) -> dict[
         raise CheckFailed("the dry run used different evaluation code (cvr/*.py changed since the dry run)")
     if dry.get("evaluation_git", {}).get("dirty_files"):
         raise CheckFailed("the dry run was run on an uncommitted tree")
+    v2_rec = {Path(x["file"]).name: x["sha256"] for x in
+              json.loads((run / "results.json").read_text())["meta"]["data"]["v2"]}  # frozen file
+    if dry.get("files_sha256") != v2_rec or None in v2_rec.values():
+        raise CheckFailed(f"the dry run's V2 files {dry.get('files_sha256')} differ from the development V2 {v2_rec}")
     if sorted(f.name for f in files) != sorted(manifest["holdout_files"]):
         raise CheckFailed(f"test files {[f.name for f in files]} differ from the frozen holdout {manifest['holdout_files']}")
     verified = {}
@@ -463,16 +486,36 @@ def dryrun_checks(run: Path, manifest: dict, preds: dict, rows: dict, result: di
     close("verdict relative improvement", result["verdict"]["conditions"]["effect_size"]["relative_improvement"],
           rec_v["conditions"]["effect_size"]["relative_improvement"])
     bn, bg = manifest["best_on_v2"]["nn"], manifest["best_on_v2"]["gbdt"]
-    for k, b in result["secondary"].items():
-        rk = "best NN - best GBDT" if k == f"{bn} - {bg}" else k
-        if rk not in res["v2_secondary"]:
-            raise CheckFailed(f"secondary comparison {k} is not in the development results")
-        same_boot(f"secondary {k}", b, res["v2_secondary"][rk])
-    for k in ("full", "min", "max"):
-        close(f"leave-one-out {k}", result["leave_one_domain_out"][k], res["v2_leave_one_domain_out"][k])
-    if result["leave_one_domain_out"]["sign_flips"] != res["v2_leave_one_domain_out"]["sign_flips"]:
-        raise CheckFailed("leave-one-out sign flips differ")
+    mapped = secondary_names(result["secondary"], bn, bg)
+    if sorted(mapped) != sorted(res["v2_secondary"]):  # review: a missing comparison still passed
+        raise CheckFailed(f"secondary comparisons {sorted(mapped)} vs recorded {sorted(res['v2_secondary'])}")
+    for k, rk in mapped.items():
+        same_boot(f"secondary {k}", result["secondary"][rk], res["v2_secondary"][k])
+    checked += same_loo(result["leave_one_domain_out"], res["v2_leave_one_domain_out"])
     return {"dryrun_passed": True, "dryrun_values_reproduced": checked}
+
+
+def secondary_names(secondary: dict, best_nn: str, best_gbdt: str) -> dict[str, str]:
+    """Development-run name -> evaluation name (the runner calls the best-of-family comparison 'best NN - best GBDT')."""
+    return {("best NN - best GBDT" if k == f"{best_nn} - {best_gbdt}" else k): k for k in secondary}
+
+
+def same_loo(new: dict, rec: dict) -> int:
+    """Leave-one-domain-out reproduced domain by domain (review: an emptied per-domain table still passed)."""
+    a = {int(k): v for k, v in new["by_removed_domain"].items()}
+    b = {int(k): v for k, v in rec["by_removed_domain"].items()}
+    if sorted(a) != sorted(b) or not a:
+        raise CheckFailed(f"leave-one-out domains {sorted(a)} vs recorded {sorted(b)}")
+    n = 0
+    for d in a:
+        require_close(f"leave-one-out domain {d}", abs(a[d] - b[d]), DRYRUN_TOL)
+        n += 1
+    for k in ("full", "min", "max"):
+        require_close(f"leave-one-out {k}", abs(new[k] - rec[k]), DRYRUN_TOL)
+        n += 1
+    if new["sign_flips"] != rec["sign_flips"]:
+        raise CheckFailed("leave-one-out sign flips differ")
+    return n
 
 
 def render(r: dict, manifest: dict) -> str:
