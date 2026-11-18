@@ -234,3 +234,21 @@ def test_gate_is_an_explicit_parameter(tmp_path):
     loose = Menu.from_frame(df, meta, min_positives=10, min_users=1).ablation_effect("history_match", "all",
                                                                                      sensitivity=False)
     assert default["status"] == "insufficient_data" and loose["status"] == "ok"
+
+
+def test_two_step_run_executes_exactly_the_committed_plans(tmp_path):
+    # final run: plans are written (menu never loaded), committed, then executed from that file
+    one = tmp_path / "one"
+    s_one = run(_menu(tmp_path / "menu"), one, scripted_factory(AuditLog(one / "audit.jsonl"), 2), 2, 2)
+    two = tmp_path / "two"
+    frozen = run(tmp_path / "no_menu_here", two, scripted_factory(AuditLog(two / "audit.jsonl"), 2), 2, 2,
+                 plans_only=True)
+    assert frozen["plans_sha256"] == s_one["plans_sha256"] and not (two / "records.json").exists()
+    committed = tmp_path / "committed_plans.json"
+    committed.write_bytes((two / "plans_frozen.json").read_bytes())
+    s_two = run(tmp_path / "menu", two, scripted_factory(AuditLog(two / "audit.jsonl"), 2), 2, 2, from_plans=committed)
+    assert (two / "plans_frozen.json").read_bytes() == committed.read_bytes()
+    assert s_two == s_one
+    # same values (key order differs: the frozen file is written with sorted keys)
+    assert json.loads((two / "records.json").read_text()) == json.loads((one / "records.json").read_text())
+    assert json.loads((two / "reports.json").read_text()) == json.loads((one / "reports.json").read_text())

@@ -39,10 +39,14 @@ def _report(system: str, user: str) -> dict:
 
 
 class _Scripted(ScriptedLLM):
+    """Answers by call role, not by call order: a planner call gets the plan, a reporter call gets _report."""
+
+    def __init__(self, audit, plan: dict):
+        super().__init__(audit, [], [])
+        self.plan = plan
+
     def structured(self, system, user, schema, role, max_tokens=4096):
-        out = self.s.pop(0)
-        if callable(out):
-            out = out(system, user)
+        out = self.plan if role.startswith("planner") else _report(system, user)
         self.audit.write({"role": role, "model": "scripted", "content": out})
         return out
 
@@ -50,14 +54,11 @@ class _Scripted(ScriptedLLM):
 def scripted_factory(audit, negative_session: int | None = None):
     """make_llm(k): session k gets the base plan (plus the planted control in the negative session).
 
-    One instance per session: the run asks for session k's LLM twice (planner, then reporter), and each
-    instance answers its queue in order. (A fresh instance per call handed the PLAN to the reporter, so
-    every report item was missing and the LLM-text checks passed without checking any text.)"""
-    made = {}
+    Answers depend on the role of the call. An earlier queue (plan first, then report) broke twice: a fresh
+    instance per call handed the PLAN to the reporter, so every report item was missing and the LLM-text
+    checks passed without checking any text; and an execution from a frozen plan file (no planner call)
+    did the same."""
 
     def make(k: int):
-        if k not in made:
-            hyps = BASE + ([NEGATIVE] if k == negative_session else [])
-            made[k] = _Scripted(audit, [{"hypotheses": hyps}, _report], [])
-        return made[k]
+        return _Scripted(audit, {"hypotheses": BASE + ([NEGATIVE] if k == negative_session else [])})
     return make

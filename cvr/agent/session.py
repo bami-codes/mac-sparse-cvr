@@ -2,6 +2,9 @@
 deduplicated execution with a single multiple-testing family, then reports and checks.
 
     uv run python -m cvr.agent.session runs/agent_menu runs/agent_runs/<name> --sessions 5 --negative-control 5
+    # or in two steps, so the plans can be committed before any execution:
+    uv run python -m cvr.agent.session runs/agent_menu runs/agent_runs/<name> --sessions 5 --negative-control 5 --plans-only
+    uv run python -m cvr.agent.session runs/agent_menu runs/agent_runs/<name> --from-plans <committed plans_frozen.json>
     uv run python -m cvr.agent.session runs/agent_menu runs/agent_runs/<name> --scripted     # no API key
 
 What the code decides (never the LLM):
@@ -246,11 +249,11 @@ def check_text(text: str, verdict: str) -> dict:
 
 # ------------------------------------------------------------------ run
 def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_session: int | None,
-        from_plans: Path | None = None) -> dict:
+        from_plans: Path | None = None, plans_only: bool = False) -> dict:
     out.mkdir(parents=True, exist_ok=True)
-    menu = Menu(menu_dir)
-    # 1) all plans first; frozen (hashed) before any tool sees confirmation data.
-    #    With from_plans, an earlier frozen set is reused as is (re-analysis without new planner calls).
+    # 1) all plans first; frozen (hashed) before any tool sees confirmation data. The menu is not even loaded here.
+    #    plans_only stops after this step, so the frozen file can be committed before execution; a later run
+    #    with from_plans executes exactly that file (also used for re-analysis without new planner calls).
     plans = json.loads(from_plans.read_text()) if from_plans else []
     for k in ([] if from_plans else range(1, sessions + 1)):
         neg = k == negative_control_session
@@ -263,6 +266,9 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
     frozen = json.dumps(plans, ensure_ascii=False, sort_keys=True)
     (out / "plans_frozen.json").write_text(frozen)
     plans_sha = hashlib.sha256(frozen.encode()).hexdigest()
+    if plans_only:
+        return {"sessions": len(plans), "plans_sha256": plans_sha, "plans_file": str(out / "plans_frozen.json")}
+    menu = Menu(menu_dir)
 
     # 2) validate, deduplicate, execute each unique test once, one BH family for the whole run
     records, unique = [], {}
@@ -417,7 +423,8 @@ if __name__ == "__main__":
     ap.add_argument("--sessions", type=int, default=5)
     ap.add_argument("--negative-control", type=int, default=None, help="session number that sees the false E8")
     ap.add_argument("--scripted", action="store_true")
-    ap.add_argument("--from-plans", type=Path, default=None, help="reuse a plans_frozen.json (re-analysis)")
+    ap.add_argument("--from-plans", type=Path, default=None, help="execute a frozen plans_frozen.json (no planner calls)")
+    ap.add_argument("--plans-only", action="store_true", help="write and hash the plans, then stop (menu not loaded)")
     a = ap.parse_args()
     audit = AuditLog(Path(a.out) / "audit.jsonl")
     if a.scripted:
@@ -427,5 +434,6 @@ if __name__ == "__main__":
     else:
         def factory(k: int):
             return ClovaClient(audit, seed=k)
-    print(json.dumps(run(Path(a.menu), Path(a.out), factory, a.sessions, a.negative_control, a.from_plans),
+    print(json.dumps(run(Path(a.menu), Path(a.out), factory, a.sessions, a.negative_control, a.from_plans,
+                         a.plans_only),
                      ensure_ascii=False, indent=2, default=float))
