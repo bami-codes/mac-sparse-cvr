@@ -66,14 +66,3 @@ def test_group_rate_fit_does_not_depend_on_row_order():
     for seed in range(3):
         b = SmoothedRate.fit(df.sample(fraction=1.0, shuffle=True, seed=seed), "ad_feat1")
         assert b.m == a.m and b.table.equals(a.table)
-
-
-def test_group_rate_does_not_depend_on_row_order():
-    # the prior strength moved in the 10th digit between identical runs because groups came back in a different order
-    from cvr.models import SmoothedRate
-
-    df = _frame()
-    shuffled = df.sample(fraction=1.0, shuffle=True, seed=3)
-    a, b = SmoothedRate.fit(df, "ad_feat2"), SmoothedRate.fit(shuffled, "ad_feat2")
-    a1, b1 = SmoothedRate.fit(df, "ad_feat1"), SmoothedRate.fit(shuffled, "ad_feat1")
-    assert a.m == b.m and a1.m == b1.m and a1.table.equals(b1.table)
