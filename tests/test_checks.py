@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from cvr.checks import NUM_TOL, CheckFailed, require_close, serving_consistency
+from cvr.checks import NN_SINGLE_VS_BATCH_TOL, NUM_TOL, PRED_TOL, CheckFailed, require_close, serving_consistency
 
 
 def _ok():
@@ -66,3 +66,15 @@ def test_python_max_hides_nan_so_each_calibrator_is_checked_separately():
         require_finite_probs("iii", bad)
     with pytest.raises(CheckFailed):
         require_close("iii", float(np.abs(bad - good).max()), 1e-9)  # numpy max propagates NaN
+
+
+def test_float32_rounding_needs_the_network_tolerance_but_a_real_error_does_not_pass_it():
+    c_on, c_off, n_on, n_off, p_on, p_off = _ok()
+    p_on[0] += 5.96e-8  # single-row vs batched float32 forward of the same network (seen in review)
+    with pytest.raises(CheckFailed, match="calibrated predictions"):
+        serving_consistency(c_on, c_off, n_on, n_off, p_on, p_off)  # default PRED_TOL
+    out = serving_consistency(c_on, c_off, n_on, n_off, p_on, p_off, pred_tol=NN_SINGLE_VS_BATCH_TOL)
+    assert out["tolerances"]["pred"] == NN_SINGLE_VS_BATCH_TOL > PRED_TOL
+    p_on[1] += 0.0271
+    with pytest.raises(CheckFailed, match="calibrated predictions"):
+        serving_consistency(c_on, c_off, n_on, n_off, p_on, p_off, pred_tol=NN_SINGLE_VS_BATCH_TOL)

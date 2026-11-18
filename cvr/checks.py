@@ -34,8 +34,13 @@ def require_finite_probs(name: str, p: np.ndarray) -> None:
 
 def serving_consistency(codes_online: dict[str, np.ndarray], codes_offline: dict[str, np.ndarray],
                         num_online: np.ndarray, num_offline: np.ndarray,
-                        p_online: np.ndarray, p_offline: np.ndarray) -> dict:
-    """Compare the serving path with the evaluation path on the same raw rows; raise on any mismatch."""
+                        p_online: np.ndarray, p_offline: np.ndarray, pred_tol: float = PRED_TOL) -> dict:
+    """Compare the serving path with the evaluation path on the same raw rows; raise on any mismatch.
+
+    `pred_tol` defaults to PRED_TOL (1e-9), the tolerance of the first two studies. Study C networks score a single
+    row in float32 while evaluation scores batches, so the study C runner passes NN_SINGLE_VS_BATCH_TOL for them;
+    codes and numeric features are still checked exactly / with NUM_TOL first, and same-batch reloads stay at
+    RELOAD_TOL."""
     mismatch = {c: int((codes_online[c] != codes_offline[c]).sum()) for c in codes_offline}
     if any(mismatch.values()):
         raise CheckFailed(f"categorical code mismatch between serving and evaluation paths: "
@@ -45,6 +50,6 @@ def serving_consistency(codes_online: dict[str, np.ndarray], codes_offline: dict
     require_finite_probs("serving predictions", p_online)
     require_finite_probs("evaluation-path predictions", p_offline)
     pred_diff = require_close("calibrated predictions (serving vs evaluation)",
-                              float(np.abs(p_online - p_offline).max()), PRED_TOL)
+                              float(np.abs(p_online - p_offline).max()), pred_tol)
     return {"codes_mismatch": 0, "num_max_abs_diff": num_diff, "prediction_max_abs_diff": pred_diff,
-            "tolerances": {"num": NUM_TOL, "pred": PRED_TOL}}
+            "tolerances": {"num": NUM_TOL, "pred": pred_tol}}

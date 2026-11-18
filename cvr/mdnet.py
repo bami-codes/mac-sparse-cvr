@@ -28,6 +28,11 @@ floored at NUM_STD_FLOOR.
 PN statistics (implementation choices, §16.4):
 - per-domain and global running mean / mean of squares, momentum max(0.1, 1/k) at the k-th update, so the first
   update replaces the initial value;
+- one training forward = one optimizer step, which may hold several domains (accumulated chunks). The global
+  statistics are READ ONCE at the start of the step, so every domain of the step refers to the same values, and
+  UPDATED ONCE at the end from the sum, sum of squares and count of all the step's rows (revision 3: updating
+  them while looping over the domains in code order made the result depend on the codes, which follow traffic
+  rank, and averaged a 4,096-row and a 512-row domain with equal weight);
 - a training batch with fewer than PN_MIN_ROWS rows of a domain is normalized with the global statistics and
   updates nothing; at evaluation a domain whose statistics were never updated uses the global statistics;
 - PER DIMENSION, a domain (or batch) variance below PN_REL_VAR x the global variance is replaced by the global
@@ -100,6 +105,8 @@ class PartitionedNorm(nn.Module):
         self.register_buffer("glob_mean", torch.zeros(width))
         self.register_buffer("glob_msq", torch.ones(width))
         self.register_buffer("glob_updates", torch.zeros((), dtype=torch.long))
+        self._snapshot: tuple[torch.Tensor, torch.Tensor] | None = None  # global stats read at the step start
+        self._acc: list | None = None  # [rows, sum, sum of squares] of the step, for the end-of-step update
 
     @staticmethod
     def _var(mean: torch.Tensor, msq: torch.Tensor) -> torch.Tensor:
@@ -108,18 +115,37 @@ class PartitionedNorm(nn.Module):
     def global_stats(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self.glob_mean.clone(), self._var(self.glob_mean, self.glob_msq).clamp_min(PN_VAR_FLOOR)
 
+    def begin_step(self) -> None:
+        self._snapshot = self.global_stats()
+        self._acc = [0, None, None]
+
     @torch.no_grad()
-    def _update(self, d: int, mu: torch.Tensor, msq: torch.Tensor) -> None:
+    def end_step(self) -> None:
+        n, s, ss = self._acc if self._acc is not None else (0, None, None)
+        if n >= PN_MIN_ROWS:
+            k = int(self.glob_updates) + 1
+            m = max(PN_MOMENTUM, 1.0 / k)
+            self.glob_mean.mul_(1 - m).add_(m * (s / n).to(self.glob_mean.dtype))
+            self.glob_msq.mul_(1 - m).add_(m * (ss / n).to(self.glob_msq.dtype))
+            self.glob_updates.fill_(k)
+        self._snapshot, self._acc = None, None
+
+    @torch.no_grad()
+    def _accumulate(self, z: torch.Tensor) -> None:
+        if self._acc is None:
+            return
+        zd = z.detach().double()
+        n, s, ss = self._acc
+        self._acc = [n + z.shape[0], zd.sum(0) if s is None else s + zd.sum(0),
+                     (zd ** 2).sum(0) if ss is None else ss + (zd ** 2).sum(0)]
+
+    @torch.no_grad()
+    def _update_domain(self, d: int, mu: torch.Tensor, msq: torch.Tensor) -> None:
         k = int(self.dom_updates[d]) + 1
         m = max(PN_MOMENTUM, 1.0 / k)
         self.dom_mean[d] = (1 - m) * self.dom_mean[d] + m * mu
         self.dom_msq[d] = (1 - m) * self.dom_msq[d] + m * msq
         self.dom_updates[d] = k
-        k = int(self.glob_updates) + 1
-        m = max(PN_MOMENTUM, 1.0 / k)
-        self.glob_mean.mul_(1 - m).add_(m * mu)
-        self.glob_msq.mul_(1 - m).add_(m * msq)
-        self.glob_updates.fill_(k)
 
     def stats_source(self, d: int, seen: bool, n_rows: int) -> str:
         if self.training:
@@ -127,14 +153,18 @@ class PartitionedNorm(nn.Module):
         return "domain" if (seen and int(self.dom_updates[d]) > 0) else "global"
 
     def stats(self, z: torch.Tensor, d: int, seen: bool) -> tuple[torch.Tensor, torch.Tensor]:
-        """(mu, var) per dimension; updates the running statistics on a training batch."""
-        g_mu, g_var = self.global_stats()
+        """(mu, var) per dimension. In a training step the global reference is the step-start snapshot, the
+        domain's own statistics are updated from its rows, and the rows are added to the end-of-step global sums."""
+        use_snapshot = self.training and self._snapshot is not None
+        g_mu, g_var = self._snapshot if use_snapshot else self.global_stats()
+        if self.training:
+            self._accumulate(z)
         src = self.stats_source(d, seen, z.shape[0])
         if src == "global":
             return g_mu, g_var
         if src == "batch":
             mu, var = z.mean(0), z.var(0, unbiased=False)
-            self._update(d, mu.detach(), (z.detach() ** 2).mean(0))
+            self._update_domain(d, mu.detach(), (z.detach() ** 2).mean(0))
         else:
             mu, var = self.dom_mean[d].clone(), self._var(self.dom_mean[d], self.dom_msq[d])
         own = var.detach() >= PN_REL_VAR * g_var  # a (near-)constant dimension of this domain uses the global stats
@@ -203,10 +233,17 @@ class MDNet(nn.Module):
         dom = self.domain(cat)
         x = self.inputs(cat, num, dom)
         if self.variant in ("star", "star_nopn"):
-            out = x.new_zeros(x.shape[0])
-            for d in torch.unique(dom):  # PN statistics and star weights are per domain
-                idx = (dom == d).nonzero().squeeze(1)
-                out = out.index_put((idx,), self._star_one(x[idx], d.view(1), bool(self.seen[d])))
+            step = self.training and self.pn is not None
+            if step:
+                self.pn.begin_step()
+            try:
+                out = x.new_zeros(x.shape[0])
+                for d in torch.unique(dom):  # PN statistics and star weights are per domain
+                    idx = (dom == d).nonzero().squeeze(1)
+                    out = out.index_put((idx,), self._star_one(x[idx], d.view(1), bool(self.seen[d])))
+            finally:
+                if step:
+                    self.pn.end_step()
             return out
         h = self.body(x)
         out = self.out(h).squeeze(-1)

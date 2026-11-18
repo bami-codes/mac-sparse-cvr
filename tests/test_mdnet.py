@@ -324,3 +324,50 @@ def test_single_row_and_batched_predictions_agree_within_the_float32_tolerance(v
     batched = m.predict(sub)
     single = np.array([m.predict(sub.take(np.array([i])))[0] for i in range(sub.n)])
     assert np.abs(single - batched).max() <= NN_SINGLE_VS_BATCH_TOL
+
+
+# ---------------------------------------------------------------- review counterexample (§16 revision 3)
+def _two_domain_step(code_a, code_b, seed=0):
+    """Domain A (4,096 rows, numeric mean -1) and domain B (512 rows, numeric mean +1) in ONE training step."""
+    rng = np.random.default_rng(seed)
+    na, nb = 4096, 512
+    dom = np.r_[np.full(na, code_a), np.full(nb, code_b)]
+    cat = np.column_stack([dom, rng.integers(2, 10, na + nb), rng.integers(2, 20, na + nb)])
+    num = np.r_[rng.normal(-1, 1, (na, 4)), rng.normal(1, 1, (nb, 4))].astype(np.float32)
+    y = (rng.random(na + nb) < 0.05).astype(np.float32)
+    return torch.as_tensor(cat, dtype=torch.long), torch.as_tensor(num), torch.as_tensor(y)
+
+
+def _star_with_equal_domains():
+    torch.manual_seed(0)
+    net = MDNet(CAT_SIZES, DOM_COL, 4, "star", dim=4)
+    with torch.no_grad():  # codes 2 and 3 start from identical parameters, so only the code differs
+        net.emb[DOM_COL].weight[3] = net.emb[DOM_COL].weight[2]
+        net.aux_emb.weight[3] = net.aux_emb.weight[2]
+    net.seen[2:4] = True
+    return net.train()
+
+
+def test_star_step_does_not_depend_on_which_code_each_domain_has():
+    import copy
+    base = _star_with_equal_domains()
+    nets = {"a2b3": copy.deepcopy(base), "a3b2": copy.deepcopy(base)}
+    batches = {"a2b3": _two_domain_step(2, 3), "a3b2": _two_domain_step(3, 2)}
+    first = {k: torch.sigmoid(nets[k](*batches[k][:2])).detach() for k in nets}  # training forward = one step
+    assert float((first["a2b3"] - first["a3b2"]).abs().max()) < 1e-6  # review: 0.0848 before the fix
+    for k in nets:  # the global mean after the first step is the mean of ALL the step's rows
+        pooled = batches[k][1].double().mean(0)
+        j = slice(net_num_start(nets[k]), None)
+        assert torch.allclose(nets[k].pn.glob_mean[j].double(), pooled, atol=1e-5)  # review: 0 instead of -0.7778
+    nets = {"a2b3": copy.deepcopy(base), "a3b2": copy.deepcopy(base)}
+    loss_fn = nn.BCEWithLogitsLoss()
+    for k in nets:
+        train_step(nets[k], make_optimizers(nets[k], 1e-2), *batches[k], loss_fn)
+        nets[k].eval()
+    with torch.no_grad():
+        after = {k: torch.sigmoid(nets[k](*batches[k][:2])) for k in nets}
+    assert float((after["a2b3"] - after["a3b2"]).abs().max()) < 1e-6  # review: 1.94e-4 before the fix
+
+
+def net_num_start(net):
+    return sum(net.emb[i].embedding_dim for i in net.in_cols)
