@@ -3,7 +3,8 @@
     uv run python -m cvr.study_e_eval calibrate runs/e_study/config_choice.json
 
 Inputs: predictions of each research checkpoint (the train-17 checkpoint = a model trained on train-00..17) on
-V1 = train-18 and V2 = train-19, made on the pod by cvr.pymal_run predict and copied to runs/e_runs/<run>/research/.
+V1 = train-18 and V2 = train-19, made on the pod by cvr.pymal_run predict --out runs/e_runs/research and copied back
+with the run records (runs/e_runs/<run>/run.json, which give each checkpoint's SHA-256).
 Group codes come from the fixed training statistics (cvr/study_e.py groups); a token absent from them is one
 "unseen" group. Every prediction file is checked row by row against the label (last > 0) read again from the
 source parquet file, so a row-order slip cannot reach the calibration.
@@ -64,12 +65,26 @@ def run_id(model: str, lr: float, lamda: float, seed: int) -> str:
     return f"{model}_lr{lr:g}_lam{lamda:g}_s{seed}"
 
 
+def checkpoint_sha(rid: str, after: str = "train-17.parquet") -> str:
+    return json.loads((RUNS / rid / "run.json").read_text())["checkpoints"][after]["sha256"]
+
+
+def prediction_file(question_dir: str, stem: str, sha: str, name: str) -> Path:
+    """cvr.pymal_run predict writes <out>/<checkpoint stem>_<first 12 of its SHA-256>/<file>.npz: predictions are
+    found through the checkpoint itself, so all checkpoints of one claim of the test can share one output folder."""
+    return RUNS / question_dir / f"{stem}_{sha[:12]}" / f"{Path(name).stem}.npz"
+
+
 def predictions(rid: str, name: str, y_file: np.ndarray) -> dict:
-    hits = sorted((RUNS / rid / "research").glob(f"{CKPT}_*/{Path(name).stem}.npz"))
-    if len(hits) != 1:
-        raise FileNotFoundError(f"{rid} {name}: {hits}")
+    sha = checkpoint_sha(rid)
+    f = prediction_file("research", CKPT, sha, name)
+    if not f.exists():
+        raise FileNotFoundError(f"{rid} {name}: {f}")
+    hits = [f]
     z = dict(np.load(hits[0]))
     meta = json.loads(hits[0].with_suffix(".json").read_text())
+    if meta["checkpoint_sha256"] != sha:
+        raise ValueError(f"{f}: made with checkpoint {meta['checkpoint_sha256'][:12]}, the run's is {sha[:12]}")
     if z["p_last"].size != y_file.size or not np.array_equal(z["y_last"].astype(np.int8), y_file):
         raise ValueError(f"{hits[0]}: labels differ from {name} read again in file order")
     if hashlib.sha256(hits[0].read_bytes()).hexdigest() != meta["sha256"]:

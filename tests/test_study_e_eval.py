@@ -47,7 +47,11 @@ def write_case(tmp: Path, monkeypatch, shuffle_v2: bool = False) -> Path:
         choice[model] = {"lr": 0.003, "lamda": 0.3}
         for s in Q.SEEDS:
             rid = Q.run_id(model, 0.003, 0.3, s)
-            d = runs / rid / "research" / f"{Q.CKPT}_abcdef123456"
+            (runs / rid).mkdir(parents=True)
+            ck17, ck19 = hashlib.sha256(f"17{rid}".encode()).hexdigest(), hashlib.sha256(f"19{rid}".encode()).hexdigest()
+            (runs / rid / "run.json").write_text(json.dumps({"checkpoints": {"train-17.parquet": {"sha256": ck17},
+                                                                            "train-19.parquet": {"sha256": ck19}}}))
+            d = runs / "research" / f"{Q.CKPT}_{ck17[:12]}"
             d.mkdir(parents=True)
             for name, (tok, base, y, user) in files.items():
                 noise = np.random.default_rng(s).normal(0, 0.05, y.size)
@@ -57,7 +61,7 @@ def write_case(tmp: Path, monkeypatch, shuffle_v2: bool = False) -> Path:
                     yy = yy[::-1].copy()  # predictions saved in another row order
                 np.savez(d / f"{Path(name).stem}.npz", p_last=p.astype(np.float32), y_last=yy, user=user, row=np.arange(y.size))
                 sha = hashlib.sha256((d / f"{Path(name).stem}.npz").read_bytes()).hexdigest()
-                (d / f"{Path(name).stem}.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": f"ck{rid}"}))
+                (d / f"{Path(name).stem}.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": ck17}))
     path = tmp / "choice.json"
     path.write_text(json.dumps(choice))
     return path
@@ -115,20 +119,18 @@ def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
     for model, shift in (("MoAE", 0.6), ("BASE", 0.9)):
         for s in Q.SEEDS:
             rid = Q.run_id(model, choice[model]["lr"], choice[model]["lamda"], s)
-            run = Q.RUNS / rid
-            (run / "run.json").write_text(json.dumps({"checkpoints": {"train-17.parquet": {"sha256": f"ck{rid}"},
-                                                                     "train-19.parquet": {"sha256": f"ck19{rid}"}}}))
+            ck17, ck19 = Q.checkpoint_sha(rid), Q.checkpoint_sha(rid, "train-19.parquet")
             p = expit(base + np.random.default_rng(s).normal(0, 0.05, y.size) + np.where(np.isin(tok, G1), shift, 0.0))
-            d = run / "research" / f"{Q.CKPT}_abcdef123456"
+            d = Q.prediction_file("research", Q.CKPT, ck17, "test.parquet").parent
             np.savez(d / "test.npz", p_last=p.astype(np.float32), y_last=y, user=user, row=np.arange(y.size))
             sha = hashlib.sha256((d / "test.npz").read_bytes()).hexdigest()
-            (d / "test.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": f"ck{rid}"}))
-            d1 = run / "q1" / "model_after_train-19_abcdef123456"
+            (d / "test.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": ck17}))
+            d1 = Q.prediction_file("q1", "model_after_train-19", ck19, "test.parquet").parent
             d1.mkdir(parents=True)
             q = np.clip(p * 0.9, 1e-6, 1 - 1e-6).astype(np.float32)
             np.savez(d1 / "test.npz", p_last=q, y_last=y, user=user, row=np.arange(y.size))
             (d1 / "test.json").write_text(json.dumps({
-                "checkpoint_sha256": f"ck19{rid}", "source_sha256": test_sha,
+                "checkpoint_sha256": ck19, "source_sha256": test_sha,
                 "auc": float(roc_auc_score(y, q)), "gauc": M.gauc(y, q.astype(np.float64), user)["gauc"]}))
     return F
 

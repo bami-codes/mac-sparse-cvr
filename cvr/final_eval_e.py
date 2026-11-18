@@ -294,9 +294,9 @@ def _test_q1(m: dict) -> dict:
         vals = []
         for s in Q.SEEDS:
             rid = Q.run_id(model, c["lr"], c["lamda"], s)
-            hits = sorted((Q.RUNS / rid / "q1").glob("model_after_train-19_*/test.npz"))
-            if len(hits) != 1:
-                raise CheckFailed(f"{rid}: Q1 test predictions {hits}")
+            hits = [Q.prediction_file("q1", "model_after_train-19", m["checkpoints"][rid], Q.TEST)]
+            if not hits[0].exists():
+                raise CheckFailed(f"{rid}: no Q1 test predictions at {hits[0]}")
             z = np.load(hits[0])
             rec = json.loads(hits[0].with_suffix(".json").read_text())
             if rec["checkpoint_sha256"] != m["checkpoints"][rid] or rec["source_sha256"] != m["official_test_sha256"]:
