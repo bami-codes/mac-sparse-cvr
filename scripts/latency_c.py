@@ -107,11 +107,14 @@ def environment() -> dict:
     """Other python processes of this virtualenv and the CPU use of every process outside this measurement's own
     process chain (this process and its parents), plus load averages for the record."""
     table = []
-    for line in subprocess.run(["ps", "-Ao", "pid=,ppid=,pcpu=,command="], capture_output=True,
-                               text=True).stdout.splitlines():
+    proc = subprocess.run(["ps", "-Ao", "pid=,ppid=,pcpu=,command="], capture_output=True, text=True)
+    for line in proc.stdout.splitlines():
         parts = line.split(None, 3)
         if len(parts) == 4:
             table.append((int(parts[0]), int(parts[1]), float(parts[2]), parts[3]))
+    if proc.returncode != 0 or not any(pid == os.getpid() for pid, _, _, _ in table):
+        # an empty or failed `ps` would otherwise read as 0% CPU and pass the acceptance rule (review)
+        raise RuntimeError(f"process table unavailable (ps exit {proc.returncode}); the measurement is not valid")
     parent = {pid: ppid for pid, ppid, _, _ in table}
     mine, pid = set(), os.getpid()
     while pid and pid not in mine:  # this process and its ancestors (the parent latency process, uv, the shell)

@@ -111,6 +111,37 @@ def expect(run: Path) -> dict:
     return rec
 
 
+def latency_accepted(start: dict, end: dict) -> bool:
+    return (not start["other_repo_python"] and not end["other_repo_python"]
+            and start["other_cpu_percent"] <= ACCEPT_OTHER_CPU and end["other_cpu_percent"] <= ACCEPT_OTHER_CPU)
+
+
+def check_latency_provenance(report: dict, run: Path, sel: dict) -> None:
+    """The latency report must come from THIS run's selected models and calibrators (review: a smoke report with
+    lambda 100 was frozen as the development run's, whose lambda is 1), and the kept attempt must be the first one
+    that meets the acceptance rule, with every earlier attempt rejected."""
+    if Path(report["run"]).resolve() != run.resolve():
+        raise CheckFailed(f"latency report is for {report['run']}, not {run}")
+    from .serving_c import model_path
+    for fam in LATENCY_FAMILIES:
+        f = report["families"][fam]
+        lam = float(sel["lambda_iiid"][fam])
+        for s in D.SEEDS:
+            info = f["seeds"][str(s)]["server"]
+            want = {"model": model_path(run, fam, s).resolve(), "calibrator": f"calib_{fam}_s{s}", "lambda": lam,
+                    "group_key": DOMAIN_KEY, "calibration": "iiid"}
+            got = {"model": Path(info["model"]).resolve(), "calibrator": info["calibrator"],
+                   "lambda": float(info["lambda"]), "group_key": info["group_key"], "calibration": info["calibration"]}
+            if got != want:
+                raise CheckFailed(f"latency of {fam} seed {s} was measured on {got}, expected {want}")
+        attempts = f.get("attempts") or []
+        flags = [latency_accepted(a["environment_start"], a["environment_end"]) for a in attempts]
+        if not attempts or True not in flags or flags.index(True) != len(attempts) - 1:
+            raise CheckFailed(f"latency of {fam}: attempts {flags}; the kept one must be the first accepted")
+        if attempts[-1]["p99_ms_by_seed"] != f["p99_ms_by_seed"] or attempts[-1]["environment_start"] != f["environment_start"]:
+            raise CheckFailed(f"latency of {fam}: the kept attempt differs from the detailed record")
+
+
 def frozen_p99(lat: dict) -> tuple[dict, dict]:
     """Per family and seed, the p99 (ms) of the uniform-traffic replay, taken from the DETAILED per-seed record.
     Refused unless the record uses the pre-registered protocol (version 2, 5,000 timed requests per seed), passed
@@ -127,9 +158,7 @@ def frozen_p99(lat: dict) -> tuple[dict, dict]:
         st, en = f.get("environment_start"), f.get("environment_end")
         if not st or not en:
             raise CheckFailed(f"latency of {fam} has no recorded environment")
-        ok = (not st["other_repo_python"] and not en["other_repo_python"]
-              and st["other_cpu_percent"] <= ACCEPT_OTHER_CPU and en["other_cpu_percent"] <= ACCEPT_OTHER_CPU)
-        if not ok or f.get("accepted") is not True:
+        if not latency_accepted(st, en) or f.get("accepted") is not True:
             raise CheckFailed(f"latency of {fam} does not meet the acceptance rule: start {st}, end {en}")
         if sorted(int(k) for k in f["seeds"]) != sorted(D.SEEDS):
             raise CheckFailed(f"latency of {fam} measured for seeds {sorted(f['seeds'])}, expected {D.SEEDS}")
@@ -182,7 +211,9 @@ def freeze(run: Path) -> dict:
     if diag["candidate_recomputed_exact"] != sel["candidate"] or diag["lambda_recomputed_exact"] != {
             k: float(v) for k, v in sel["lambda_iiid"].items()}:
         raise CheckFailed("the independent re-selection (diagnostics_calib.json) does not match selection.json")
-    p99, p99_strat = frozen_p99(json.loads((run / "latency_c.json").read_text())["families"])
+    latency_report = json.loads((run / "latency_c.json").read_text())
+    check_latency_provenance(latency_report, run, sel)
+    p99, p99_strat = frozen_p99(latency_report["families"])
     exp = json.loads((run / "holdout_expected.json").read_text())["files"]
     if sorted(exp) != sorted(HOLDOUT) or not all(re.fullmatch(r"[0-9a-f]{64}", v["sha256"]) and v["size"] > 0
                                                  for v in exp.values()):

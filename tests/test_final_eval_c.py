@@ -171,3 +171,72 @@ def test_dry_run_secondary_names_and_leave_one_out_must_match():
         F.same_loo({**rec, "by_removed_domain": {}}, rec)
     with pytest.raises(CheckFailed, match="domain 14"):
         F.same_loo({**rec, "by_removed_domain": {13: -2e-5, 14: 3e-5}}, rec)
+
+
+# ---------------------------------------------------------------- latency provenance (§16 revision 8)
+def _provenance_run(tmp_path):
+    run = tmp_path / "prov"
+    (run / "models").mkdir(parents=True)
+    for fam in ("N-int", "N-shared", "N-head", "N-star"):
+        for s in (2026, 2027, 2028):
+            (run / "models" / f"{fam}_s{s}_e2.json").write_text("{}")
+    sel = {"lambda_iiid": {f: 1.0 for f in F.LATENCY_FAMILIES}}
+    from cvr.serving_c import model_path
+    env = {"load_average": [5.0] * 3, "cpu_count": 10, "other_repo_python": [], "other_cpu_percent": 250.0}
+    fams = {}
+    for fam in F.LATENCY_FAMILIES:
+        seeds = {str(s): {"server": {"model": str(model_path(run, fam, s)), "calibrator": f"calib_{fam}_s{s}",
+                                     "lambda": 1.0, "group_key": "context_feat1", "calibration": "iiid"}}
+                 for s in (2026, 2027, 2028)}
+        p99 = {"2026": 0.1, "2027": 0.2, "2028": 0.3}
+        fams[fam] = {"seeds": seeds, "p99_ms_by_seed": p99, "environment_start": env,
+                     "attempts": [{"accepted": True, "environment_start": env, "environment_end": env, "p99_ms_by_seed": p99}]}
+    return run, sel, {"run": str(run), "families": fams}
+
+
+def test_latency_report_must_come_from_this_run_and_its_calibrators(tmp_path):
+    import copy
+    run, sel, rep = _provenance_run(tmp_path)
+    F.check_latency_provenance(rep, run, sel)
+    other = copy.deepcopy(rep)
+    other["run"] = str(tmp_path / "smoke")  # review: a smoke report was frozen for the development run
+    with pytest.raises(CheckFailed, match="latency report is for"):
+        F.check_latency_provenance(other, run, sel)
+    lam = copy.deepcopy(rep)
+    lam["families"]["G-shared"]["seeds"]["2026"]["server"]["lambda"] = 100.0  # review: lambda 100 vs 1
+    with pytest.raises(CheckFailed, match="measured on"):
+        F.check_latency_provenance(lam, run, sel)
+    cal = copy.deepcopy(rep)
+    cal["families"]["G-shared"]["seeds"]["2027"]["server"]["calibrator"] = "calib_G-int_s2027"
+    with pytest.raises(CheckFailed, match="measured on"):
+        F.check_latency_provenance(cal, run, sel)
+
+
+def test_the_kept_latency_attempt_is_the_first_accepted_one(tmp_path):
+    import copy
+    run, sel, rep = _provenance_run(tmp_path)
+    busy = {"load_average": [5.0] * 3, "cpu_count": 10, "other_repo_python": [], "other_cpu_percent": 460.0}
+    ok_env = rep["families"]["N-star"]["environment_start"]
+    good = copy.deepcopy(rep)
+    good["families"]["N-star"]["attempts"] = [
+        {"accepted": False, "environment_start": ok_env, "environment_end": busy, "p99_ms_by_seed": {"2026": 0.5}},
+        rep["families"]["N-star"]["attempts"][0]]
+    F.check_latency_provenance(good, run, sel)  # rejected, then accepted: the second one is kept
+    two_ok = copy.deepcopy(rep)
+    two_ok["families"]["N-star"]["attempts"] = [rep["families"]["N-star"]["attempts"][0]] * 2
+    none_ok = copy.deepcopy(rep)
+    none_ok["families"]["N-star"]["attempts"][0]["environment_end"] = busy
+    other_p99 = copy.deepcopy(rep)
+    other_p99["families"]["N-star"]["p99_ms_by_seed"] = {"2026": 0.1, "2027": 0.2, "2028": 0.05}
+    for bad in (two_ok, none_ok, other_p99):
+        with pytest.raises(CheckFailed, match="attempt"):
+            F.check_latency_provenance(bad, run, sel)
+
+
+def test_a_failed_process_table_is_a_failed_measurement(monkeypatch):
+    import subprocess
+
+    import scripts.latency_c as L
+    monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="x"))
+    with pytest.raises(RuntimeError, match="process table unavailable"):  # review: it read as 0% CPU
+        L.environment()
