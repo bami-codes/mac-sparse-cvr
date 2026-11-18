@@ -133,7 +133,8 @@ def create(a) -> None:
         raise SystemExit(f"spent {spent(led):.2f} + {rate} x {a.hours} h would pass the budget {led['budget_usd']} USD")
     body = {"name": a.name, "image": a.image, "disk": a.disk, "cloud": a.cloud, "ports": ["22/tcp"],
             "startSsh": True, "env": {"PUBLIC_KEY": public_key()},
-            "gpu": {"id": a.gpu, "count": 1, "minCudaVersion": a.cuda, "minRamPerGpu": a.min_ram}}
+            "gpu": {"id": a.gpu, "count": 1, "minCudaVersion": a.cuda, "minRamPerGpu": a.min_ram,
+                    "minVcpuCountPerGpu": a.min_vcpu}}  # the official DataLoader (8 workers) runs on the CPU
     pod = call("POST", "/pods", body)
     led["pods"][pod["id"]] = {"name": a.name, "gpu": a.gpu, "rate": float(pod.get("cost") or rate), "created": now(),
                               "max_hours": a.hours, "ended": None}
@@ -232,6 +233,7 @@ def main(argv: list[str]) -> None:
     p.add_argument("--cloud", default="SECURE", choices=["SECURE", "COMMUNITY"])
     p.add_argument("--cuda", default="13.0", help="lowest host CUDA version (the lock installs CUDA 13 wheels)")
     p.add_argument("--min-ram", type=int, default=64)
+    p.add_argument("--min-vcpu", type=int, default=12)
     sub.add_parser("status")
     p = sub.add_parser("exec")
     p.add_argument("pod")
