@@ -58,9 +58,50 @@ def code_fingerprint() -> str:
 
 
 # ------------------------------------------------------------------ amendment 2: settings chosen on train-19
+def planned_grid() -> list[dict]:
+    """The 45 jobs of amendment 2, from the queue's own definition (scripts/pod_queue.py grid)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("pod_queue", Path(__file__).resolve().parents[1] / "scripts" / "pod_queue.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.grid()
+
+
+def check_complete(rows: list[dict]) -> dict:
+    """Review: choosing from part of the grid was possible (a failed job is logged and the queue goes on). Every planned
+    job must appear exactly once with its planned settings, validated with a finite GAUC/AUC, or stopped by the
+    non-finite-loss rule; anything else (an infrastructure failure, a missing validation) is left to resume."""
+    plan = {j["id"]: j for j in planned_grid()}
+    seen: dict[str, int] = {}
+    for r in rows:
+        seen[r["id"]] = seen.get(r["id"], 0) + 1
+    problems = [f"missing {i}" for i in plan if i not in seen]
+    problems += [f"unplanned {i}" for i in seen if i not in plan]
+    problems += [f"{i} appears {n} times" for i, n in seen.items() if n > 1]
+    for r in rows:
+        j = plan.get(r["id"])
+        if j is None:
+            continue
+        if any(r[k] != j[k] for k in ("model", "lr", "lamda", "seed")):
+            problems.append(f"{r['id']}: settings differ from the plan")
+        if r["state"] == "done":
+            if not all(np.isfinite(r.get(k, np.nan) if r.get(k) is not None else np.nan) for k in ("val_gauc", "val_auc")):
+                problems.append(f"{r['id']}: done without a finite validation GAUC/AUC")
+        elif r["state"] == "diverged":
+            if str((r.get("diverged") or {}).get("loss")) not in ("nan", "inf", "-inf"):
+                problems.append(f"{r['id']}: stopped without a non-finite loss on record")
+        else:
+            problems.append(f"{r['id']}: state {r['state']} (resume it)")
+    if problems:
+        raise CheckFailed(f"the grid is not complete ({len(problems)} problems): {problems[:12]}")
+    return {"jobs": len(plan), "validated": sum(r["state"] == "done" for r in rows),
+            "diverged": sum(r["state"] == "diverged" for r in rows)}
+
+
 def choose(summary: Path) -> dict:
     rows = [json.loads(line) for line in Path(summary).read_text().splitlines() if line.strip()]
-    out = {}
+    completeness = check_complete(rows)
+    out = {"completeness": completeness}
     for model in ("MoAE", "BASE"):
         cand = [r for r in rows if r["model"] == model and r["seed"] == 2026 and r["state"] == "done"
                 and r.get("val_gauc") is not None and np.isfinite(r["val_gauc"])]
@@ -74,7 +115,7 @@ def choose(summary: Path) -> dict:
         out[model] = {"lr": best["lr"], "lamda": best["lamda"], "val_gauc": best["val_gauc"], "val_auc": best["val_auc"],
                       "ties_within_1e-6": len(tied)}
     out["rule"] = "max train-19 GAUC of the train-18 checkpoint; ties < 1e-6: higher AUC, then closest to lr 0.003, lambda 0.3"
-    out["grid"] = rows
+    out["grid"] = rows  # every planned job, checked complete above
     dest = E.OUT / "config_choice.json"
     if dest.exists():
         raise CheckFailed(f"{dest} exists: the settings are chosen once")

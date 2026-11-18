@@ -169,19 +169,55 @@ def test_a_changed_calibrator_stops_the_dry_run(tmp_path, monkeypatch):
         F.dryrun()
 
 
+def grid_rows(**over):
+    """Summary rows for the full planned grid, every run validated at GAUC 0.70 unless overridden by id."""
+    from cvr import final_eval_e as F
+    rows = []
+    for j in F.planned_grid():
+        r = {k: j[k] for k in ("id", "model", "lr", "lamda", "seed")} | {"state": "done", "val_gauc": 0.70, "val_auc": 0.80}
+        rows.append(r | over.get(j["id"], {}))
+    return rows
+
+
 def test_the_choice_rule_breaks_ties_by_auc_then_the_published_values(tmp_path, monkeypatch):
     from cvr import final_eval_e as F
     monkeypatch.setattr(E, "OUT", tmp_path)
-    rows = [{"model": "MoAE", "seed": 2026, "state": "done", "lr": 0.004, "lamda": 0.1, "val_gauc": 0.76, "val_auc": 0.86},
-            {"model": "MoAE", "seed": 2026, "state": "done", "lr": 0.0035, "lamda": 0.3, "val_gauc": 0.7600000004, "val_auc": 0.87},
-            {"model": "MoAE", "seed": 2026, "state": "done", "lr": 0.003, "lamda": 0.3, "val_gauc": 0.7600000002, "val_auc": 0.87},
-            {"model": "MoAE", "seed": 2026, "state": "diverged", "lr": 0.04, "lamda": 0.3},
-            {"model": "BASE", "seed": 2026, "state": "done", "lr": 0.003, "lamda": 0.3, "val_gauc": 0.74, "val_auc": 0.85},
-            {"model": "BASE", "seed": 2026, "state": "done", "lr": 0.0004, "lamda": 0.3, "val_gauc": 0.75, "val_auc": 0.84}]
+    rows = grid_rows(**{
+        "MoAE_lr0.004_lam0.1_s2026": {"val_gauc": 0.76, "val_auc": 0.86},
+        "MoAE_lr0.0035_lam0.3_s2026": {"val_gauc": 0.7600000004, "val_auc": 0.87},
+        "MoAE_lr0.003_lam0.3_s2026": {"val_gauc": 0.7600000002, "val_auc": 0.87},
+        "MoAE_lr0.04_lam0.3_s2026": {"state": "diverged", "val_gauc": None, "val_auc": None, "diverged": {"loss": "nan"}},
+        "BASE_lr0.003_lam0.3_s2026": {"val_gauc": 0.74, "val_auc": 0.85},
+        "BASE_lr0.0004_lam0.3_s2026": {"val_gauc": 0.75, "val_auc": 0.84}})
     s = tmp_path / "summary.jsonl"
     s.write_text("\n".join(json.dumps(r) for r in rows))
     out = F.choose(s)
+    assert out["completeness"] == {"jobs": 45, "validated": 44, "diverged": 1}
     assert (out["MoAE"]["lr"], out["MoAE"]["lamda"]) == (0.003, 0.3)  # tie on GAUC and AUC: closest to 0.003 / 0.3
     assert out["BASE"]["lr"] == 0.0004  # GAUC decides first
     with pytest.raises(F.CheckFailed, match="chosen once"):
         F.choose(s)
+
+
+@pytest.mark.parametrize("case", ["missing", "duplicate", "failed", "unvalidated", "settings", "finite_stop"])
+def test_the_settings_are_chosen_only_from_the_complete_grid(tmp_path, monkeypatch, case):
+    from cvr import final_eval_e as F
+    monkeypatch.setattr(E, "OUT", tmp_path)
+    rows = grid_rows()
+    if case == "missing":  # review: one MoAE and one BASE row were enough to choose
+        rows = rows[:-1]
+    elif case == "duplicate":
+        rows = rows + [rows[0]]
+    elif case == "failed":
+        rows[3] = rows[3] | {"state": "resume", "val_gauc": None}
+    elif case == "unvalidated":
+        rows[4] = rows[4] | {"state": "done", "val_gauc": None}
+    elif case == "settings":
+        rows[5] = rows[5] | {"lr": 0.005}
+    else:  # a stop that is not the planned non-finite rule
+        rows[6] = rows[6] | {"state": "diverged", "diverged": {"loss": "2.33"}}
+    s = tmp_path / "summary.jsonl"
+    s.write_text("\n".join(json.dumps(r) for r in rows))
+    with pytest.raises(F.CheckFailed, match="not complete"):
+        F.choose(s)
+    assert not (tmp_path / "config_choice.json").exists()

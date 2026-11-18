@@ -169,6 +169,11 @@ def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_lis
     manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0)], "official_test_sha256": test_sha}))
     with pytest.raises(ValueError, match="not listed"):
         R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))
+    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha}))
+    with pytest.raises(ValueError, match="exactly the 2 frozen checkpoints"):  # review: a subset claimed the run
+        R.predict(predict_args(mac, out, [c0], "--official_test", str(manifest), "test.parquet"))
+    with pytest.raises(ValueError, match="exactly the 2 frozen checkpoints"):  # the same checkpoint twice
+        R.predict(predict_args(mac, out, [c0, c0], "--official_test", str(manifest), "test.parquet"))
     manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": "0" * 64}))
     with pytest.raises(ValueError, match="official test file named"):
         R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))

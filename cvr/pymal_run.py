@@ -297,10 +297,15 @@ def run_record(ckpt: Path) -> dict:
 def claim_official_test(manifest_path: Path, ckpts: list[Path], cache: Path) -> tuple[Path, Path]:
     """Every check that can fail without using the evaluation, then the exclusive claim (one per manifest)."""
     manifest = json.loads(manifest_path.read_text())
-    listed = set(manifest.get("checkpoints_sha256", []))
-    missing = [str(c) for c in ckpts if sha256(c) not in listed]
+    listed = list(manifest.get("checkpoints_sha256", []))
+    given = [sha256(c) for c in ckpts]
+    missing = [str(c) for c, h in zip(ckpts, given) if h not in set(listed)]
     if missing:
         raise ValueError(f"checkpoints not listed in the freeze manifest: {missing}")
+    if len(set(given)) != len(given) or sorted(given) != sorted(listed):
+        # review: one of the six frozen checkpoints was enough to claim the single evaluation
+        raise ValueError(f"the evaluation needs exactly the {len(listed)} frozen checkpoints, each once; got "
+                         f"{len(given)} ({len(set(given))} distinct)")
     if cache_meta(cache, TEST_FILE)["source_sha256"] != manifest.get("official_test_sha256"):
         raise ValueError("the cached test file was not made from the official test file named in the manifest")
     lock = manifest_path.with_name(manifest_path.stem + ".official_test.lock")
