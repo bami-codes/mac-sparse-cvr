@@ -8,7 +8,6 @@ on V2 only and frozen in selection.json before any test evaluation.
 
 import json
 import platform
-import resource
 import shutil
 import subprocess
 import sys
@@ -34,6 +33,7 @@ from .features import featurize, read_raw
 from .models import GBDT, LogReg, SmoothedRate
 from .m3data import ID_COLS, OTHER_CATS, concat_arrays, count_ids, encode_m3, save_arrays
 from .schema import CAT_INPUTS, GROUP_KEY, NUM_INPUTS, SEQ_PAIRS, SHOP_KEY, VOCAB_COLS
+from .sysinfo import peak_rss_gb
 from .stacking import AUX_INPUTS, TE_INPUTS, fit_stacking
 
 ROLES = ["train", "v1", "v2"]
@@ -400,7 +400,7 @@ def main(config_path: str) -> Path:
         "versions": {"python": platform.python_version(), "polars": pl.__version__, "lightgbm": lightgbm.__version__,
                      "sklearn": sklearn.__version__, "scipy": scipy.__version__, "numpy": np.__version__},
         "timings_seconds": {k: round(v, 1) for k, v in timings.items()} | {"total": round(time.time() - t0, 1)},
-        "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
+        "peak_rss_gb": peak_rss_gb(),
         "fitted": fitted_info, "calibration": cal_info,
     }
     meta["m3_id_coverage"] = m3_coverage

@@ -179,7 +179,8 @@ def main(src: str, out: str) -> None:
             for k, m in bin_masks.items()},
         "user_bootstrap_O_over_E": user_bootstrap_ratio(ho, boot_masks),
         "seconds": {"features": round(t_feat, 1), "train_predict": round(t_train, 1)},
-        "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
+        "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                             * (1 if sys.platform == "darwin" else 1024) / 1e9, 2),  # bytes on macOS, KB on Linux
     }
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(json.dumps(report, indent=2, default=str))

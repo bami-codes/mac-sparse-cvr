@@ -177,6 +177,8 @@ def test_study_c_end_to_end(ws: Path) -> None:
     diag = json.loads((ws / r / "diagnostics_calib.json").read_text())["calib"]
     assert diag["candidate_recomputed_exact"] == sel["candidate"]
 
+    if sys.platform != "darwin":  # the acceptance rule uses macOS `ps` (scripts/latency_c.environment)
+        pytest.skip("latency protocol v2 is defined on macOS; freeze needs an accepted measurement")
     run(ws, str(REPO / "scripts" / "latency_c.py"), str(r))
     lat = json.loads((ws / r / "latency_c.json").read_text())["families"]
     for f in lat.values():  # the serving check runs before any timing and is a hard check

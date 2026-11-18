@@ -11,7 +11,6 @@ before any test file is opened. PyTorch runs only in the worker processes (cvr/s
 
 import json
 import platform
-import resource
 import subprocess
 import sys
 import time
@@ -37,6 +36,7 @@ from .mddata import DOM_COL, concat_md, encode_md, save_md
 from .models import GBDT
 from .pipeline import ROLES, git_state, sha_of, sources
 from .schema import CAT_INPUTS, DOMAIN_KEY, GROUP_KEY
+from .sysinfo import peak_rss_gb
 
 NN_FAMILIES = {"N-int": "int", "N-shared": "shared", "N-head": "head", "N-star": "star"}
 ABLATION = ("N-star-noPN", "star_nopn")  # secondary analysis only, trained with N-star's chosen settings
@@ -289,7 +289,7 @@ def main(config_path: str) -> Path:
             "versions": {"python": platform.python_version(), "polars": pl.__version__,
                          "lightgbm": lightgbm.__version__, "numpy": np.__version__},
             "timings_seconds": timings | {"total": round(time.time() - t0, 1)},
-            "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
+            "peak_rss_gb": peak_rss_gb(),
             "fitted": fitted, "reload_check_max_abs_diff": reload_check, "nn_seed1_reproduction": repro,
             "calibration_solver": {"solver": "per-group Newton (cvr/calibration.fit_group_shrunk_exact)",
                                    "max_projected_gradient": max(v["max_projected_gradient"] for v in cal_solver.values()),

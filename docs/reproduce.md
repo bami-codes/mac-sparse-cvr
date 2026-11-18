@@ -29,10 +29,11 @@ uv run pytest -m e2e -q   # 종단 테스트 (원자료 불필요, 이 기계에
 ## 3. 자료 받기
 
 ```bash
-scripts/fetch_mac.sh train/train-15.parquet train/train-16.parquet ...   # data/raw/mac/<경로>에 저장
+python3 scripts/fetch_mac.py train/train-15.parquet test/test.parquet vocabs ...   # data/raw/mac/<경로>에 저장, 폴더 이름은 그 안의 모든 파일
 ```
 
-- Hugging Face API가 공개한 크기와 SHA-256을 받은 파일과 대조하고, 맞으면 `<파일>.sha256` 사이드카를 쓴다. 실행 결과(`results.json`)에는 이 해시가 기록된다.
+- Hugging Face API가 공개한 값과 받은 파일을 대조한다. LFS 파일(parquet, 큰 어휘 파일)은 크기와 SHA-256, 일반 git 파일(어휘 파일 17개 중 13개)은 크기와 git blob SHA-1을 본다. 맞으면 `<파일>.sha256` 사이드카를 쓰고, 실행 결과(`results.json`)에 이 해시가 기록된다.
+- 표준 라이브러리만 쓰므로 macOS와 Linux(GPU 포드)에서 환경 설치 전에 돌릴 수 있다. 예전 셸 스크립트 `scripts/fetch_mac.sh`는 이 스크립트를 부르는 래퍼로 남겼다.
 - 라이선스: 데이터 카드 `alimamaTech/MAC`는 Apache-2.0이다 (DESIGN §1). 원자료와 파생 자료는 크기 때문에 저장소에 올리지 않는다.
 
 ## 4. 파일별 쓰임

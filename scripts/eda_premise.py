@@ -26,8 +26,8 @@ MM = ["mm_feat0_seq", "mm_feat1_seq"]
 
 
 def peak_rss_gb() -> float:
-    # macOS reports ru_maxrss in bytes
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9
+    r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # bytes on macOS, kilobytes on Linux
+    return (r if sys.platform == "darwin" else r * 1024) / 1e9
 
 
 def main(src: str, out: str) -> None:

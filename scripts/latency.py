@@ -31,6 +31,7 @@ from cvr.features import RAW_COLUMNS, featurize, user_columns
 from cvr.m3data import encode_m3
 from cvr.schema import GROUP_KEY, NUM_INPUTS, VOCAB_COLS
 from cvr.serving import Server, selection
+from cvr.sysinfo import cpu_name
 
 N_ROWS = 3000
 
@@ -99,8 +100,7 @@ def main(run: str, v2_file: str, method: str | None = None, out_name: str = "lat
     # a served model is "base model + calibrator": measure every base that has saved calibrators
     bases = sorted(p.name[len("calib_"):-len(".npz")] for p in (run_dir / "models").glob("calib_*.npz"))
     report = {"run": str(run_dir), "calibration_method": sel["calibration_method"], "rows": N_ROWS,
-              "env": {"cpu": subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True,
-                                            text=True).stdout.strip(),
+              "env": {"cpu": cpu_name(),
                       "python": platform.python_version(), "torch_threads": 1, "lightgbm_threads": 1,
                       "process": "one subprocess per base model"},
               "models": {}}

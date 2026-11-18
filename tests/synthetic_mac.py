@@ -88,7 +88,7 @@ def make_file(world: dict, path: Path, seed: int, rows: int = 20_000) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table(cols), path, row_group_size=4096)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    path.with_name(path.name + ".sha256").write_text(f"{digest}  {path.name}\n")  # like scripts/fetch_mac.sh
+    path.with_name(path.name + ".sha256").write_text(f"{digest}  {path.name}\n")  # like scripts/fetch_mac.py
     return path
 
 

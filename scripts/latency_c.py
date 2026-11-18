@@ -33,6 +33,8 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
+from cvr.sysinfo import cpu_name
+
 FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"]
 PER_DOMAIN, RANDOM_ROWS, SAMPLE_SEED = 40, 2000, 20261118
 TRAFFIC_ROWS, TRAFFIC_SEED = 10_000, 20261119  # uniform V2 requests replayed in the same order on every model
@@ -105,7 +107,12 @@ def base_pred_v2(run: Path, family: str, seed: int) -> np.ndarray:
 
 def environment() -> dict:
     """Other python processes of this virtualenv and the CPU use of every process outside this measurement's own
-    process chain (this process and its parents), plus load averages for the record."""
+    process chain (this process and its parents), plus load averages for the record.
+
+    The acceptance rule was fixed on macOS, where `ps -o pcpu` is the recent CPU use. On Linux `pcpu` is the
+    average over each process's whole life, so the same 400% limit would mean something else: refused there."""
+    if sys.platform != "darwin":
+        raise RuntimeError("latency protocol v2 defines the acceptance rule with macOS `ps`; measure on macOS")
     table = []
     proc = subprocess.run(["ps", "-Ao", "pid=,ppid=,pcpu=,command="], capture_output=True, text=True)
     for line in proc.stdout.splitlines():
@@ -210,8 +217,7 @@ def time_batch100(server, rows: list[dict]) -> dict:
 def main(run_arg: str) -> None:
     run = Path(run_arg)
     report = {"run": str(run),
-              "env": {"cpu": subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True,
-                                            text=True).stdout.strip(),
+              "env": {"cpu": cpu_name(),
                       "python": platform.python_version(), "threads": 1, "process": "one subprocess per family"},
               "sampling": {"per_domain": PER_DOMAIN, "random_rows": RANDOM_ROWS, "seed": SAMPLE_SEED},
               "protocol": PROTOCOL, "acceptance_rule": f"no other python process of this virtualenv at the start and "

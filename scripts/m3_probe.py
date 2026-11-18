@@ -9,7 +9,6 @@ Usage:
 """
 
 import json
-import resource
 import sys
 import time
 from pathlib import Path
@@ -23,10 +22,11 @@ from sklearn.metrics import log_loss, roc_auc_score
 from cvr import vocab as V
 from cvr.features import RAW_COLUMNS, featurize, user_columns
 from cvr.nn import ID_COLS, OTHER_CATS, M3Model, count_ids, encode_m3
+from cvr.sysinfo import peak_rss_gb
 
 
 def rss_gb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9
+    return peak_rss_gb()
 
 
 def main(src: str, out: str) -> None:
