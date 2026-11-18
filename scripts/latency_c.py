@@ -11,7 +11,8 @@ For every family (G-int, G-shared, N-int, N-shared, N-head, N-star) and every se
    NUM_TOL, probabilities within PRED_TOL (GBDT, float64) or NN_SINGLE_VS_BATCH_TOL (float32 networks);
 2) latency: raw row dict -> codes -> history features -> model -> calibration, in-process, single thread. The p99
    used for the verdict replays the SAME uniform random V2 requests (fixed seed and order) on every model: batch=1
-   (50 warm-ups + 1,000 requests) and batch=100 (100 requests). (Review: the domain-balanced correctness sample is
+   (50 warm-ups + 5,000 requests) and batch=100 (100 requests). The 1/5/15-minute load averages at the start and
+   end of each family are recorded, because sub-millisecond p99 moved with other processes on this machine. (Review: the domain-balanced correctness sample is
    31.5% small-domain rows against 8.1% in V2 traffic; its p99 is kept as `batch1_stratified`.) Network,
    feature-store lookups and request parsing are excluded.
 
@@ -22,6 +23,7 @@ neither.
 """
 
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -34,6 +36,7 @@ import pyarrow.parquet as pq
 FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"]
 PER_DOMAIN, RANDOM_ROWS, SAMPLE_SEED = 40, 2000, 20261118
 TRAFFIC_ROWS, TRAFFIC_SEED = 10_000, 20261119  # uniform V2 requests replayed in the same order on every model
+WARMUP, REQUESTS = 50, 5000  # p99 from 5,000 timed requests (50 tail values), less sensitive to one burst
 RAW = ["user_id", "ad_feat0", "user_feat0", "user_feat1", "user_feat2", "user_feat3", "user_feat4", "user_feat5",
        "context_feat1", "context_feat2", "context_feat3", "ad_feat1", "ad_feat2", "ad_feat3", "ad_feat4", "ad_feat5",
        "ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq", "mm_feat0_seq", "mm_feat1_seq"]
@@ -122,6 +125,7 @@ def measure_family(run: Path, family: str) -> dict:
                                   "traffic_sample": float(np.isin(dom[order], list(small)).mean()),
                                   "v2": float(np.isin(dom, list(small)).mean())},
            "seeds": {}}
+    out["load_average_start"] = list(os.getloadavg())
     for seed in res["selection"]["seeds"]:
         server = ServerC(run, family, seed)
         codes, num = server.features(rows)
@@ -138,14 +142,15 @@ def measure_family(run: Path, family: str) -> dict:
                                    "batch1_traffic": time_batch1(server, traffic),
                                    "batch100_traffic": time_batch100(server, traffic)}
     out["p99_ms_by_seed"] = {s: v["batch1_traffic"]["p99_ms"] for s, v in out["seeds"].items()}
+    out["load_average_end"] = list(os.getloadavg())
     return out
 
 
 def time_batch1(server, rows: list[dict]) -> dict:
-    for r in rows[:50]:  # warm-up
+    for r in rows[:WARMUP]:
         server.predict([r])
     ms = []
-    for r in rows[50:1050]:
+    for r in rows[WARMUP:WARMUP + REQUESTS]:
         t = time.perf_counter()
         server.predict([r])
         ms.append(1000 * (time.perf_counter() - t))
