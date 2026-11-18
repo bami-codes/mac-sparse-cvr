@@ -8,6 +8,7 @@
     python3 scripts/runpod.py exec <pod> -- <command ...>           # one command in the pod (25 s at most)
     python3 scripts/runpod.py ssh <pod>                             # the ssh command line for this pod
     python3 scripts/runpod.py terminate <pod>                       # delete the pod and its disk
+    python3 scripts/runpod.py extend <pod> --hours 15               # longer lifetime, if it still fits the budget
     python3 scripts/runpod.py watch [--every 120]                   # terminate pods past their hours or the budget
 
 Safety rules built in:
@@ -193,6 +194,20 @@ def terminate(a) -> None:
     print(f"terminated {a.pod}; spent {spent(led):.2f} USD of {led['budget_usd']} USD")
 
 
+def extend(a) -> None:
+    """Give a pod created here a longer lifetime, only if its rate over the new lifetime still fits the budget."""
+    led = load()
+    pod = led["pods"].get(a.pod)
+    if pod is None or pod["ended"] is not None:
+        raise SystemExit(f"{a.pod} is not a running pod created by this tool")
+    left = pod["rate"] * max(0.0, a.hours - (now() - pod["created"]) / 3600)
+    if spent(led) + left > led["budget_usd"]:
+        raise SystemExit(f"spent {spent(led):.2f} + {left:.2f} until hour {a.hours} would pass the budget {led['budget_usd']}")
+    pod["max_hours"] = a.hours
+    save(led)
+    print(f"{a.pod}: lifetime {a.hours} h; at most {spent(led) + left:.2f} USD of {led['budget_usd']} USD by then")
+
+
 def watch(a) -> None:
     while True:
         led = load()
@@ -245,12 +260,15 @@ def main(argv: list[str]) -> None:
     p.add_argument("pod")
     p = sub.add_parser("terminate")
     p.add_argument("pod")
+    p = sub.add_parser("extend")
+    p.add_argument("pod")
+    p.add_argument("--hours", type=float, required=True, help="the new lifetime, counted from the pod's creation")
     p = sub.add_parser("watch")
     p.add_argument("--every", type=int, default=120)
     p.add_argument("--once", action="store_true")
     a = ap.parse_args(argv)
     {"gpus": gpus, "templates": templates, "budget": budget, "create": create, "status": status, "exec": exec_,
-     "ssh": ssh, "terminate": terminate, "watch": watch}[a.cmd](a)
+     "ssh": ssh, "terminate": terminate, "extend": extend, "watch": watch}[a.cmd](a)
 
 
 if __name__ == "__main__":
