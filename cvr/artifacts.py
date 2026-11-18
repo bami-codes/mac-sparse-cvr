@@ -44,12 +44,12 @@ def save_stacking(st, folder: Path) -> None:
     """Second-study inputs (cvr/stacking.py): auxiliary model, group-rate tables and group counts."""
     folder.mkdir(parents=True, exist_ok=True)
     if st.aux is not None:
-        save_gbdt(st.aux, folder / "aux_mta")
+        save_gbdt(st.aux, folder / st.aux_col)
     for k, m in st.te.items():
         m.table.write_parquet(folder / f"te_{k}.parquet")
         st.counts[k].write_parquet(folder / f"counts_{k}.parquet")
     (folder / "meta.json").write_text(json.dumps({
-        "aux": st.aux is not None,
+        "aux": st.aux is not None, "aux_col": st.aux_col,
         "te": {k: {"key": m.key, "p0": m.p0, "m": m.m} for k, m in st.te.items()}}))
 
 
@@ -60,8 +60,9 @@ def load_stacking(folder: Path):
     from .stacking import StackingModels
 
     meta = json.loads((folder / "meta.json").read_text())
-    aux = load_gbdt(folder / "aux_mta") if meta["aux"] else None
+    aux_col = meta.get("aux_col", "aux_mta")  # runs saved before the control have no aux_col
+    aux = load_gbdt(folder / aux_col) if meta["aux"] else None
     te = {k: SmoothedRate(v["key"], v["p0"], v["m"], pl.read_parquet(folder / f"te_{k}.parquet"))
           for k, v in meta["te"].items()}
     counts = {k: pl.read_parquet(folder / f"counts_{k}.parquet") for k in meta["te"]}
-    return StackingModels(aux, te, counts)
+    return StackingModels(aux, te, counts, aux_col)

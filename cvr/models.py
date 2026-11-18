@@ -29,7 +29,9 @@ class SmoothedRate:
 
     @classmethod
     def fit(cls, train: pl.DataFrame, key: str) -> "SmoothedRate":
-        g = train.group_by(key).agg(pl.len().alias("n"), pl.col("y").sum().alias("k"))
+        # sorted: polars group_by order varies between runs, which changed the summation order of the likelihood
+        # and moved the fitted m in its 10th digit (docs/DESIGN.md §15.2)
+        g = train.group_by(key).agg(pl.len().alias("n"), pl.col("y").sum().alias("k")).sort(key)
         n, k = g["n"].to_numpy().astype(float), g["k"].to_numpy().astype(float)
         p0 = k.sum() / n.sum()
 

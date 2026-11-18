@@ -32,3 +32,48 @@ def test_out_of_fold_group_rate_does_not_see_own_labels():
     assert models.transform(own.head(1))["te_ad_feat1"][0] > 0.5
     # counts are label-free and equal to the full training count
     assert np.allclose(own["logn_ad_feat1"].to_numpy(), np.log1p(50))
+
+
+class _FakeAux:
+    def predict(self, df):
+        return np.full(df.height, 0.25)
+
+
+def test_control_input_keeps_its_own_column_name(tmp_path):
+    # docs/DESIGN.md §15.2: the same-label control must not be written into the mta column
+    import json
+
+    from cvr.artifacts import load_stacking
+    from cvr.stacking import StackingModels
+
+    df = _frame()
+    out = StackingModels(_FakeAux(), {}, {}, "aux_last").transform(df)
+    assert "aux_last" in out.columns and "aux_mta" not in out.columns
+    assert StackingModels(_FakeAux(), {}, {}).transform(df).columns[-1] == "aux_mta"  # default unchanged
+    # runs saved before the control have no aux_col in meta.json: they still load as the mta input
+    (tmp_path / "meta.json").write_text(json.dumps({"aux": False, "te": {}}))
+    assert load_stacking(tmp_path).aux_col == "aux_mta"
+
+
+def test_group_rate_fit_does_not_depend_on_row_order():
+    # the fitted prior strength moved in its 10th digit between two runs on the same rows (group_by order)
+    from cvr.models import SmoothedRate
+
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame({"ad_feat1": rng.integers(0, 2_000, 50_000).astype(np.int32),
+                       "y": (rng.uniform(size=50_000) < 0.03).astype(np.int8)})
+    a = SmoothedRate.fit(df, "ad_feat1")
+    for seed in range(3):
+        b = SmoothedRate.fit(df.sample(fraction=1.0, shuffle=True, seed=seed), "ad_feat1")
+        assert b.m == a.m and b.table.equals(a.table)
+
+
+def test_group_rate_does_not_depend_on_row_order():
+    # the prior strength moved in the 10th digit between identical runs because groups came back in a different order
+    from cvr.models import SmoothedRate
+
+    df = _frame()
+    shuffled = df.sample(fraction=1.0, shuffle=True, seed=3)
+    a, b = SmoothedRate.fit(df, "ad_feat2"), SmoothedRate.fit(shuffled, "ad_feat2")
+    a1, b1 = SmoothedRate.fit(df, "ad_feat1"), SmoothedRate.fit(shuffled, "ad_feat1")
+    assert a.m == b.m and a1.m == b1.m and a1.table.equals(b1.table)
