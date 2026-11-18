@@ -358,10 +358,12 @@ def score(a, ckpt: Path, run: dict) -> dict:
             for batch in loader:
                 user_indices, ad_indices, buy_mm_scores, buy_seq_indices = [batch[x].to(device) for x in ["user", "ad", "mm", "seq"]]
                 p = model(user_indices[:, 1:], ad_indices, buy_mm_scores, buy_seq_indices)
-                users.append(user_indices[:, 0].cpu().numpy())
+                # copies: a numpy view of a worker's batch keeps its shared-memory file open (the pilot ran out of
+                # file descriptors on Linux after ~1,000 batches); the official test() copies through the GPU
+                users.append(np.array(user_indices[:, 0].cpu().numpy(), copy=True))
                 for v in views:
-                    probs[v].append(p[v][:, 1].cpu().numpy())
-                    labels[v].append(batch["label"][v].numpy())
+                    probs[v].append(np.array(p[v][:, 1].cpu().numpy(), copy=True))
+                    labels[v].append(np.array(batch["label"][v].numpy(), copy=True))
         sync(device)
         seconds = time.time() - t0
         users = np.concatenate(users)
