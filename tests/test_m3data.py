@@ -5,7 +5,6 @@ in validation becomes UNKNOWN (a real purchase, kept as a valid step) while PAD 
 (masked), and (3) the network attends to unknown steps but ignores PAD steps.
 """
 
-import numpy as np
 import polars as pl
 import torch
 

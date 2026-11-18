@@ -423,7 +423,7 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
         f"# Results: {Path(meta['config']).stem} (V2 = selection data, not a test)", "",
         f"- commit `{meta['git']['commit'][:7]}`" + (" (dirty working tree)" if meta["git"]["dirty_files"] else ""),
         f"- rows: {meta['rows']}, vocab `{meta['vocab']['fingerprint']}`, smoke user % = {meta['smoke_user_pct']}",
-        f"- data: " + "; ".join(f"{r}: " + ", ".join(Path(x['file']).name + (f" buckets {x['buckets']}" if x['buckets'] else "")
+        "- data: " + "; ".join(f"{r}: " + ", ".join(Path(x['file']).name + (f" buckets {x['buckets']}" if x['buckets'] else "")
                                                    for x in meta['data'][r]) for r in ROLES),
         f"- **G1 groups**: `{d['key']}` with training clicks ≥ {d['n_min']} and training positives < {d['c_min']} "
         f"(selected on training files only): {gs['G1_groups']} groups, {gs['G1_train_click_share']:.2%} of training clicks",

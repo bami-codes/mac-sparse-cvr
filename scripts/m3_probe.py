@@ -22,7 +22,7 @@ from sklearn.metrics import log_loss, roc_auc_score
 
 from cvr import vocab as V
 from cvr.features import RAW_COLUMNS, featurize, user_columns
-from cvr.nn import ID_COLS, OTHER_CATS, M3Model, M3Net, count_ids, encode_m3
+from cvr.nn import ID_COLS, OTHER_CATS, M3Model, count_ids, encode_m3
 
 
 def rss_gb() -> float:

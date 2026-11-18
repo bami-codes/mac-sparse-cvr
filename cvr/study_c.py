@@ -30,7 +30,7 @@ from . import vocab as V
 from .artifacts import load_gbdt, save_gbdt
 from .calibration import GlobalPlatt, fit_group_shrunk_exact
 from .checks import RELOAD_TOL, require_close, require_finite_probs
-from .domain_models import (G_INT_INPUTS, G_SHARED_INPUTS, GBDTOffset, load_domain_calibrators, load_gbdt_offset,
+from .domain_models import (G_SHARED_INPUTS, GBDTOffset, load_domain_calibrators, load_gbdt_offset,
                             save_domain_calibrators, save_gbdt_offset)
 from .features import featurize, read_raw
 from .mddata import DOM_COL, concat_md, encode_md, save_md
@@ -143,7 +143,7 @@ def main(config_path: str) -> Path:
     tune_runs = [{"name": f"{fam}_lr{lr:g}_s{seeds[0]}", "variant": var, "seed": seeds[0], "lr": lr,
                   "epochs": max(nc["epochs"]), "eval_epochs": nc["epochs"], "save": False}
                  for fam, var in NN_FAMILIES.items() for lr in nc["lrs"]]
-    tune = run_worker(run_dir / "nn_tune", job_base | {"runs": tune_runs})
+    run_worker(run_dir / "nn_tune", job_base | {"runs": tune_runs})  # predictions are read from nn_tune/preds
     y1, y2 = data["v1"]["y"].to_numpy(), data["v2"]["y"].to_numpy()
     nonmiss2 = data["v2"]["is_missing"].to_numpy() == 0
     tuning: dict[str, dict] = {}
