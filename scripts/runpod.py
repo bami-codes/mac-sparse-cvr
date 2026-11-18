@@ -126,17 +126,18 @@ def create(a) -> None:
     gpu = {g["id"]: g for g in call("GET", "/catalog/gpus").get("gpus", [])}.get(a.gpu)
     if gpu is None:
         raise SystemExit(f"unknown GPU type {a.gpu}")
-    rate = (gpu.get("price") or {}).get(a.cloud.lower())
-    if rate is None or rate > led["max_price"]:
-        raise SystemExit(f"{a.gpu} costs {rate} USD/h on {a.cloud}, above the limit {led['max_price']}")
+    unit = (gpu.get("price") or {}).get(a.cloud.lower())
+    rate = None if unit is None else unit * a.count
+    if rate is None or unit > led["max_price"]:
+        raise SystemExit(f"{a.gpu} costs {unit} USD/h per GPU on {a.cloud}, above the limit {led['max_price']}")
     if spent(led) + rate * a.hours > led["budget_usd"]:
         raise SystemExit(f"spent {spent(led):.2f} + {rate} x {a.hours} h would pass the budget {led['budget_usd']} USD")
     body = {"name": a.name, "image": a.image, "disk": a.disk, "cloud": a.cloud, "ports": ["22/tcp"],
             "startSsh": True, "env": {"PUBLIC_KEY": public_key()},
-            "gpu": {"id": a.gpu, "count": 1, "minCudaVersion": a.cuda, "minRamPerGpu": a.min_ram,
+            "gpu": {"id": a.gpu, "count": a.count, "minCudaVersion": a.cuda, "minRamPerGpu": a.min_ram,
                     "minVcpuCountPerGpu": a.min_vcpu}}  # the official DataLoader (8 workers) runs on the CPU
     pod = call("POST", "/pods", body)
-    led["pods"][pod["id"]] = {"name": a.name, "gpu": a.gpu, "rate": float(pod.get("cost") or rate), "created": now(),
+    led["pods"][pod["id"]] = {"name": a.name, "gpu": f"{a.count}x {a.gpu}", "rate": float(pod.get("cost") or rate), "created": now(),
                               "max_hours": a.hours, "ended": None}
     save(led)
     print(f"created {pod['id']} ({a.gpu}, {led['pods'][pod['id']]['rate']} USD/h, lifetime {a.hours} h); "
@@ -227,6 +228,7 @@ def main(argv: list[str]) -> None:
     p = sub.add_parser("create")
     p.add_argument("--name", required=True)
     p.add_argument("--gpu", required=True)
+    p.add_argument("--count", type=int, default=1, help="GPUs on the pod; the rate and the budget check use the total")
     p.add_argument("--hours", type=float, required=True, help="lifetime: watch terminates the pod after it")
     p.add_argument("--image", required=True)
     p.add_argument("--disk", type=int, default=300)

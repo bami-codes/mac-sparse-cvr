@@ -246,6 +246,13 @@ def train(a) -> Path:
             if steps == 0:
                 rec["after_first_step"] = memory(device)
             steps += 1
+            if not np.isfinite(losses[-1]):  # diverged: it cannot be selected, so stop paying for it (§18.10, amendment 2)
+                rec["diverged"] = {"file": name, "step": steps, "loss": str(losses[-1])}
+                np.save(out / f"loss_{Path(name).stem}.npy", np.asarray(losses))
+                (out / "resume.pt").unlink(missing_ok=True)
+                (out / "run.json").write_text(json.dumps(rec, indent=2, default=str))
+                print(f"diverged at step {steps} of {name}", flush=True)
+                return out
             if len(losses) == TIMING_SKIP_STEPS:
                 t_steady = time.time()
         sync(device)

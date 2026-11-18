@@ -243,3 +243,15 @@ def test_the_vendored_official_code_is_unmodified():
             data = p.read_bytes()
             have[str(p.relative_to(R.PYMAL))] = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
     assert have == want
+
+
+def test_a_diverging_run_stops_and_is_recorded(tree, tmp_path):
+    _, mac = tree
+    a = R.parser().parse_args(["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(tmp_path / "big"),
+                               "--device", "cpu", "--num_workers", "0", "--model", "MoAE", "--lr", "1e6", "--lamda", "0.3",
+                               "--aux_views", "first", "mta", "linear", "cartesian", "--batch_size", "256",
+                               "--train_files", *TRAIN, "--ckpt_after", TRAIN[-1]])
+    out = R.train(a)
+    rec = json.loads((out / "run.json").read_text())
+    assert rec["diverged"]["step"] >= 1 and not rec["checkpoints"]  # no checkpoint of a diverged run
+    assert not (out / "resume.pt").exists()
