@@ -33,20 +33,9 @@ case "$1" in
     rm -rf "runs/e_local/devicecheck/$rid"
     uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out "runs/e_local/devicecheck/$rid" \
       --ckpt "runs/e_runs/$rid/model_after_train-18.pt" train-19.parquet
-    uv run python - "$rid" "$sub" <<'PY'
-import json, sys
-from pathlib import Path
-import numpy as np
-rid, sub = sys.argv[1:]
-gpu = np.load(Path("runs/e_runs") / rid / sub / "train-19.npz")
-cpu = np.load(next(Path("runs/e_local/devicecheck", rid).rglob("train-19.npz")))
-same_rows = np.array_equal(gpu["user"], cpu["user"]) and np.array_equal(gpu["y_last"], cpu["y_last"])
-d = {k: float(np.abs(gpu[k].astype(np.float64) - cpu[k].astype(np.float64)).max()) for k in gpu.files if k.startswith("p_")}
-rec = {"run": rid, "rows": int(gpu["p_last"].size), "same_rows_and_labels": bool(same_rows), "max_abs_diff": d}
-Path("runs/e_local/devicecheck", rid, "comparison.json").write_text(json.dumps(rec, indent=2))
-print(json.dumps(rec))
-sys.exit(0 if same_rows and max(d.values()) <= 1e-5 else 1)
-PY
+    cpu=$(find "runs/e_local/devicecheck/$rid" -name train-19.npz | head -1)
+    uv run python scripts/device_compare.py "runs/e_runs/$rid/$sub/train-19.npz" "$cpu" \
+      "runs/e_local/devicecheck/$rid/comparison.json"
     ;;
   checkpoints)
     ids=$(python3 - <<'PY'
