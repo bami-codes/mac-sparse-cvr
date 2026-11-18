@@ -119,7 +119,16 @@ def run_setting(name: str, fams: dict, data: dict, eval_mask: dict, groups: dict
 
 
 def verdict(c: dict) -> dict:
+    """§17.4. The evidence is checked against the pre-registered seeds (review: an empty, single or repeated seed
+    list still gave group_count_error_reduced=True)."""
     b = c["comparisons"]["iii0 - iiid"]
+    got = b.get("per_pair_seeds")
+    if got is None or sorted(got) != sorted(SEEDS) or len(b["per_pair"]["poisson"]) != len(SEEDS):
+        raise ValueError(f"seed pairs {got} do not match the fixed seeds {SEEDS}")
+    values = [b["point"]["macro"], b["point"]["poisson"], *b["ci95"]["macro"], *b["ci95"]["poisson"],
+              *b["per_pair"]["poisson"], *b["per_pair"]["macro"]]
+    if not all(np.isfinite(v) for v in values):
+        raise ValueError(f"non-finite values in the primary comparison: {values}")
     retain = bool(b["ci95"]["macro"][1] < RETAIN_MARGIN)
     reduce = bool(b["point"]["poisson"] < 0 and b["ci95"]["poisson"][1] < 0 and all(x < 0 for x in b["per_pair"]["poisson"]))
     return {"logloss_gain_retained": retain, "group_count_error_reduced": reduce,
@@ -204,6 +213,19 @@ def render(r: dict) -> str:
         for fam, f in s.items():
             lines += [f"## Setting {sname}, {fam}", "", f"- lambda (main rule = V2 macro LogLoss): {f['lambda']['main']}; "
                       f"aggregate rule (V2 Poisson deviance): {f['lambda']['aggregate']}", "",
+                      "V2 (selection data) scores of (ii) and of the lambdas chosen by each rule:", "",
+                      "| rule | method | lambda | V2 macro LogLoss | V2 click LogLoss | V2 per-group Poisson deviance | V2 pooled O/E |",
+                      "|---|---|---:|---:|---:|---:|---:|"]
+            v2 = f["v2"]
+            lines.append(f"| – | ii | – | {v2['ii']['macro']:.6f} | {v2['ii']['click']:.6f} | {v2['ii']['poisson']:.4f} | "
+                         f"{v2['ii']['pooled_O_over_E']:.3f} |")
+            for rule in ("main", "aggregate"):
+                for method in ("iiid", "iii0"):
+                    lam = f["lambda"][rule][method]
+                    x = v2[f"{method}|lam{lam:g}"]
+                    lines.append(f"| {rule} | {method} | {lam:g} | {x['macro']:.6f} | {x['click']:.6f} | {x['poisson']:.4f} | "
+                                 f"{x['pooled_O_over_E']:.3f} |")
+            lines += ["", "Evaluation files:", "",
                       "| rule | method | macro LogLoss | click LogLoss | per-group Poisson deviance | pooled O/E |",
                       "|---|---|---:|---:|---:|---:|"]
             for k, v in f["eval"].items():
@@ -243,4 +265,14 @@ def main(run_c: str, run_1: str, out_root: str) -> None:
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    if sys.argv[1] == "--render":  # re-render a saved result (and re-check its verdict) without recomputing
+        out = Path(sys.argv[2])
+        r = json.loads((out / "results.json").read_text())
+        v = verdict(r["settings"]["C"]["G-int"])
+        if {k: v[k] for k in ("logloss_gain_retained", "group_count_error_reduced")} != {
+                k: r["verdict"][k] for k in ("logloss_gain_retained", "group_count_error_reduced")}:
+            raise SystemExit(f"stored verdict {r['verdict']} differs from the recomputed {v}")
+        (out / "results.md").write_text(render(r))
+        print(f"re-rendered {out}; verdict unchanged: {v}")
+    else:
+        main(*sys.argv[1:4])

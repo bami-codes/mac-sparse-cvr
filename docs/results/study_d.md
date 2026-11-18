@@ -8,6 +8,18 @@ Backtest on files opened before (docs/DESIGN.md §17); not a confirmation. Diffe
 
 - lambda (main rule = V2 macro LogLoss): {'iiid': 1.0, 'iii0': 100.0}; aggregate rule (V2 Poisson deviance): {'iiid': 10000.0, 'iii0': 100.0}
 
+V2 (selection data) scores of (ii) and of the lambdas chosen by each rule:
+
+| rule | method | lambda | V2 macro LogLoss | V2 click LogLoss | V2 per-group Poisson deviance | V2 pooled O/E |
+|---|---|---:|---:|---:|---:|---:|
+| – | ii | – | 0.040239 | 0.034595 | 1.1069 | 1.038 |
+| main | iiid | 1 | 0.040134 | 0.034574 | 1.7344 | 0.980 |
+| main | iii0 | 100 | 0.040236 | 0.034593 | 1.0644 | 1.016 |
+| aggregate | iiid | 10000 | 0.040238 | 0.034592 | 1.0621 | 1.028 |
+| aggregate | iii0 | 100 | 0.040236 | 0.034593 | 1.0644 | 1.016 |
+
+Evaluation files:
+
 | rule | method | macro LogLoss | click LogLoss | per-group Poisson deviance | pooled O/E |
 |---|---|---:|---:|---:|---:|
 | main | ii | 0.038094 | 0.033268 | 1.9584 | 1.011 |
@@ -29,6 +41,18 @@ Backtest on files opened before (docs/DESIGN.md §17); not a confirmation. Diffe
 
 - lambda (main rule = V2 macro LogLoss): {'iiid': 1.0, 'iii0': 10000.0}; aggregate rule (V2 Poisson deviance): {'iiid': 10000.0, 'iii0': 10000.0}
 
+V2 (selection data) scores of (ii) and of the lambdas chosen by each rule:
+
+| rule | method | lambda | V2 macro LogLoss | V2 click LogLoss | V2 per-group Poisson deviance | V2 pooled O/E |
+|---|---|---:|---:|---:|---:|---:|
+| – | ii | – | 0.040173 | 0.034558 | 0.9876 | 1.011 |
+| main | iiid | 1 | 0.040116 | 0.034547 | 1.7286 | 0.980 |
+| main | iii0 | 10000 | 0.040173 | 0.034558 | 0.9876 | 1.011 |
+| aggregate | iiid | 10000 | 0.040173 | 0.034558 | 0.9914 | 1.005 |
+| aggregate | iii0 | 10000 | 0.040173 | 0.034558 | 0.9876 | 1.011 |
+
+Evaluation files:
+
 | rule | method | macro LogLoss | click LogLoss | per-group Poisson deviance | pooled O/E |
 |---|---|---:|---:|---:|---:|
 | main | ii | 0.038062 | 0.033295 | 1.7957 | 0.983 |
@@ -49,6 +73,18 @@ Backtest on files opened before (docs/DESIGN.md §17); not a confirmation. Diffe
 ## Setting 1, M2
 
 - lambda (main rule = V2 macro LogLoss): {'iiid': 100.0, 'iii0': 10.0}; aggregate rule (V2 Poisson deviance): {'iiid': 100.0, 'iii0': 10.0}
+
+V2 (selection data) scores of (ii) and of the lambdas chosen by each rule:
+
+| rule | method | lambda | V2 macro LogLoss | V2 click LogLoss | V2 per-group Poisson deviance | V2 pooled O/E |
+|---|---|---:|---:|---:|---:|---:|
+| – | ii | – | 0.063198 | 0.053379 | 1.2908 | 0.989 |
+| main | iiid | 100 | 0.063083 | 0.053295 | 1.2255 | 0.983 |
+| main | iii0 | 10 | 0.063097 | 0.053290 | 1.2213 | 0.985 |
+| aggregate | iiid | 100 | 0.063083 | 0.053295 | 1.2255 | 0.983 |
+| aggregate | iii0 | 10 | 0.063097 | 0.053290 | 1.2213 | 0.985 |
+
+Evaluation files:
 
 | rule | method | macro LogLoss | click LogLoss | per-group Poisson deviance | pooled O/E |
 |---|---|---:|---:|---:|---:|

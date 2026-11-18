@@ -80,3 +80,20 @@ def test_group_bootstrap_of_identical_models_is_zero():
     out = D.paired_bootstrap_groups(y, pa, [a.copy() for a in pa], g, users, reps=10, seed=2)
     assert out["point"] == {"macro": 0.0, "click": 0.0, "poisson": 0.0}
     assert all(v == [0.0, 0.0] for v in out["ci95"].values())
+
+
+def test_study_d_verdict_requires_the_preregistered_seeds():
+    import scripts.study_d as S
+
+    def comp(seeds, pois):
+        return {"comparisons": {"iii0 - iiid": {
+            "point": {"macro": 1e-4, "poisson": float(np.mean(pois)) if pois else 0.0},
+            "ci95": {"macro": [5e-5, 2e-4], "poisson": [-2.0, -0.5]},
+            "per_pair": {"poisson": list(pois), "macro": [1e-4] * len(pois)}, "per_pair_seeds": list(seeds)}}}
+    v = S.verdict(comp([2026, 2027, 2028], [-1.9, -1.8, -1.7]))
+    assert v["group_count_error_reduced"] is True and v["logloss_gain_retained"] is False
+    for seeds, pois in (([], []), ([2026], [-1.9]), ([2026, 2026, 2026], [-1.9, -1.9, -1.9])):  # review
+        with pytest.raises(ValueError, match="seed pairs"):
+            S.verdict(comp(seeds, pois))
+    with pytest.raises(ValueError, match="non-finite"):
+        S.verdict(comp([2026, 2027, 2028], [-1.9, float("nan"), -1.7]))
