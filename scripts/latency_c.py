@@ -4,12 +4,16 @@ For every family (G-int, G-shared, N-int, N-shared, N-head, N-star) and every se
 1) consistency (hard check, cvr/checks.serving_consistency): V2 rows are sampled from EVERY domain of the run's V2
    file (so small domains are present). The served probability of each row, computed ONE ROW AT A TIME by
    cvr/serving_c.py from the raw strings, is compared with a reference that does not use the serving code: the
-   run's SAVED V2 base prediction of that row, with the saved (iii-d) calibrator applied to the row's domain code
-   from the evaluation arrays (nn_data). Codes must match exactly, numeric features within NUM_TOL, probabilities
-   within PRED_TOL (GBDT, float64) or NN_SINGLE_VS_BATCH_TOL (networks: float32 single row vs saved batch pass);
-2) latency: raw row dict -> codes -> history features -> model -> calibration, in-process, single thread;
-   batch=1 (1,000 requests after 50 warm-ups) and batch=100 (100 requests). Network, feature-store lookups and
-   request parsing are excluded.
+   run's SAVED V2 base prediction of that row, with the (iii-d) calibrator of that family and seed loaded HERE from
+   the run folder (its lambda checked against selection.json) and applied to the row's domain code from the
+   evaluation arrays. (Review: the reference used to reuse the server's own calibrator object, so a wrong
+   calibrator attached to the server passed with difference 0.) Codes must match exactly, numeric features within
+   NUM_TOL, probabilities within PRED_TOL (GBDT, float64) or NN_SINGLE_VS_BATCH_TOL (float32 networks);
+2) latency: raw row dict -> codes -> history features -> model -> calibration, in-process, single thread. The p99
+   used for the verdict replays the SAME uniform random V2 requests (fixed seed and order) on every model: batch=1
+   (50 warm-ups + 1,000 requests) and batch=100 (100 requests). (Review: the domain-balanced correctness sample is
+   31.5% small-domain rows against 8.1% in V2 traffic; its p99 is kept as `batch1_stratified`.) Network,
+   feature-store lookups and request parsing are excluded.
 
 Each family runs in its own subprocess (PyTorch and LightGBM cannot share a process here); the parent imports
 neither.
@@ -29,6 +33,7 @@ import pyarrow.parquet as pq
 
 FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"]
 PER_DOMAIN, RANDOM_ROWS, SAMPLE_SEED = 40, 2000, 20261118
+TRAFFIC_ROWS, TRAFFIC_SEED = 10_000, 20261119  # uniform V2 requests replayed in the same order on every model
 RAW = ["user_id", "ad_feat0", "user_feat0", "user_feat1", "user_feat2", "user_feat3", "user_feat4", "user_feat5",
        "context_feat1", "context_feat2", "context_feat3", "ad_feat1", "ad_feat2", "ad_feat3", "ad_feat4", "ad_feat5",
        "ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq", "mm_feat0_seq", "mm_feat1_seq"]
@@ -51,6 +56,11 @@ def read_rows(path: str, idx: np.ndarray) -> list[dict]:
         local = idx[(idx >= starts[g]) & (idx < starts[g + 1])] - starts[g]
         rows += f.read_row_group(int(g), columns=RAW).take(local).to_pylist()
     return rows
+
+
+def traffic_order(n: int) -> np.ndarray:
+    """TRAFFIC_ROWS uniform V2 positions in a fixed random order (the request sequence of the latency replay)."""
+    return np.random.default_rng(TRAFFIC_SEED).choice(n, size=min(TRAFFIC_ROWS, n), replace=False)
 
 
 def v2_rows(meta: dict, idx: np.ndarray) -> list[dict]:
@@ -87,9 +97,10 @@ def pct(ms: list[float]) -> dict:
 
 
 def measure_family(run: Path, family: str) -> dict:
-    from cvr.checks import NN_SINGLE_VS_BATCH_TOL, PRED_TOL, serving_consistency
+    from cvr.checks import NN_SINGLE_VS_BATCH_TOL, PRED_TOL, CheckFailed, serving_consistency
+    from cvr.domain_models import load_domain_calibrators
     from cvr.mddata import DOM_COL, load_md
-    from cvr.schema import CAT_INPUTS, NUM_INPUTS
+    from cvr.schema import CAT_INPUTS
     from cvr.serving_c import GBDT_FAMILIES, ServerC
 
     res = json.loads((run / "results.json").read_text())
@@ -99,34 +110,56 @@ def measure_family(run: Path, family: str) -> dict:
     dom = np.asarray(v2.cat[:, DOM_COL])
     idx = sample_indices(dom)
     rows = v2_rows(res["meta"], idx)
+    order = traffic_order(v2.n)
+    srt = np.sort(order)
+    by_pos = dict(zip(srt.tolist(), v2_rows(res["meta"], srt)))
+    traffic = [by_pos[int(i)] for i in order]  # same requests, same order, for every model
+    small = set(res["selection"]["domains"]["small"])
     tol = PRED_TOL if family in GBDT_FAMILIES else NN_SINGLE_VS_BATCH_TOL
-    out = {"rows_checked": int(idx.size), "domains_checked": int(np.unique(dom[idx]).size), "pred_tol": tol, "seeds": {}}
+    lam = float(res["selection"]["lambda_iiid"][family])
+    out = {"rows_checked": int(idx.size), "domains_checked": int(np.unique(dom[idx]).size), "pred_tol": tol,
+           "small_domain_share": {"correctness_sample": float(np.isin(dom[idx], list(small)).mean()),
+                                  "traffic_sample": float(np.isin(dom[order], list(small)).mean()),
+                                  "v2": float(np.isin(dom, list(small)).mean())},
+           "seeds": {}}
     for seed in res["selection"]["seeds"]:
         server = ServerC(run, family, seed)
         codes, num = server.features(rows)
         online = np.array([server.predict([r])[0] for r in rows])  # the single-request path that is served
-        ref = server.gs.predict(np.asarray(base_pred_v2(run, family, seed))[idx], dom[idx])  # independent reference
+        _, expected_gs = load_domain_calibrators(run / "models" / f"calib_{family}_s{seed}")  # loaded independently
+        if float(expected_gs.lam) != lam:
+            raise CheckFailed(f"calib_{family}_s{seed} has lambda {expected_gs.lam}, selection.json says {lam}")
+        ref = expected_gs.predict(np.asarray(base_pred_v2(run, family, seed))[idx], dom[idx])
         consistency = serving_consistency({c: codes[c] for c in CAT_INPUTS},
                                           {c: np.asarray(v2.cat[idx, j]) for j, c in enumerate(CAT_INPUTS)},
                                           num, np.asarray(v2.num[idx], dtype=np.float64), online, ref, pred_tol=tol)
-        for i in range(50):  # warm-up
-            server.predict(rows[i % len(rows):][:1])
-        b1 = []
-        for i in range(1000):
-            r = rows[i % len(rows):][:1]
-            t = time.perf_counter()
-            server.predict(r)
-            b1.append(1000 * (time.perf_counter() - t))
-        b100 = []
-        for i in range(100):
-            chunk = rows[(i * 100) % max(1, len(rows) - 100):][:100]
-            t = time.perf_counter()
-            server.predict(chunk)
-            b100.append(1000 * (time.perf_counter() - t))
-        out["seeds"][str(seed)] = {"server": server.info, "consistency": consistency, "batch1": pct(b1),
-                                   "batch100": pct(b100)}
-    out["p99_ms_by_seed"] = {s: v["batch1"]["p99_ms"] for s, v in out["seeds"].items()}
+        out["seeds"][str(seed)] = {"server": server.info, "consistency": consistency,
+                                   "batch1_stratified": time_batch1(server, rows),
+                                   "batch1_traffic": time_batch1(server, traffic),
+                                   "batch100_traffic": time_batch100(server, traffic)}
+    out["p99_ms_by_seed"] = {s: v["batch1_traffic"]["p99_ms"] for s, v in out["seeds"].items()}
     return out
+
+
+def time_batch1(server, rows: list[dict]) -> dict:
+    for r in rows[:50]:  # warm-up
+        server.predict([r])
+    ms = []
+    for r in rows[50:1050]:
+        t = time.perf_counter()
+        server.predict([r])
+        ms.append(1000 * (time.perf_counter() - t))
+    return pct(ms) | {"requests": len(ms)}
+
+
+def time_batch100(server, rows: list[dict]) -> dict:
+    ms = []
+    for i in range(min(100, len(rows) // 100)):
+        chunk = rows[i * 100:(i + 1) * 100]
+        t = time.perf_counter()
+        server.predict(chunk)
+        ms.append(1000 * (time.perf_counter() - t))
+    return pct(ms) | {"requests": len(ms)}
 
 
 def main(run_arg: str) -> None:

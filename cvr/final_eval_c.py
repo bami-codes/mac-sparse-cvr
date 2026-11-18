@@ -1,5 +1,6 @@
 """Study C: freeze a development run, dry-run the evaluation on V2, then evaluate train-13 + train-14 ONCE.
 
+    uv run python -m cvr.final_eval_c expect runs/c_dev_train08_10/<stamp>   # official holdout size / SHA-256 only
     uv run python -m cvr.final_eval_c freeze runs/c_dev_train08_10/<stamp>
     uv run python -m cvr.final_eval_c dryrun runs/c_dev_train08_10/<stamp>
     uv run python -m cvr.final_eval_c test   runs/c_dev_train08_10/<stamp> data/raw/mac/train/train-13.parquet \
@@ -12,15 +13,21 @@ freeze  requires the independent re-selection (diagnostics_calib.json) and the r
         secondary comparisons and the holdout files. freeze.json is never overwritten.
 dryrun  runs the test code on V2 and requires the saved predictions, every recorded V2 metric and the primary
         bootstrap to be reproduced within 1e-9 (hard check).
-test    verifies every frozen hash, requires a passed dry run and a clean working tree, refuses to run twice,
-        accepts only the frozen holdout files, evaluates both files together (a user seen on both days is one
-        bootstrap cluster) plus each file's direction, and selects or tunes nothing.
+expect  records the official size and SHA-256 of train-13 / train-14 from the Hugging Face API (metadata only, no
+        data is downloaded), so the test can refuse any other file under a holdout name.
+test    BEFORE claiming the single run: every frozen hash, a dry run recorded for this freeze, this evaluation code
+        and a clean tree, the frozen holdout names, and each file's size and official SHA-256 (a failure here can
+        be retried). Then ONE process claims the run with an exclusive lock file; from then on any failure is
+        recorded and the run counts as used. Both files are evaluated together (a user seen on both days is one
+        bootstrap cluster) plus each file's direction; nothing is selected or tuned.
 
 Networks are scored in a PyTorch-only subprocess (cvr/final_eval_c_nn.py); this process loads LightGBM.
 """
 
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -41,6 +48,8 @@ from .schema import CAT_INPUTS, DOMAIN_KEY, GROUP_KEY
 DRYRUN_TOL = 1e-9
 FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star", "N-star-noPN"]
 HOLDOUT = ["train-13.parquet", "train-14.parquet"]
+HF_TREE = "https://huggingface.co/api/datasets/alimamaTech/MAC/tree/main/train"
+LATENCY_FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"]
 COMPARED_METRICS = [("small", "macro_logloss"), ("small", "click_weighted_logloss"), ("small", "within_domain_auc_macro"),
                     ("small", "poisson_deviance_mean"), ("large", "click_weighted_logloss"),
                     ("overall_nonmissing", "logloss"), ("overall_nonmissing", "auc"), ("G1_macro_logloss",)]
@@ -65,8 +74,64 @@ def hashed_files(run: Path) -> dict[str, str]:
     files = [p for d in ("models", "vocab") for p in sorted((run / d).rglob("*")) if p.is_file()]
     files += [run / f for f in ("selection.json", "results.json", "latency_c.json", "diagnostics_calib.json",
                                 "diagnostics_star.json", "frozen_domain_stats.parquet", "frozen_g1_stats.parquet",
-                                "config.toml")]
+                                "config.toml", "holdout_expected.json")]
     return {str(p.relative_to(run)): sha256(p) for p in files}
+
+
+def code_fingerprint() -> str:
+    """SHA-256 over every module of the cvr package: the dry run and the test must run the same evaluation code."""
+    h = hashlib.sha256()
+    for p in sorted(Path(__file__).parent.glob("*.py")):
+        h.update(p.name.encode())
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+# ------------------------------------------------------------------ expected holdout files (metadata only)
+def expect(run: Path) -> dict:
+    out = run / "holdout_expected.json"
+    if out.exists():
+        raise CheckFailed(f"{out} already exists")
+    import urllib.request
+    from datetime import datetime, timezone
+
+    with urllib.request.urlopen(HF_TREE, timeout=60) as r:
+        items = json.loads(r.read())
+    files = {}
+    for name in HOLDOUT:
+        hit = [i for i in items if i.get("path") == f"train/{name}"]
+        if len(hit) != 1 or "lfs" not in hit[0]:
+            raise CheckFailed(f"{name} not found once in {HF_TREE}")
+        files[name] = {"size": int(hit[0]["size"]), "sha256": hit[0]["lfs"]["oid"]}
+    root = Path(json.loads((run / "results.json").read_text())["meta"]["data"]["v2"][0]["file"]).parent
+    rec = {"source": HF_TREE, "fetched_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "files": files, "local_copy_present_when_recorded": {n: (root / n).exists() for n in HOLDOUT}}
+    out.write_text(json.dumps(rec, indent=2))
+    return rec
+
+
+def frozen_p99(lat: dict) -> tuple[dict, dict]:
+    """Per family and seed, the p99 (ms) of the uniform-traffic replay, taken from the DETAILED per-seed record
+    (review: a summary with a missing seed or a negative value used to be frozen as is)."""
+    p99, strat = {}, {}
+    for fam in LATENCY_FAMILIES:
+        f = lat[fam]
+        if sorted(int(k) for k in f["seeds"]) != sorted(D.SEEDS):
+            raise CheckFailed(f"latency of {fam} measured for seeds {sorted(f['seeds'])}, expected {D.SEEDS}")
+        p99[fam], strat[fam] = {}, {}
+        for s in D.SEEDS:
+            rec = f["seeds"][str(s)]
+            c = rec["consistency"]
+            if not (c["codes_mismatch"] == 0 and c["prediction_max_abs_diff"] <= c["tolerances"]["pred"]):
+                raise CheckFailed(f"serving check of {fam} seed {s} did not pass")
+            v = float(rec["batch1_traffic"]["p99_ms"])
+            if not (np.isfinite(v) and v > 0):
+                raise CheckFailed(f"p99 of {fam} seed {s} must be finite and positive, got {v}")
+            if abs(float(f["p99_ms_by_seed"][str(s)]) - v) > 0:
+                raise CheckFailed(f"p99 summary of {fam} seed {s} differs from the detailed record")
+            p99[fam][s] = v
+            strat[fam][s] = float(rec["batch1_stratified"]["p99_ms"])
+    return p99, strat
 
 
 def train_stats(run: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -98,13 +163,11 @@ def freeze(run: Path) -> dict:
     if diag["candidate_recomputed_exact"] != sel["candidate"] or diag["lambda_recomputed_exact"] != {
             k: float(v) for k, v in sel["lambda_iiid"].items()}:
         raise CheckFailed("the independent re-selection (diagnostics_calib.json) does not match selection.json")
-    lat = json.loads((run / "latency_c.json").read_text())["families"]
-    p99 = {}
-    for fam in ("G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"):
-        f = lat[fam]
-        if sorted(int(s) for s in f["seeds"]) != sorted(D.SEEDS):
-            raise CheckFailed(f"latency of {fam} measured for seeds {sorted(f['seeds'])}")
-        p99[fam] = {int(s): float(v) for s, v in f["p99_ms_by_seed"].items()}
+    p99, p99_strat = frozen_p99(json.loads((run / "latency_c.json").read_text())["families"])
+    exp = json.loads((run / "holdout_expected.json").read_text())["files"]
+    if sorted(exp) != sorted(HOLDOUT) or not all(re.fullmatch(r"[0-9a-f]{64}", v["sha256"]) and v["size"] > 0
+                                                 for v in exp.values()):
+        raise CheckFailed(f"holdout_expected.json must give the size and SHA-256 of {HOLDOUT}")
     dstats, gstats = train_stats(run)
     dsum = D.domain_summary(dstats, cfg["domains"]["small_share"], cfg["domains"]["small_min_clicks"])
     for k in ("small", "tiny", "large"):
@@ -130,6 +193,8 @@ def freeze(run: Path) -> dict:
                                           f"large-domain difference 95% CI upper <= {D.ADOPT_LARGE}, "
                                           f"max p99 over seeds <= {D.ADOPT_P99_MS} ms"},
         "p99_ms_by_family_seed": p99,
+        "p99_ms_stratified_sample": p99_strat,
+        "holdout_expected": exp,
         "power_check_before_test": sel["power_check"],
         "secondary_comparisons": ["ladder table (family x calibration)", "N-star - N-shared", "N-head - N-shared",
                                   "N-star-noPN - N-star", f"best NN on V2 ({best_n}) - best GBDT on V2 ({best_g})",
@@ -178,21 +243,80 @@ def score(run: Path, df: pl.DataFrame, work: Path) -> dict[str, np.ndarray]:
     return preds
 
 
+def guard_test(run: Path, manifest: dict, files: list[Path], git: dict) -> dict[str, str]:
+    """Every check that can fail WITHOUT using the single run. Returns the verified SHA-256 of each file."""
+    lock, out_dir = run / "final" / "test.lock", run / "final" / "test"
+    if lock.exists() or out_dir.exists():
+        raise CheckFailed(f"{lock} or {out_dir} exists: the holdout files are evaluated only once")
+    if git["dirty_files"]:
+        raise CheckFailed(f"uncommitted changes; commit the evaluation code before the test: {git['dirty_files'][:5]}")
+    dry_path = run / "final" / "dryrun" / "results.json"
+    dry = json.loads(dry_path.read_text()) if dry_path.exists() else {}
+    if not dry.get("dryrun_passed"):
+        raise CheckFailed("the V2 dry run must pass before the test")
+    if dry.get("freeze_sha256") != sha256(run / "freeze.json"):
+        raise CheckFailed("the dry run was recorded for a different freeze.json")
+    if dry.get("code_fingerprint") != code_fingerprint():
+        raise CheckFailed("the dry run used different evaluation code (cvr/*.py changed since the dry run)")
+    if dry.get("evaluation_git", {}).get("dirty_files"):
+        raise CheckFailed("the dry run was run on an uncommitted tree")
+    if sorted(f.name for f in files) != sorted(manifest["holdout_files"]):
+        raise CheckFailed(f"test files {[f.name for f in files]} differ from the frozen holdout {manifest['holdout_files']}")
+    verified = {}
+    for f in files:
+        exp = manifest["holdout_expected"][f.name]
+        if not f.is_file():
+            raise CheckFailed(f"{f} does not exist")
+        if f.stat().st_size != exp["size"]:
+            raise CheckFailed(f"{f} has {f.stat().st_size} bytes, the official file has {exp['size']}")
+        h = sha256(f)
+        if h != exp["sha256"]:
+            raise CheckFailed(f"{f} SHA-256 {h} differs from the official {exp['sha256']}")
+        verified[f.name] = h
+    return verified
+
+
+def claim_test(run: Path) -> Path:
+    """Exactly one process gets the single run: O_CREAT | O_EXCL on the lock file is atomic."""
+    lock = run / "final" / "test.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise CheckFailed(f"{lock} exists: another process holds or used the single run") from None
+    from datetime import datetime, timezone
+    os.write(fd, json.dumps({"pid": os.getpid(), "claimed_utc": datetime.now(timezone.utc).isoformat()}).encode())
+    os.close(fd)
+    return lock
+
+
 def evaluate(run: Path, files: list[Path], mode: str) -> dict:
     manifest = verify_freeze(run)
+    git = git_state()
+    if mode != "test":
+        return _evaluate(run, manifest, files, mode, git, None)
+    verified = guard_test(run, manifest, files, git)
+    lock = claim_test(run)
+    status = run / "final" / "test_status.json"
+    status.write_text(json.dumps({"state": "started", "lock": str(lock), "files_sha256": verified}))
+    try:
+        out = _evaluate(run, manifest, files, mode, git, verified)
+    except BaseException as e:  # the run is used: record the failure, keep the lock
+        status.write_text(json.dumps({"state": "failed_after_claim", "error": repr(e)[:2000], "files_sha256": verified}))
+        raise
+    status.write_text(json.dumps({"state": "done", "files_sha256": verified}))
+    return out
+
+
+def _evaluate(run: Path, manifest: dict, files: list[Path], mode: str, git: dict, verified: dict | None) -> dict:
     cfg, sel, seeds = manifest["config"], manifest["selection"], manifest["seeds"]
     out_dir = run / "final" / mode
-    git = git_state()
-    if mode == "test":
-        if out_dir.exists():
-            raise CheckFailed(f"{out_dir} exists: the holdout files are evaluated only once")
-        if git["dirty_files"]:
-            raise CheckFailed(f"uncommitted changes; commit the evaluation code before the test: {git['dirty_files'][:5]}")
-        dry = run / "final" / "dryrun" / "results.json"
-        if not dry.exists() or not json.loads(dry.read_text()).get("dryrun_passed"):
-            raise CheckFailed("the V2 dry run must pass before the test")
-        if sorted(f.name for f in files) != sorted(manifest["holdout_files"]):
-            raise CheckFailed(f"test files {[f.name for f in files]} differ from the frozen holdout {manifest['holdout_files']}")
+    if mode == "dryrun":
+        res_meta = json.loads((run / "results.json").read_text())["meta"]
+        recorded = [x["sha256"] for x in res_meta["data"]["v2"]]
+        now = [sha256(f) for f in files]
+        if None not in recorded and recorded != now:
+            raise CheckFailed(f"V2 file hashes {now} differ from the development run's {recorded}")
     out_dir.mkdir(parents=True, exist_ok=True)
     vocab = {p.stem: pl.read_parquet(p) for p in (run / "vocab").glob("*.parquet")}
     smoke = cfg["data"]["mode"] == "smoke"
@@ -247,8 +371,8 @@ def evaluate(run: Path, files: list[Path], mode: str) -> dict:
     l_int = float(np.mean([rows[f"{n}|iiid_lam{lam[ctrl]:g}"]["small"]["macro_logloss"] for n in family_seeds(ctrl, seeds)]))
     p99 = {int(k): v for k, v in manifest["p99_ms_by_family_seed"][cand].items()} if cand in manifest["p99_ms_by_family_seed"] else None
     verdict = D.verdict(primary, l_int, p99)
-    result = {"mode": mode, "evaluation_git": git, "files": [str(f) for f in files],
-              "files_sha256": {f.name: sha256(f) for f in files}, "freeze_sha256": sha256(run / "freeze.json"),
+    result = {"mode": mode, "evaluation_git": git, "code_fingerprint": code_fingerprint(), "files": [str(f) for f in files],
+              "files_sha256": verified or {f.name: sha256(f) for f in files}, "freeze_sha256": sha256(run / "freeze.json"),
               "rows": df.height, "rows_by_file": [int((file_of == k).sum()) for k in range(len(files))],
               "rows_by_class": {str(k): int(v) for k, v in zip(*np.unique(cls, return_counts=True))},
               "primary": primary, "l_int": l_int, "verdict": verdict,
@@ -266,7 +390,7 @@ def evaluate(run: Path, files: list[Path], mode: str) -> dict:
     result["table"] = summary_table(rows, lam, seeds, manifest["p99_ms_by_family_seed"])
 
     if mode == "dryrun":
-        result |= dryrun_checks(run, preds, rows, primary)
+        result |= dryrun_checks(run, manifest, preds, rows, result)
     (out_dir / "results.json").write_text(json.dumps(result, indent=2, default=str))
     (out_dir / "results.md").write_text(render(result, manifest))
     return result
@@ -279,22 +403,31 @@ def summary_table(rows: dict, lam: dict, seeds: list[int], p99: dict) -> list[di
         keys = [f"{n}|iiid_lam{lam[fam]:g}" for n in family_seeds(fam, seeds)]
         out.append({"family": fam,
                     "small_macro_logloss": float(np.mean([rows[k]["small"]["macro_logloss"] for k in keys])),
+                    "small_click_logloss": float(np.mean([rows[k]["small"]["click_weighted_logloss"] for k in keys])),
+                    "small_poisson_deviance": float(np.mean([rows[k]["small"]["poisson_deviance_mean"] for k in keys])),
                     "large_click_logloss": float(np.mean([rows[k]["large"]["click_weighted_logloss"] for k in keys])),
                     "small_within_domain_auc": float(np.mean([rows[k]["small"]["within_domain_auc_macro"] for k in keys])),
                     "p99_ms_max_over_seeds": max(p99[fam].values()) if fam in p99 else None})
     return out
 
 
-def dryrun_checks(run: Path, preds: dict, rows: dict, primary: dict) -> dict:
-    """The test code must reproduce the development run on V2: predictions, metrics and the primary bootstrap."""
+def dryrun_checks(run: Path, manifest: dict, preds: dict, rows: dict, result: dict) -> dict:
+    """The test code must reproduce the development run on V2: predictions, metrics, the primary bootstrap with
+    every seed pair matched BY SEED, the verdict derived from them, the secondary bootstraps and the leave-one-out.
+    (Review: flipping all three seed differences still passed when only pooled values were compared.)"""
     res = json.loads((run / "results.json").read_text())
     checked = 0
+
+    def close(name: str, a: float, b: float) -> None:
+        nonlocal checked
+        require_close(name, abs(a - b), DRYRUN_TOL)
+        checked += 1
+
     for name, p in preds.items():
         saved = run / "preds" / f"{name}_v2.npy"
         if not saved.exists():
             saved = next((run / "nn_final" / "preds").glob(f"{name}_e*_v2.npy"))
-        require_close(f"dryrun prediction {name}", float(np.abs(np.load(saved) - p).max()), DRYRUN_TOL)
-        checked += 1
+        close(f"prediction {name}", float(np.abs(np.load(saved) - p).max()), 0.0)
     for key, r in rows.items():
         rec = res["v2_rows"].get(key)
         if rec is None:
@@ -303,14 +436,42 @@ def dryrun_checks(run: Path, preds: dict, rows: dict, primary: dict) -> dict:
             a, b = r, rec
             for k in path:
                 a, b = a[k], b[k]
-            require_close(f"dryrun {key} {'.'.join(path)}", abs(a - b), DRYRUN_TOL)
-            checked += 1
-    rec = res["v2_primary_bootstrap"]
-    for k in ("small_macro", "small_click", "large_click", "small_auc_macro"):
-        require_close(f"dryrun primary {k}", abs(primary["point"][k] - rec["point"][k]), DRYRUN_TOL)
-        require_close(f"dryrun primary CI {k}", max(abs(a - b) for a, b in zip(primary["ci95"][k], rec["ci95"][k])),
-                      DRYRUN_TOL)
-        checked += 3
+            close(f"{key} {'.'.join(path)}", a, b)
+
+    def same_boot(name: str, new: dict, rec: dict) -> None:
+        for k in ("small_macro", "small_click", "large_click", "small_auc_macro"):
+            close(f"{name} {k}", new["point"][k], rec["point"][k])
+            for a, b in zip(new["ci95"][k], rec["ci95"][k]):
+                close(f"{name} CI {k}", a, b)
+        ns = dict(zip(new["point"]["per_pair_seeds"], new["point"]["per_pair_small_macro"]))
+        rs = dict(zip(rec["point"]["per_pair_seeds"], rec["point"]["per_pair_small_macro"]))
+        if sorted(ns) != sorted(rs):
+            raise CheckFailed(f"{name}: seed pairs {sorted(ns)} vs recorded {sorted(rs)}")
+        for seed in ns:
+            close(f"{name} seed {seed}", ns[seed], rs[seed])
+
+    same_boot("primary", result["primary"], res["v2_primary_bootstrap"])
+    sel, seeds = manifest["selection"], manifest["seeds"]
+    ctrl, lam = sel["control"], sel["lambda_iiid"]
+    rec_l_int = float(np.mean([res["v2_rows"][f"{n}|iiid_lam{lam[ctrl]:g}"]["small"]["macro_logloss"]
+                               for n in family_seeds(ctrl, seeds)]))
+    p99 = {int(k): v for k, v in manifest["p99_ms_by_family_seed"].get(sel["candidate"], {}).items()} or None
+    rec_v = D.verdict(res["v2_primary_bootstrap"], rec_l_int, p99)
+    for k in ("tier", "improvement_confirmed", "failed_conditions", "pending_conditions"):
+        if result["verdict"][k] != rec_v[k]:
+            raise CheckFailed(f"verdict {k}: {result['verdict'][k]} vs recorded {rec_v[k]}")
+    close("verdict relative improvement", result["verdict"]["conditions"]["effect_size"]["relative_improvement"],
+          rec_v["conditions"]["effect_size"]["relative_improvement"])
+    bn, bg = manifest["best_on_v2"]["nn"], manifest["best_on_v2"]["gbdt"]
+    for k, b in result["secondary"].items():
+        rk = "best NN - best GBDT" if k == f"{bn} - {bg}" else k
+        if rk not in res["v2_secondary"]:
+            raise CheckFailed(f"secondary comparison {k} is not in the development results")
+        same_boot(f"secondary {k}", b, res["v2_secondary"][rk])
+    for k in ("full", "min", "max"):
+        close(f"leave-one-out {k}", result["leave_one_domain_out"][k], res["v2_leave_one_domain_out"][k])
+    if result["leave_one_domain_out"]["sign_flips"] != res["v2_leave_one_domain_out"]["sign_flips"]:
+        raise CheckFailed("leave-one-out sign flips differ")
     return {"dryrun_passed": True, "dryrun_values_reproduced": checked}
 
 
@@ -330,11 +491,14 @@ def render(r: dict, manifest: dict) -> str:
              f"sign flips {r['leave_one_domain_out']['sign_flips']}"]
     for f, b in r["per_file"].items():
         lines.append(f"- {f}: {b['point']['small_macro']:+.6f} [{b['ci95']['small_macro'][0]:+.6f}, {b['ci95']['small_macro'][1]:+.6f}]")
-    lines += ["", "| family | small macro LogLoss | large click LogLoss | small within-domain AUC | p99 ms (max over seeds) |",
-              "|---|---|---|---|---|"]
+    lines += ["", "| family | small macro LogLoss | small click LogLoss | small Poisson deviance (group totals) | "
+                  "large click LogLoss | small within-domain AUC | p99 ms, max over seeds (uniform traffic) |",
+              "|---|---|---|---|---|---|---|"]
     for t in r["table"]:
-        lines.append(f"| {t['family']} | {t['small_macro_logloss']:.6f} | {t['large_click_logloss']:.6f} | "
-                     f"{t['small_within_domain_auc']:.4f} | {t['p99_ms_max_over_seeds'] if t['p99_ms_max_over_seeds'] is None else round(t['p99_ms_max_over_seeds'], 3)} |")
+        p99 = t["p99_ms_max_over_seeds"]
+        lines.append(f"| {t['family']} | {t['small_macro_logloss']:.6f} | {t['small_click_logloss']:.6f} | "
+                     f"{t['small_poisson_deviance']:.4f} | {t['large_click_logloss']:.6f} | "
+                     f"{t['small_within_domain_auc']:.4f} | {'–' if p99 is None else round(p99, 3)} |")
     lines += ["", "| secondary (A - B) | small macro [95% CI] | large click [95% CI] |", "|---|---|---|"]
     for k, b in r["secondary"].items():
         pp, cc = b["point"], b["ci95"]
@@ -347,7 +511,9 @@ def render(r: dict, manifest: dict) -> str:
 
 if __name__ == "__main__":
     cmd, run_arg = sys.argv[1], Path(sys.argv[2])
-    if cmd == "freeze":
+    if cmd == "expect":
+        print(json.dumps(expect(run_arg), indent=2))
+    elif cmd == "freeze":
         m = freeze(run_arg)
         print(f"froze {run_arg}: {len(m['files_sha256'])} files; candidate {m['selection']['candidate']}")
     elif cmd == "dryrun":
