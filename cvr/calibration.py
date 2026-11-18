@@ -204,3 +204,51 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
     gs = GroupShrunkPlatt(base.a, base.b, lam, gid, da, db, int((base.a + da <= 0).sum()), bool(worst < tol and below == 0))
     return gs, {"solver": "per-group Newton", "max_projected_gradient": worst, "max_iterations": iters,
                 "groups_at_slope_bound": at_bound, "slopes_below_bound": below, "global_slope": base.a, "tol": tol}
+
+
+def fit_group_intercept_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, base: GlobalPlatt, lam: float,
+                              tol: float = 1e-9, max_iter: int = 100) -> tuple[GroupShrunkPlatt, dict]:
+    """(iii-0) of docs/DESIGN.md §17: only the group INTERCEPT moves,
+        logit p' = a·logit p + (b + db_g),   penalty lam·db_g^2   (the slope stays the global a).
+    One convex 1-parameter problem per group, solved by Newton's method with a backtracking line search; stops
+    when |gradient| (sum scale) < tol at the returned point. Returned as a GroupShrunkPlatt with da = 0."""
+    z = logit(p)
+    gid, gi = np.unique(groups, return_inverse=True)
+    order = np.argsort(gi, kind="stable")
+    bounds = np.r_[0, np.cumsum(np.bincount(gi, minlength=gid.size))]
+    db = np.zeros(gid.size)
+    worst, iters = 0.0, 0
+
+    def obj(s0, yg, x):
+        s = s0 + x
+        return float(np.logaddexp(0.0, s).sum() - (yg * s).sum() + lam * x * x)
+
+    for k in range(gid.size):
+        rows = order[bounds[k]:bounds[k + 1]]
+        s0, yg = base.a * z[rows] + base.b, y[rows].astype(float)
+        x, f = 0.0, obj(s0, yg, 0.0)
+        for it in range(max_iter):
+            q = expit(s0 + x)
+            g = float((q - yg).sum() + 2 * lam * x)
+            if abs(g) < tol:
+                break
+            h = float((q * (1 - q)).sum() + 2 * lam)
+            step, t = -g / h, 1.0
+            while True:
+                x_new = x + t * step
+                f_new = obj(s0, yg, x_new)
+                if np.isfinite(f_new) and (f_new <= f + 1e-4 * g * (x_new - x) or f_new <= f + 1e-13 * (1 + abs(f))):
+                    break
+                t *= 0.5
+                if t < 1e-12:
+                    break
+            if t < 1e-12:
+                break
+            x, f = x_new, f_new
+        iters = max(iters, it + 1)
+        worst = max(worst, abs(float((expit(s0 + x) - yg).sum() + 2 * lam * x)))
+        db[k] = x
+    gs = GroupShrunkPlatt(base.a, base.b, lam, gid, np.zeros(gid.size), db, int(base.a <= 0) * gid.size,
+                          bool(worst < tol))
+    return gs, {"solver": "per-group Newton, intercept only", "max_abs_gradient": worst, "max_iterations": iters,
+                "tol": tol}

@@ -306,3 +306,52 @@ def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None) -> d
     tier = "adoption_candidate" if adopted else ("improvement_confirmed" if improved else "not_confirmed")
     return {"improvement_confirmed": improved, "tier": tier, "conditions": conditions,
             "failed_conditions": failed, "pending_conditions": pending}
+
+
+# ---------------------------------------------------------------- study D (docs/DESIGN.md §17)
+def paired_bootstrap_groups(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], groups: np.ndarray,
+                            users: np.ndarray, reps: int = 1000, seed: int = 0,
+                            pair_seeds: list[int] | None = None) -> dict:
+    """A - B on rows that ALL belong to the evaluated groups, seed-paired, one user resample per replicate:
+    - macro: group-equal mean of per-group mean LogLoss; click: row-equal mean LogLoss;
+    - poisson: mean over groups of 2[O log(O/E) - (O - E)] with O, E the (resampled) positive and predicted sums.
+    Poisson deviance is not linear in the rows, so each seed pair's difference is computed and then averaged.
+    A group enters a replicate if it has a resampled row."""
+    if len(pa) != len(pb) or not pa:
+        raise ValueError("seed-matched prediction lists must be non-empty and of equal length")
+    _, ui = np.unique(users, return_inverse=True)
+    _, gi = np.unique(groups, return_inverse=True)
+    U, G = int(ui.max()) + 1, int(gi.max()) + 1
+    yf = y.astype(float)
+
+    def mat(v: np.ndarray) -> sparse.csr_matrix:
+        return sparse.csr_matrix((v, (ui, gi)), shape=(U, G))
+
+    n_m, y_m = mat(np.ones(y.size)), mat(yf)
+    loss = [(M.bce(y, a), M.bce(y, b)) for a, b in zip(pa, pb)]
+    la_m = [(mat(a), mat(b)) for a, b in loss]
+    pa_m = [(mat(a), mat(b)) for a, b in zip(pa, pb)]
+
+    def stats(w: np.ndarray) -> dict:
+        cnt, O = n_m.T @ w, y_m.T @ w
+        keep = cnt > 0
+        wr = w[ui]
+        out = {"macro": [], "click": [], "poisson": []}
+        for (la, lb), (ma, mb), (ea, eb) in zip(loss, la_m, pa_m):
+            out["macro"].append(float(((ma.T @ w)[keep] / cnt[keep]).mean() - ((mb.T @ w)[keep] / cnt[keep]).mean()))
+            out["click"].append(float(((la - lb) * wr).sum() / wr.sum()))
+            out["poisson"].append(float(poisson_deviance(O[keep], (ea.T @ w)[keep]).mean()
+                                        - poisson_deviance(O[keep], (eb.T @ w)[keep]).mean()))
+        return out
+
+    point = stats(np.ones(U))
+    rng = np.random.default_rng(seed)
+    draws = {k: [] for k in point}
+    for _ in range(reps):
+        s = stats(np.bincount(rng.integers(U, size=U), minlength=U).astype(float))
+        for k in draws:
+            draws[k].append(float(np.mean(s[k])))
+    return {"point": {k: float(np.mean(v)) for k, v in point.items()},
+            "per_pair": point, "per_pair_seeds": list(pair_seeds) if pair_seeds is not None else None,
+            "ci95": {k: [float(np.quantile(v, 0.025)), float(np.quantile(v, 0.975))] for k, v in draws.items()},
+            "reps": reps, "users": U, "groups": G, "seed_pairs": len(pa)}
