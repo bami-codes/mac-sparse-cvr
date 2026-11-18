@@ -178,8 +178,8 @@ def ssh(a) -> None:
     s = pod_of(a.pod).get("ssh") or {}
     print(json.dumps(s, indent=2))
     d = s.get("direct") or {}
-    if d.get("ip") and d.get("port"):
-        print(f"ssh -i {SSH_KEY} -p {d['port']} root@{d['ip']}")
+    if d.get("host") and d.get("port"):
+        print(f"ssh -i {SSH_KEY} -p {d['port']} {d.get('username', 'root')}@{d['host']}")
 
 
 def terminate(a) -> None:
