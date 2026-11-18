@@ -157,7 +157,7 @@ def q2_values(name: str, manifest: dict) -> dict:
     codes = Q.token_codes()
     sets = Q.group_sets(codes)
     g, y = Q.file_columns(name, codes)
-    lam, choice = manifest["lambda_chosen"], manifest["choice"]
+    choice = manifest["choice"]  # the chosen lambdas are inside the saved calibrators
     cal, users = {}, None
     for model, c in choice.items():
         for s in Q.SEEDS:
