@@ -243,7 +243,7 @@ def main(config_path: str) -> Path:
     l_int = seed_mean(ctrl, f"iiid_lam{lam_of[ctrl]:g}")
     lo, hi = primary["ci95"]["small_macro"]
     power = D.power_check((hi - lo) / 2, l_int)
-    verdict_dry = D.verdict(primary, l_int, p99_by_seed=None, seeds=seeds) | {
+    verdict_dry = D.verdict(primary, l_int, p99_by_seed=None) | {
         "note": "DRY RUN of the verdict code on V2 = selection data; not a result (latency measured later)"}
     loo = D.leave_one_domain_out(y2, calibrated(cand), calibrated(ctrl), dom["v2"], cls["v2"])
     best_g = min(["G-int", "G-shared"], key=lambda f: seed_mean(f, f"iiid_lam{lam_of[f]:g}"))

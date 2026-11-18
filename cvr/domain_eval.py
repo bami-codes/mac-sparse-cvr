@@ -32,11 +32,17 @@ ROLES = ("train", "v1", "v2")
 # ---------------------------------------------------------------- configuration guard (review of §16)
 def check_development_sources(data: dict) -> None:
     """Refuse a development `[data]` section that lists a holdout file, uses one file in two roles, or (smoke mode)
-    overlapping user buckets. Before revision 4 only a `test` key was refused."""
+    overlapping user buckets. Before revision 4 only a `test` key was refused. Paths are joined with `root` and
+    resolved before any comparison, so `./train-11.parquet` and `train-11.parquet` are the same file (review)."""
+    from pathlib import Path
+
+    def real(f: str) -> Path:
+        return (Path(data.get("root", ".")) / f).resolve()
+
     if "test" in data:
         raise ValueError("a development config must not have a `test` entry")
     if data["mode"] == "smoke":
-        names = [data["smoke_file"]]
+        names = [real(data["smoke_file"])]
         ranges = [tuple(data[f"smoke_{r}_buckets"]) for r in ROLES]
         for i in range(len(ranges)):
             for j in range(i + 1, len(ranges)):
@@ -46,11 +52,12 @@ def check_development_sources(data: dict) -> None:
         names, owner = [], {}
         for r in ROLES:
             for f in data[r]:
-                if f in owner:
-                    raise ValueError(f"{f} is listed for both {owner[f]} and {r}")
-                owner[f] = r
-                names.append(f)
-    bad = [f for f in names if f.split("/")[-1] in HOLDOUT_FILES]
+                rf = real(f)
+                if rf in owner:
+                    raise ValueError(f"{f} ({rf}) is listed for both {owner[rf]} and {r}")
+                owner[rf] = r
+                names.append(rf)
+    bad = [str(f) for f in names if f.name in HOLDOUT_FILES]
     if bad:
         raise ValueError(f"holdout files must not appear in a development config: {bad}")
 
@@ -257,16 +264,23 @@ def power_check(h_v2: float, l_int: float) -> dict:
                     "and the three-seed direction rule are not included"}
 
 
-def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None, seeds: list[int] = SEEDS) -> dict:
-    """Two tiers (§16.6). `boot` is paired_bootstrap(selected, int, pair_seeds=seeds); `l_int` the int's small macro
+def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None) -> dict:
+    """Two tiers (§16.6). `boot` is paired_bootstrap(selected, int, pair_seeds=...); `l_int` the int's small macro
     LogLoss; `p99_by_seed` the selected candidate's raw-row p99 (ms) per seed, or None before latency is measured.
-    Raises if the evidence of any fixed seed is missing (review: one pair, or none, still gave adoption_candidate)."""
+    The evidence is checked against the PRE-REGISTERED seeds (SEEDS), never against a list the caller passes
+    (review: a run configured with [2026] alone, or a NaN p99, could still give adoption_candidate)."""
     pt, ci = boot["point"], boot["ci95"]
     per, got = pt["per_pair_small_macro"], pt.get("per_pair_seeds")
-    if not seeds or got is None or sorted(got) != sorted(seeds) or len(per) != len(seeds):
-        raise ValueError(f"seed pairs {got} (n={len(per)}) do not match the fixed seeds {seeds}")
-    if p99_by_seed is not None and sorted(p99_by_seed) != sorted(seeds):
-        raise ValueError(f"p99 measured for seeds {sorted(p99_by_seed)}, expected {sorted(seeds)}")
+    if got is None or sorted(got) != sorted(SEEDS) or len(per) != len(SEEDS):
+        raise ValueError(f"seed pairs {got} (n={len(per)}) do not match the fixed seeds {SEEDS}")
+    if not all(np.isfinite(x) for x in per):
+        raise ValueError(f"non-finite per-seed differences {per}")
+    if p99_by_seed is not None:
+        if sorted(p99_by_seed) != sorted(SEEDS):
+            raise ValueError(f"p99 measured for seeds {sorted(p99_by_seed)}, expected {sorted(SEEDS)}")
+        bad = {k: v for k, v in p99_by_seed.items() if not (np.isfinite(v) and v > 0)}
+        if bad:
+            raise ValueError(f"p99 must be finite and positive for every seed: {bad}")
     p99_ms = None if p99_by_seed is None else float(max(p99_by_seed.values()))
     improved = bool(pt["small_macro"] < 0 and ci["small_macro"][1] < 0 and all(x < 0 for x in per))
     rel = float(-pt["small_macro"] / l_int)

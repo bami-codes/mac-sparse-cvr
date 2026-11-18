@@ -182,3 +182,23 @@ def test_development_config_guard():
         D.check_development_sources(smoke | {"smoke_file": "train-13.parquet"})
     with pytest.raises(ValueError, match="overlap"):
         D.check_development_sources(smoke | {"smoke_v1_buckets": [50, 80]})
+
+
+def test_verdict_uses_the_preregistered_seeds_and_finite_latencies():
+    one = _boot(-0.0002, -0.00005, [-1e-4], 5e-5, seeds=(2026,))
+    with pytest.raises(ValueError, match="seed pairs"):  # review: a [2026]-only run gave adoption_candidate
+        D.verdict(one, l_int=0.05, p99_by_seed={2026: 0.2})
+    ok = _boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5)
+    for bad in ({2026: 0.3, 2027: float("nan"), 2028: 0.4}, {2026: 0.3, 2027: 0.0, 2028: 0.4},
+                {2026: 0.3, 2027: float("inf"), 2028: 0.4}):  # review: NaN gave adoption_candidate in one order
+        with pytest.raises(ValueError, match="finite and positive"):
+            D.verdict(ok, l_int=0.05, p99_by_seed=bad)
+
+
+def test_development_config_guard_compares_resolved_paths(tmp_path):
+    base = {"mode": "files", "root": str(tmp_path / "train"), "train": ["train-08.parquet"]}
+    for v1, v2 in (("train-11.parquet", "./train-11.parquet"), ("train-11.parquet", "../train/train-11.parquet")):
+        with pytest.raises(ValueError, match="listed for both"):  # review: "./train-11.parquet" passed before
+            D.check_development_sources(base | {"v1": [v1], "v2": [v2]})
+    with pytest.raises(ValueError, match="holdout"):
+        D.check_development_sources(base | {"v1": ["train-11.parquet"], "v2": ["./sub/../train-13.parquet"]})

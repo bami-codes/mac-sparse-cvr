@@ -1,8 +1,11 @@
 """Two real-data diagnostics for study C (docs/DESIGN.md §16 revision 4), from a finished development run.
 
 1. Calibration solver: refit (iii-d) on V1 with the OLD joint L-BFGS-B (GroupShrunkPlatt.fit) and with the exact
-   per-domain Newton solve used by the run, for every base model and lambda; report how much the V2 small-domain
-   macro LogLoss moves and whether the candidate choice would change.
+   per-domain Newton solve, for every base model and lambda; report how much the V2 small-domain macro LogLoss
+   moves, and choose every lambda and the candidate AGAIN from the exact scores. The diagnostic FAILS if that
+   independent choice, or the recomputed scores, differ from the run's selection.json (review: it used to print
+   the stored choice back). It also reports the global Platt slopes: the revision-4 solver started from an
+   infeasible point when a slope was below MIN_SLOPE.
 2. STAR domain-ID dimensions: for every saved N-star model, count the (domain, ID-embedding dimension) pairs whose
    running variance passes the 1% rule, i.e. that would have used the domain's own statistics at evaluation under
    the rule before revision 4 (the run itself always uses the global statistics there).
@@ -51,7 +54,7 @@ def base_pred(run: Path, name: str, role: str) -> np.ndarray:
 
 def calib(run: Path) -> dict:
     from cvr import metrics as M
-    from cvr.calibration import GlobalPlatt, GroupShrunkPlatt, fit_group_shrunk_exact
+    from cvr.calibration import MIN_SLOPE, GlobalPlatt, GroupShrunkPlatt, fit_group_shrunk_exact
 
     res = json.loads((run / "results.json").read_text())
     sel, seeds = res["selection"], res["selection"]["seeds"]
@@ -69,7 +72,7 @@ def calib(run: Path) -> dict:
         return float(M.per_group(y["v2"][small], p2[small], dom["v2"][small])["logloss"].mean())
 
     families = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star", "N-star-noPN"]
-    per, old_lam_scores, new_lam_scores = {}, {}, {}
+    per, old_lam_scores, new_lam_scores, slopes = {}, {}, {}, {}
     for fam in families:
         old_lam_scores[fam], new_lam_scores[fam] = {}, {}
         for lam in lambdas:
@@ -78,25 +81,45 @@ def calib(run: Path) -> dict:
                 name = f"{fam}_s{s}"
                 p1, p2 = base_pred(run, name, "v1"), base_pred(run, name, "v2")
                 glob = GlobalPlatt.fit(p1, y["v1"])
+                slopes[name] = glob.a
                 old = GroupShrunkPlatt.fit(p1, y["v1"], dom["v1"], glob, lam)
-                new, _ = fit_group_shrunk_exact(p1, y["v1"], dom["v1"], glob, lam)
+                new, info = fit_group_shrunk_exact(p1, y["v1"], dom["v1"], glob, lam)
+                if not new.converged:
+                    raise RuntimeError(f"exact (iii-d) did not converge for {name}, lambda {lam}: {info}")
                 a, b = small_macro(old.predict(p2, dom["v2"])), small_macro(new.predict(p2, dom["v2"]))
                 old_s.append(a)
                 new_s.append(b)
                 per[f"{name}|lam{lam:g}"] = {"old": a, "exact": b, "exact_minus_old": b - a}
             old_lam_scores[fam][lam], new_lam_scores[fam][lam] = float(np.mean(old_s)), float(np.mean(new_s))
     run_scores = sel["candidate_scores"]
-    recomputed = {f: new_lam_scores[f][sel["lambda_iiid"][f]] for f in D.PREFERENCE}
     old_lam = {f: min(lambdas, key=lambda l: old_lam_scores[f][l]) for f in families}
     old_scores = {f: old_lam_scores[f][old_lam[f]] for f in D.PREFERENCE}
+    # independent re-selection from the exact scores (same rules as cvr/study_c.py), compared with the run
+    new_lam = {f: min(lambdas, key=lambda l: new_lam_scores[f][l]) for f in families}
+    new_scores = {f: new_lam_scores[f][new_lam[f]] for f in D.PREFERENCE}
+    new_cand = D.choose_candidate(new_scores)
+    stored_lam = {f: float(v) for f, v in sel["lambda_iiid"].items()}
+    score_gap = max(abs(new_scores[f] - run_scores[f]) for f in D.PREFERENCE)
+    problems = []
+    if new_lam != stored_lam:
+        problems.append(f"lambda: recomputed {new_lam} vs stored {stored_lam}")
+    if new_cand != sel["candidate"]:
+        problems.append(f"candidate: recomputed {new_cand} vs stored {sel['candidate']}")
+    if score_gap > 1e-12:
+        problems.append(f"candidate scores differ by up to {score_gap:.3e}")
+    if problems:
+        raise RuntimeError("the run's selection is not reproduced: " + "; ".join(problems))
     diffs = [v["exact_minus_old"] for v in per.values()]
     part1 = {"lambdas": lambdas,
-             "exact_reproduces_run_scores_max_abs": max(abs(recomputed[f] - run_scores[f]) for f in D.PREFERENCE),
+             "exact_reproduces_run_scores_max_abs": score_gap,
+             "global_platt_slope": {"min": min(slopes.values()), "max": max(slopes.values()),
+                                    "below_MIN_SLOPE": sorted(n for n, a in slopes.items() if a < MIN_SLOPE)},
              "exact_minus_old_small_macro": {"max_abs_single_seed": float(np.max(np.abs(diffs))),
                                              "max_abs_seed_mean": max(abs(new_lam_scores[f][l] - old_lam_scores[f][l])
                                                                       for f in families for l in lambdas)},
              "candidate_with_old_solver": D.choose_candidate(old_scores), "lambda_with_old_solver": old_lam,
-             "candidate_with_exact_solver": sel["candidate"], "lambda_with_exact_solver": sel["lambda_iiid"],
+             "candidate_recomputed_exact": new_cand, "lambda_recomputed_exact": new_lam,
+             "candidate_stored": sel["candidate"], "lambda_stored": stored_lam,
              "old_scores": old_scores, "exact_scores": run_scores, "per_fit": per}
     return part1
 

@@ -80,3 +80,19 @@ def test_exact_calibrator_predicts_with_the_same_formula():
     assert np.allclose(exact.predict(p, g), manual, rtol=0, atol=1e-15)
     unseen = exact.predict(p[:5], np.full(5, 99))
     assert np.allclose(unseen, base.predict(p[:5]))  # a group absent from the fit gets the global mapping
+
+
+def test_global_slope_below_the_bound_still_gives_a_feasible_converged_fit():
+    """Review of revision 4: with a global slope of 0.000289 (< MIN_SLOPE) the zero start was infeasible; a group
+    kept that slope and still reported converged, and moving one row to another group divided by zero in the line
+    search and looped."""
+    p, y, g = _data()
+    base = GlobalPlatt(0.000288539, -4.0)
+    for groups in (g, np.r_[g[:-1], 3]):  # the second: one row reassigned
+        exact, info = fit_group_shrunk_exact(p, y, groups, base, 10.0)
+        assert info["slopes_below_bound"] == 0 and (base.a + exact.da >= MIN_SLOPE - 1e-12).all()
+        assert exact.converged and info["max_projected_gradient"] < 1e-9
+        gid, da, db = _reference(p, y, groups, base, 10.0)
+        f_exact = _objective(p, y, groups, base, 10.0, exact.da, exact.db, gid)
+        f_ref = _objective(p, y, groups, base, 10.0, da, db, gid)
+        assert f_exact <= f_ref + 1e-8

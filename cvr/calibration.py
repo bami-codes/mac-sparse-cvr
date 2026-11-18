@@ -144,21 +144,29 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
         s = (base.a + x[0]) * zg + (base.b + x[1])
         return float(np.logaddexp(0.0, s).sum() - (yg * s).sum() + lam * (x @ x))
 
+    def grad_hess(zg, yg, x):
+        q = expit((base.a + x[0]) * zg + (base.b + x[1]))
+        r, w = q - yg, q * (1 - q)
+        g = np.array([r @ zg + 2 * lam * x[0], r.sum() + 2 * lam * x[1]])
+        H = np.array([[w @ (zg * zg) + 2 * lam, w @ zg], [w @ zg, w.sum() + 2 * lam]])
+        return g, H
+
+    def projected(x, g):
+        on_bound = x[0] <= lo + 1e-15 and g[0] > 0  # the slope wants to go below the bound
+        return (np.array([0.0, g[1]]) if on_bound else g), on_bound
+
     for k in range(gid.size):
         rows = order[bounds[k]:bounds[k + 1]]
         zg, yg = z[rows], y[rows].astype(float)
-        x = np.zeros(2)
+        # feasible start: a zero slope offset already violates the bound when the global slope is below MIN_SLOPE
+        # (review of revision 4: the old start returned a slope of 0.000289 as "converged")
+        x = np.array([max(0.0, lo), 0.0])
         f = obj(zg, yg, x)
         for it in range(max_iter):
-            s = (base.a + x[0]) * zg + (base.b + x[1])
-            q = expit(s)
-            r, w = q - yg, q * (1 - q)
-            g = np.array([r @ zg + 2 * lam * x[0], r.sum() + 2 * lam * x[1]])
-            on_bound = x[0] <= lo + 1e-15 and g[0] > 0  # the slope wants to go below the bound
-            pg = np.array([0.0, g[1]]) if on_bound else g
+            g, H = grad_hess(zg, yg, x)
+            pg, on_bound = projected(x, g)
             if np.abs(pg).max() < tol:
                 break
-            H = np.array([[w @ (zg * zg) + 2 * lam, w @ zg], [w @ zg, w.sum() + 2 * lam]])
             if on_bound:
                 step = np.array([0.0, -g[1] / H[1, 1]])
             else:
@@ -169,21 +177,30 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
                     # direction that moves the slope inward.
                     step = -g / np.diag(H)
             t = 1.0
-            if x[0] + step[0] < lo:  # stay feasible: shorten the step to the bound
+            if step[0] < 0 and x[0] + step[0] < lo:  # stay feasible: shorten the step to the bound (x[0] >= lo)
                 t = (lo - x[0]) / step[0]
+            stalled = False
             while True:
                 x_new = x + t * step
                 x_new[0] = max(x_new[0], lo)
                 f_new = obj(zg, yg, x_new)
                 # Armijo, or no worse than float noise of the objective near the optimum
-                if f_new <= f + 1e-4 * (g @ (x_new - x)) or f_new <= f + 1e-13 * (1 + abs(f)) or t < 1e-12:
+                if np.isfinite(f_new) and (f_new <= f + 1e-4 * (g @ (x_new - x)) or f_new <= f + 1e-13 * (1 + abs(f))):
                     break
                 t *= 0.5
+                if t < 1e-12:
+                    stalled = True
+                    break
+            if stalled:  # keep the last accepted point; the final check below reports it
+                break
             x, f = x_new, f_new
         iters = max(iters, it + 1)
+        g, _ = grad_hess(zg, yg, x)  # convergence is judged at the RETURNED point
+        pg, _ = projected(x, g)
         worst = max(worst, float(np.abs(pg).max()))
         at_bound += int(x[0] <= lo + 1e-15)
         da[k], db[k] = x
-    gs = GroupShrunkPlatt(base.a, base.b, lam, gid, da, db, int((base.a + da <= 0).sum()), bool(worst < tol))
+    below = int((base.a + da < MIN_SLOPE - 1e-12).sum())
+    gs = GroupShrunkPlatt(base.a, base.b, lam, gid, da, db, int((base.a + da <= 0).sum()), bool(worst < tol and below == 0))
     return gs, {"solver": "per-group Newton", "max_projected_gradient": worst, "max_iterations": iters,
-                "groups_at_slope_bound": at_bound, "tol": tol}
+                "groups_at_slope_bound": at_bound, "slopes_below_bound": below, "global_slope": base.a, "tol": tol}
