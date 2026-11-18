@@ -333,6 +333,8 @@ def guard(name: str) -> tuple[dict, dict]:
         if dry.get("code_fingerprint") != code_fingerprint():
             raise CheckFailed("the dry run used different evaluation code")
         require_commit(dry.get("git", {}), "the dry run")
+        if dry.get("git", {}).get("dirty_files"):
+            raise CheckFailed("the dry run was run on an uncommitted tree")
     if official_test_sha() != m["official_test_sha256"]:
         raise CheckFailed("the local official test file differs from the frozen one")
     return m, git
