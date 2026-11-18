@@ -33,11 +33,21 @@ ROLES = ("train", "v1", "v2")
 def check_development_sources(data: dict) -> None:
     """Refuse a development `[data]` section that lists a holdout file, uses one file in two roles, or (smoke mode)
     overlapping user buckets. Before revision 4 only a `test` key was refused. Paths are joined with `root` and
-    resolved before any comparison, so `./train-11.parquet` and `train-11.parquet` are the same file (review)."""
+    resolved before any comparison, so `./train-11.parquet` and `train-11.parquet` are the same file; holdout names
+    are compared without case, and two existing files are compared with os.path.samefile, because this machine's
+    file system is case-insensitive (review: `train-11.parquet` and `TRAIN-11.PARQUET` passed as two files)."""
+    import os
     from pathlib import Path
 
     def real(f: str) -> Path:
         return (Path(data.get("root", ".")) / f).resolve()
+
+    def same(a: Path, b: Path) -> bool:
+        if a.exists() and b.exists():
+            return os.path.samefile(a, b)
+        return str(a).casefold() == str(b).casefold()
+
+    holdout = {h.casefold() for h in HOLDOUT_FILES}
 
     if "test" in data:
         raise ValueError("a development config must not have a `test` entry")
@@ -49,15 +59,16 @@ def check_development_sources(data: dict) -> None:
                 if max(ranges[i][0], ranges[j][0]) < min(ranges[i][1], ranges[j][1]):
                     raise ValueError(f"smoke buckets of {ROLES[i]} and {ROLES[j]} overlap: {ranges[i]}, {ranges[j]}")
     else:
-        names, owner = [], {}
+        names, owner = [], []
         for r in ROLES:
             for f in data[r]:
                 rf = real(f)
-                if rf in owner:
-                    raise ValueError(f"{f} ({rf}) is listed for both {owner[rf]} and {r}")
-                owner[rf] = r
+                for prev, role in owner:
+                    if same(rf, prev):
+                        raise ValueError(f"{f} ({rf}) is listed for both {role} and {r}")
+                owner.append((rf, r))
                 names.append(rf)
-    bad = [str(f) for f in names if f.name in HOLDOUT_FILES]
+    bad = [str(f) for f in names if f.name.casefold() in holdout]
     if bad:
         raise ValueError(f"holdout files must not appear in a development config: {bad}")
 

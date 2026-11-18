@@ -202,3 +202,14 @@ def test_development_config_guard_compares_resolved_paths(tmp_path):
             D.check_development_sources(base | {"v1": [v1], "v2": [v2]})
     with pytest.raises(ValueError, match="holdout"):
         D.check_development_sources(base | {"v1": ["train-11.parquet"], "v2": ["./sub/../train-13.parquet"]})
+
+
+def test_development_config_guard_ignores_case(tmp_path):
+    root = tmp_path / "train"
+    root.mkdir()
+    (root / "train-11.parquet").write_bytes(b"")
+    base = {"mode": "files", "root": str(root), "train": ["train-08.parquet"]}
+    with pytest.raises(ValueError, match="listed for both"):  # review: passed as two files on this Mac
+        D.check_development_sources(base | {"v1": ["train-11.parquet"], "v2": ["TRAIN-11.PARQUET"]})
+    with pytest.raises(ValueError, match="holdout"):
+        D.check_development_sources(base | {"v1": ["train-11.parquet"], "v2": ["TRAIN-13.PARQUET"]})

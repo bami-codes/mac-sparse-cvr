@@ -2,9 +2,9 @@
 
 1. Calibration solver: refit (iii-d) on V1 with the OLD joint L-BFGS-B (GroupShrunkPlatt.fit) and with the exact
    per-domain Newton solve, for every base model and lambda; report how much the V2 small-domain macro LogLoss
-   moves, and choose every lambda and the candidate AGAIN from the exact scores. The diagnostic FAILS if that
-   independent choice, or the recomputed scores, differ from the run's selection.json (review: it used to print
-   the stored choice back). It also reports the global Platt slopes: the revision-4 solver started from an
+   moves, and choose every lambda and the candidate AGAIN from the exact scores. The diagnostic FAILS if
+   selection.json and the selection inside results.json differ, or if the independent choice or the recomputed
+   scores differ from selection.json (reviews: it printed the stored choice back; then it read only results.json). It also reports the global Platt slopes: the revision-4 solver started from an
    infeasible point when a slope was below MIN_SLOPE.
 2. STAR domain-ID dimensions: for every saved N-star model, count the (domain, ID-embedding dimension) pairs whose
    running variance passes the 1% rule, i.e. that would have used the domain's own statistics at evaluation under
@@ -57,7 +57,10 @@ def calib(run: Path) -> dict:
     from cvr.calibration import MIN_SLOPE, GlobalPlatt, GroupShrunkPlatt, fit_group_shrunk_exact
 
     res = json.loads((run / "results.json").read_text())
-    sel, seeds = res["selection"], res["selection"]["seeds"]
+    frozen = json.loads((run / "selection.json").read_text())  # the file the freeze step will use
+    if json.dumps(res["selection"], sort_keys=True) != json.dumps(frozen, sort_keys=True):
+        raise RuntimeError("selection.json differs from the selection inside results.json")
+    sel, seeds = frozen, frozen["seeds"]  # every comparison below is against selection.json (review)
     lambdas = tomllib.loads((run / "config.toml").read_text())["calibration"]["lambdas"]
     cfg_dom = res["domains"]["definition"]
     tr = load_md(run / "nn_data" / "train")
