@@ -58,6 +58,19 @@
 - **실행**: `uv run pytest -q tests/test_domain_eval.py -k one_cluster`
 - **설명할 것**: 부트스트랩이 다루는 불확실성은 "학습된 모델을 고정했을 때 평가 사용자의 변동"뿐이다. 재학습 변동은 들어가지 않는다.
 
+## 7. 공식 코드의 학습률 인자가 무시되는 경로를 직접 따라간다 (연구 E)
+
+- **왜**: MAC 공식 예제는 `--learning_rate 4.0e-3`을 넘기지만, 파서는 `--lr`만 알고 `parse_known_args()`로 나머지를 버린다. 그래서 실제 학습률은 기본값 0.003이다. 명령에 적은 값, 파서가 받은 값, 옵티마이저에 실제로 들어간 값이 다르다는 것을 본인이 세 단계로 확인한다.
+- **코드**: [third_party/pymal/scripts/run.sh](../third_party/pymal/scripts/run.sh) (명령), [third_party/pymal/utils/data.py](../third_party/pymal/utils/data.py)의 `get_args` (파서), [third_party/pymal/run.py](../third_party/pymal/run.py)의 `torch.optim.Adam(...)` (옵티마이저, 임베딩 표는 10배)
+- **실행** (GPU 없이, 원자료 없이):
+  ```bash
+  cd third_party/pymal
+  uv run python -c "import sys; sys.argv=['run.py','--learning_rate','4.0e-3','--lamda','0.30']; from utils.data import get_args; a=get_args(); print('lr', a.lr, 'lamda', a.lamda)"
+  ```
+  `lr 0.003 lamda 0.3`이 나와야 한다. 옵티마이저 단계는 `run.py`의 두 줄을 읽고, 두 파라미터 그룹의 학습률이 `lr * 10`과 `lr`이 되는 것을 직접 계산한다.
+- **깨 보기**: 위 명령에서 `--learning_rate`를 `--lr`로 바꾸면 0.004가 나와야 한다. 이 프로젝트의 실행기에서는 `uv run python -m cvr.pymal_run train --out x --lr 0.003 --learning_rate 0.004`가 오류로 멈춰야 한다.
+- **설명할 것**: 왜 이 문제가 조용히 지나가는가(오류도 경고도 없다). 논문은 학습률을 검증으로 골랐다고만 쓰고 있어서, 표 4를 만든 실행이 어느 값을 썼는지는 공개 자료로 확정할 수 없다는 점. 그래서 이 연구는 0.003과 0.004를 둘 다 후보로 두고 `train-19`로 고른다(DESIGN §18.2).
+
 ---
 
 `REVIEW.md` 형식 (항목마다): 확인한 날짜, 무엇을 확인했는가(자기 말), 실행한 명령과 결과, 깨 봤을 때의 결과, 아직 이해가 불확실한 점.

@@ -269,6 +269,7 @@ def test_a_failed_process_table_is_a_failed_measurement(monkeypatch):
     import subprocess
 
     import scripts.latency_c as L
+    monkeypatch.setattr(L.sys, "platform", "darwin")  # the rule is macOS-only; off macOS it is refused before ps runs
     monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="x"))
     with pytest.raises(RuntimeError, match="process table unavailable"):  # review: it read as 0% CPU
         L.environment()

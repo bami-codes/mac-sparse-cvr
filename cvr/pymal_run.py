@@ -1,22 +1,30 @@
 """Study E (docs/DESIGN.md §18): train and score the official MAC models (PyMAL) without changing them.
 
-    python -m cvr.pymal_run preprocess --mac data/raw/mac --cache data/pymal_cache train-00.parquet ... test.parquet
-    python -m cvr.pymal_run train --mac data/raw/mac --cache data/pymal_cache --out runs/e_pymal/<name> \
-        --model MoAE --lr 0.003 --lamda 0.3 --aux_views first mta linear cartesian --seed 2026 --device cuda
-    python -m cvr.pymal_run predict --mac data/raw/mac --cache data/pymal_cache \
-        --ckpt runs/e_pymal/<name>/model_after_train-18.pt --out <dir> train-19.parquet
+    python -m cvr.pymal_run preprocess train-00.parquet ... test.parquet
+    python -m cvr.pymal_run train --out runs/e_pymal/<name> --model MoAE --lr 0.003 --lamda 0.3 \
+        --aux_views first mta linear cartesian --seed 2026
+    python -m cvr.pymal_run train --resume runs/e_pymal/<name>          # after an interruption, from the last file
+    python -m cvr.pymal_run predict --out <dir> --ckpt <run>/model_after_train-18.pt [--ckpt ...] train-19.parquet
 
 Taken from the official code as is (third_party/pymal, commit 3186be8, unmodified): the model classes, the
 embedding table, the dataset, the label construction (weight > 0), the loss, set_seed, compute_auc_gauc and the
 preprocessing functions. Copied line for line from the official run.py / Trainer.train: the optimizer groups (the
 embedding table at 10x the learning rate), the schedule (5% linear warm-up of 4,000,000 x 21 // batch steps, then
 constant), the file order and shuffle=False. tests/test_pymal_run.py checks that this loop gives the same losses and
-parameters as the official Trainer.train.
+parameters as the official run.py.
 
-Added for the study (§18.1): the device is an argument; unknown arguments are an error (the official parser drops
-them, so the example's --learning_rate 4.0e-3 silently became 0.003); checkpoints after the named training files;
-no test evaluation inside training; predictions saved in file row order; a run record with the effective settings,
-time and memory. The official test file is scored only with a freeze manifest that lists the checkpoint's SHA-256.
+Added for the study (§18.1):
+- the device is an argument; unknown arguments are an error and the learning rate has no default (the official
+  parser drops unknown arguments, so the example's --learning_rate 4.0e-3 silently became 0.003);
+- file arguments are bare official names (train-NN.parquet, test.parquet), so the test file has one spelling;
+- the cache of each file records the SHA-256 of its source parquet file and of itself, checked before use;
+- inference checkpoints (model weights) after the named training files; a resume state (model, optimizer,
+  schedule, step, random states) after every file, so a paid run that stops is continued from the last file
+  with the same result (tested: stop + resume equals the uninterrupted run);
+- no test evaluation inside training; predictions in file row order, one folder per checkpoint, never overwritten;
+- the official test file is scored only with a freeze manifest that lists every checkpoint and the SHA-256 of the
+  official test file, and only once per manifest (exclusive lock; a failure after the claim is recorded);
+- a run record with the effective settings, time, steady throughput after warm-up and memory (process and container).
 """
 
 import argparse
@@ -24,17 +32,22 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
-from .sysinfo import cpu_name, peak_rss_gb
+from .sysinfo import container_peak_memory_gb, cpu_name, peak_rss_gb
 
 PYMAL = Path(__file__).resolve().parents[1] / "third_party" / "pymal"
 UPSTREAM_COMMIT = "3186be8fd509ec56e6c537359f8e2a984fc04dfb"
 TEST_FILE = "test.parquet"
+NAME = re.compile(r"train-\d{2}\.parquet|test\.parquet")
+TIMING_SKIP_STEPS = 50  # steps left out of the steady throughput (worker start-up, first allocations)
+TRAINING_SETTINGS = ("model", "lr", "lamda", "seed", "batch_size", "hidden_dim", "main_view", "aux_views", "pcgrad",
+                     "gcsgrad", "train_files", "ckpt_after")
 
 
 def official():
@@ -54,8 +67,33 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def check_names(files) -> None:
+    bad = [f for f in files if not NAME.fullmatch(str(f))]
+    if bad:
+        raise ValueError(f"file arguments are bare official names (train-NN.parquet, test.parquet), got {bad}")
+
+
+def source_file(mac: Path, name: str) -> Path:
+    return mac / ("test" if name == TEST_FILE else "train") / name
+
+
 def cache_file(cache: Path, name: str) -> Path:
     return cache / name.replace(".parquet", ".pkl")
+
+
+def cache_meta(cache: Path, name: str, verify: bool = True) -> dict:
+    """The record written with a cache file; with verify, its SHA-256 is checked against the file."""
+    pkl = cache_file(cache, name)
+    meta = json.loads(pkl.with_name(pkl.name + ".json").read_text())
+    if verify and sha256(pkl) != meta["cache_sha256"]:
+        raise ValueError(f"{pkl} differs from the cache written by preprocess")
+    return meta
+
+
+def atomic_write(path: Path, write) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    write(tmp)
+    os.replace(tmp, path)
 
 
 # ------------------------------------------------------------------ preprocessing (official functions)
@@ -63,6 +101,7 @@ def preprocess(mac: Path, cache: Path, files: list[str]) -> dict:
     """The official preprocess.py for the named files only (that script runs every file on import). df_to_dict and
     get_vocabs are the official functions; the pickle call is the official save_data_dict."""
     import pandas as pd
+    check_names(files)
     D, _ = official()
     t0 = time.time()
     vocabs = D.get_vocabs(str(mac / "vocabs"))
@@ -70,15 +109,17 @@ def preprocess(mac: Path, cache: Path, files: list[str]) -> dict:
            "files": {}}
     for name in files:
         t1 = time.time()
-        folder = "train" if "train" in name else "test"
-        df = pd.read_parquet(mac / folder / name)
+        src = source_file(mac, name)
+        df = pd.read_parquet(src)
         data = D.df_to_dict(df, vocabs)
         out = cache_file(cache, name)
         os.makedirs(out.parent, exist_ok=True)
         with open(out, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        rec["files"][name] = {"rows": int(len(df)), "seconds": round(time.time() - t1, 1),
-                              "cache_bytes": out.stat().st_size, "peak_rss_gb_so_far": peak_rss_gb()}
+        meta = {"source": name, "source_sha256": sha256(src), "cache_sha256": sha256(out), "rows": int(len(df))}
+        out.with_name(out.name + ".json").write_text(json.dumps(meta, indent=2))
+        rec["files"][name] = meta | {"seconds": round(time.time() - t1, 1), "cache_bytes": out.stat().st_size,
+                                     "peak_rss_gb_so_far": peak_rss_gb(), "container_peak_gb": container_peak_memory_gb()}
         print(name, rec["files"][name], flush=True)
         del df, data
     rec["peak_rss_gb"] = peak_rss_gb()
@@ -101,6 +142,21 @@ def build(a, vocabs, device):
     return model, optimizer, schedule
 
 
+def memory(device) -> dict:
+    import torch
+    out = {"peak_rss_gb": peak_rss_gb(), "container_peak_gb": container_peak_memory_gb()}
+    if device.type == "cuda":
+        out |= {"max_vram_allocated_gb": round(torch.cuda.max_memory_allocated(device) / 1e9, 2),
+                "max_vram_reserved_gb": round(torch.cuda.max_memory_reserved(device) / 1e9, 2)}
+    return out
+
+
+def sync(device) -> None:
+    import torch
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
 # ------------------------------------------------------------------ training (official Trainer.train, device as argument)
 def train(a) -> Path:
     import torch
@@ -108,109 +164,195 @@ def train(a) -> Path:
     D, U = official()
     from utils.grad import get_gcsgrad, get_pcgrad
 
-    out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=False)  # a run folder is never reused
-    files = a.train_files or list(D.TRAIN_DATA)
-    if TEST_FILE in files:
+    if not a.resume:
+        with_defaults(a)
+    if a.resume:
+        out = Path(a.resume)
+        rec = json.loads((out / "progress.json").read_text())
+        saved = rec["args"]
+        given = {k: getattr(a, k) for k in TRAINING_SETTINGS if getattr(a, k) is not None}
+        changed = {k: (saved[k], v) for k, v in given.items() if v != saved[k] and k not in ("ckpt_after",)}
+        if changed:
+            raise ValueError(f"a resumed run keeps its training settings; changed: {changed}")
+        s = argparse.Namespace(**{k: saved[k] for k in TRAINING_SETTINGS})
+    else:
+        if a.out is None or a.lr is None:
+            raise ValueError("--out and --lr are required for a new run")
+        out = Path(a.out)
+        out.mkdir(parents=True, exist_ok=False)  # a run folder is never reused
+        s = argparse.Namespace(**{k: getattr(a, k) for k in TRAINING_SETTINGS})
+        s.train_files = s.train_files or list(D.TRAIN_DATA)
+        s.ckpt_after = s.ckpt_after if s.ckpt_after is not None else ["train-17.parquet", "train-18.parquet",
+                                                                      "train-19.parquet"]
+        s.aux_views = s.aux_views or []
+        rec = None
+    check_names(s.train_files + s.ckpt_after)
+    if TEST_FILE in s.train_files:
         raise ValueError("the official test file is never a training file")
-    missing = [f for f in a.ckpt_after if f not in files]
-    if missing:
-        raise ValueError(f"checkpoint files {missing} are not training files")
-    U.set_seed(a.seed)  # same call order as the official run.py: seed, vocabularies, model, optimizer
+    if [f for f in s.ckpt_after if f not in s.train_files]:
+        raise ValueError(f"checkpoint files {s.ckpt_after} must be training files")
+
+    U.set_seed(s.seed)  # same call order as the official run.py: seed, vocabularies, model, optimizer
     device = torch.device(a.device)
     vocabs = D.get_vocabs(str(Path(a.mac) / "vocabs"))
-    model, optimizer, schedule = build(a, vocabs, device)
+    model, optimizer, schedule = build(s, vocabs, device)
     all_p = list(model.parameters())
-    rec = {"upstream_commit": UPSTREAM_COMMIT, "args": vars(a) | {"train_files": files}, "device": str(device),
-           "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else cpu_name(),
-           "torch": torch.__version__, "parameters": int(sum(p.numel() for p in all_p)), "files": {},
-           "checkpoints": {}, "official_test_evaluated": False}
-    steps = 0
-    for name in files:
+    start, steps = 0, 0
+    if rec is None:
+        rec = {"upstream_commit": UPSTREAM_COMMIT, "args": vars(s), "parameters": int(sum(p.numel() for p in all_p)),
+               "files": {}, "checkpoints": {}, "official_test_evaluated": False, "sessions": []}
+    else:
+        state = torch.load(out / "resume.pt", map_location=device, weights_only=False)
+        model.load_state_dict(state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+        schedule.load_state_dict(state["schedule"])
+        torch.set_rng_state(state["rng_cpu"])
+        if device.type == "cuda" and state.get("rng_cuda") is not None:
+            torch.cuda.set_rng_state(state["rng_cuda"], device)
+        start, steps = state["next_file"], state["steps"]
+    rec["sessions"].append({"device": str(device), "torch": torch.__version__, "cuda": torch.version.cuda,
+                            "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else cpu_name(),
+                            "start_file": s.train_files[start] if start < len(s.train_files) else None})
+
+    for idx in range(start, len(s.train_files)):
+        name = s.train_files[idx]
         t0 = time.time()
         model.train()
+        meta = cache_meta(Path(a.cache), name)
         with open(cache_file(Path(a.cache), name), "rb") as f:
             data = pickle.load(f)
         dataset = D.MALDataset(data)
-        loader = DataLoader(dataset, batch_size=a.batch_size, num_workers=a.num_workers, shuffle=False)
+        loader = DataLoader(dataset, batch_size=s.batch_size, num_workers=a.num_workers, shuffle=False)
         t_load = time.time() - t0
-        losses = []
+        losses, t_steady = [], None
         for batch in loader:
             user_indices, ad_indices, buy_mm_scores, buy_seq_indices = [batch[x].to(device) for x in ["user", "ad", "mm", "seq"]]
             labels = {k: v.to(device, non_blocking=True) for k, v in batch["label"].items()}
             probs = model(user_indices[:, 1:], ad_indices, buy_mm_scores, buy_seq_indices)
-            main_loss, aux_loss_list = U.log_loss(probs, labels, a.main_view, a.aux_views)
-            total_loss = main_loss + sum([a.lamda * x for x in aux_loss_list])
+            main_loss, aux_loss_list = U.log_loss(probs, labels, s.main_view, s.aux_views)
+            total_loss = main_loss + sum([s.lamda * x for x in aux_loss_list])
             optimizer.zero_grad()
-            if a.gcsgrad:
+            if s.gcsgrad:
                 for p, g in zip(all_p, get_gcsgrad(main_loss, aux_loss_list, all_p)):
                     p.grad = g
-            elif a.pcgrad:
+            elif s.pcgrad:
                 for p, g in zip(all_p, get_pcgrad(main_loss, aux_loss_list, all_p)):
                     p.grad = g
             else:
                 total_loss.backward()
             optimizer.step()
             schedule.step()
-            losses.append(main_loss.item())  # the official loop logs main_loss.item() every step
+            losses.append(main_loss.item())  # the official loop logs main_loss.item() every step (a device sync)
             if steps == 0:
                 rec["after_first_step"] = memory(device)
             steps += 1
+            if len(losses) == TIMING_SKIP_STEPS:
+                t_steady = time.time()
+        sync(device)
+        t_end = time.time()
         np.save(out / f"loss_{Path(name).stem}.npy", np.asarray(losses))
-        seconds = time.time() - t0
-        rec["files"][name] = {"rows": len(dataset), "steps": len(losses), "load_seconds": round(t_load, 1),
-                              "seconds": round(seconds, 1), "rows_per_second": round(len(dataset) / max(seconds - t_load, 1e-9)),
+        steady_rows = len(dataset) - TIMING_SKIP_STEPS * s.batch_size
+        rec["files"][name] = {"rows": len(dataset), "source_sha256": meta["source_sha256"], "steps": len(losses),
+                              "load_seconds": round(t_load, 1), "seconds": round(t_end - t0, 1),
+                              "steady_rows_per_second": round(steady_rows / (t_end - t_steady)) if t_steady and steady_rows > 0 else None,
                               "mean_main_loss": float(np.mean(losses)) if losses else None} | memory(device)
-        if name in a.ckpt_after:
+        if name in s.ckpt_after:
             ckpt = out / f"model_after_{Path(name).stem}.pt"
-            torch.save(model.state_dict(), ckpt)
+            atomic_write(ckpt, lambda p: torch.save(model.state_dict(), p))
             rec["checkpoints"][name] = {"file": ckpt.name, "sha256": sha256(ckpt), "steps": steps}
+        last = idx == len(s.train_files) - 1
+        if not last:
+            state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "schedule": schedule.state_dict(),
+                     "steps": steps, "next_file": idx + 1, "rng_cpu": torch.get_rng_state(),
+                     "rng_cuda": torch.cuda.get_rng_state(device) if device.type == "cuda" else None}
+            atomic_write(out / "resume.pt", lambda p: torch.save(state, p))
+        rec["steps"] = steps
+        rec["learning_rates_now"] = [g["lr"] for g in optimizer.param_groups]  # [embedding table, other]
+        atomic_write(out / "progress.json", lambda p: p.write_text(json.dumps(rec, indent=2, default=str)))
         print(name, rec["files"][name], flush=True)
         del loader, dataset, data
-    rec["steps"] = steps
-    rec["learning_rates_at_end"] = [g["lr"] for g in optimizer.param_groups]  # [embedding table, other]
+        if a.stop_after == name and not last:  # a planned stop (tests): the run is continued with --resume
+            return out
+    (out / "resume.pt").unlink(missing_ok=True)  # finished: the resume state is not needed (several GB)
     (out / "run.json").write_text(json.dumps(rec, indent=2, default=str))
     return out
 
 
-def memory(device) -> dict:
-    import torch
-    out = {"peak_rss_gb": peak_rss_gb()}
-    if device.type == "cuda":
-        out |= {"max_vram_allocated_gb": round(torch.cuda.max_memory_allocated(device) / 1e9, 2),
-                "max_vram_reserved_gb": round(torch.cuda.max_memory_reserved(device) / 1e9, 2)}
+# ------------------------------------------------------------------ prediction (official test() without the metrics print)
+def run_record(ckpt: Path) -> dict:
+    d = ckpt.parent
+    rec = json.loads(((d / "run.json") if (d / "run.json").exists() else (d / "progress.json")).read_text())
+    if sha256(ckpt) not in {c["sha256"] for c in rec["checkpoints"].values()}:
+        raise ValueError(f"{ckpt} is not a checkpoint recorded by its run")
+    return rec
+
+
+def claim_official_test(manifest_path: Path, ckpts: list[Path], cache: Path) -> tuple[Path, Path]:
+    """Every check that can fail without using the evaluation, then the exclusive claim (one per manifest)."""
+    manifest = json.loads(manifest_path.read_text())
+    listed = set(manifest.get("checkpoints_sha256", []))
+    missing = [str(c) for c in ckpts if sha256(c) not in listed]
+    if missing:
+        raise ValueError(f"checkpoints not listed in the freeze manifest: {missing}")
+    if cache_meta(cache, TEST_FILE)["source_sha256"] != manifest.get("official_test_sha256"):
+        raise ValueError("the cached test file was not made from the official test file named in the manifest")
+    lock = manifest_path.with_name(manifest_path.stem + ".official_test.lock")
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise ValueError(f"{lock} exists: this manifest already used its official test evaluation") from None
+    os.write(fd, json.dumps({"pid": os.getpid(), "claimed": time.time()}).encode())
+    os.close(fd)
+    return lock, manifest_path.with_name(manifest_path.stem + ".official_test_status.json")
+
+
+def predict(a) -> dict:
+    ckpts = [Path(c) for c in a.ckpt]
+    check_names(a.files)
+    runs = {c: run_record(c) for c in ckpts}
+    status = None
+    if TEST_FILE in a.files:
+        if not a.official_test:
+            raise ValueError("the official test file is scored only with a freeze manifest (--official_test)")
+        _, status = claim_official_test(Path(a.official_test), ckpts, Path(a.cache))
+        status.write_text(json.dumps({"state": "started"}))
+    try:
+        out = {str(c): score(a, c, runs[c]) for c in ckpts}
+    except BaseException as e:
+        if status:
+            status.write_text(json.dumps({"state": "failed_after_claim", "error": repr(e)[:2000]}))
+        raise
+    if status:
+        status.write_text(json.dumps({"state": "done"}))
     return out
 
 
-# ------------------------------------------------------------------ prediction (official test() without the metrics print)
-def predict(a) -> dict:
+def score(a, ckpt: Path, run: dict) -> dict:
     import torch
     from torch.utils.data import DataLoader
     D, U = official()
-    ckpt = Path(a.ckpt)
-    run = json.loads((ckpt.parent / "run.json").read_text())
     ckpt_sha = sha256(ckpt)
-    if ckpt_sha not in {c["sha256"] for c in run["checkpoints"].values()}:
-        raise ValueError(f"{ckpt} is not a checkpoint recorded in its run.json")
-    if TEST_FILE in a.files:
-        frozen = json.loads(Path(a.official_test).read_text()) if a.official_test else {}
-        if ckpt_sha not in frozen.get("checkpoints_sha256", []):
-            raise ValueError("the official test file is scored only with a freeze manifest listing this checkpoint")
     ra = argparse.Namespace(**run["args"])
     device = torch.device(a.device)
+    folder = Path(a.out) / f"{ckpt.stem}_{ckpt_sha[:12]}"  # one folder per checkpoint (review: a second
+    folder.mkdir(parents=True, exist_ok=True)              # checkpoint's test.npz replaced the first one)
+    dests = {name: folder / f"{Path(name).stem}.npz" for name in a.files}
+    taken = [str(d) for d in dests.values() if d.exists() or d.with_suffix(".json").exists()]
+    if taken:
+        raise ValueError(f"predictions are never overwritten: {taken}")
     vocabs = D.get_vocabs(str(Path(a.mac) / "vocabs"))
     model, _, _ = build(ra, vocabs, device)
     model.load_state_dict(torch.load(ckpt, map_location=device))
     model.eval()
     views = sorted(set([ra.main_view] + ra.aux_views) - {"cartesian"})
-    out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    rec = {"checkpoint": str(ckpt), "checkpoint_sha256": ckpt_sha, "main_view": ra.main_view, "files": {}}
+    rec = {}
     for name in a.files:
         t0 = time.time()
+        meta = cache_meta(Path(a.cache), name)
         with open(cache_file(Path(a.cache), name), "rb") as f:
             dataset = D.MALDataset(pickle.load(f))
         loader = DataLoader(dataset, batch_size=a.batch_size, num_workers=a.num_workers, shuffle=False)
+        t_load = time.time() - t0
         users, probs, labels = [], {v: [] for v in views}, {v: [] for v in views}
         with torch.no_grad():
             for batch in loader:
@@ -220,18 +362,21 @@ def predict(a) -> dict:
                 for v in views:
                     probs[v].append(p[v][:, 1].cpu().numpy())
                     labels[v].append(batch["label"][v].numpy())
+        sync(device)
+        seconds = time.time() - t0
         users = np.concatenate(users)
-        arrays = {"row": np.arange(users.size), "user": users}
-        for v in views:
-            arrays[f"p_{v}"] = np.concatenate(probs[v])
-            arrays[f"y_{v}"] = np.concatenate(labels[v])
-        dest = out / f"{Path(name).stem}.npz"
-        np.savez(dest, **arrays)
-        auc, gauc, n_users = U.compute_auc_gauc(users, arrays[f"y_{ra.main_view}"], arrays[f"p_{ra.main_view}"])
-        rec["files"][name] = {"rows": int(users.size), "auc": float(auc), "gauc": float(gauc), "gauc_users": int(n_users),
-                              "seconds": round(time.time() - t0, 1), "predictions": dest.name, "sha256": sha256(dest)}
-        print(name, rec["files"][name], flush=True)
-    (out / f"predict_{ckpt.stem}.json").write_text(json.dumps(rec, indent=2))
+        arrays = {"row": np.arange(users.size), "user": users} | {f"p_{v}": np.concatenate(probs[v]) for v in views}
+        r = {"rows": int(users.size), "source_sha256": meta["source_sha256"], "checkpoint_sha256": ckpt_sha,
+             "seconds": round(seconds, 1), "rows_per_second": round(users.size / max(seconds - t_load, 1e-9))}
+        if not a.no_metrics:  # the pilot measures speed only and keeps no labels or metric
+            arrays |= {f"y_{v}": np.concatenate(labels[v]) for v in views}
+            auc, gauc, n_users = U.compute_auc_gauc(users, arrays[f"y_{ra.main_view}"], arrays[f"p_{ra.main_view}"])
+            r |= {"auc": float(auc), "gauc": float(gauc), "gauc_users": int(n_users)}
+        np.savez(dests[name], **arrays)
+        r["sha256"] = sha256(dests[name])
+        dests[name].with_suffix(".json").write_text(json.dumps(r, indent=2))
+        rec[name] = r
+        print(ckpt.name, name, r, flush=True)
     return rec
 
 
@@ -248,25 +393,35 @@ def parser() -> argparse.ArgumentParser:
             continue
         p.add_argument("--device", default="cuda")
         p.add_argument("--num_workers", type=int, default=8)  # official value
-        p.add_argument("--batch_size", type=int, default=4096)
-        p.add_argument("--out", required=True)
         if name == "predict":
-            p.add_argument("--ckpt", required=True)
-            p.add_argument("--official_test", default=None, help="freeze manifest that lists the checkpoint SHA-256")
+            p.add_argument("--out", required=True)
+            p.add_argument("--batch_size", type=int, default=4096)
+            p.add_argument("--ckpt", action="append", required=True,  # repeated, so it cannot swallow the file names
+                           help="a checkpoint; repeat for several (Q2: the three seeds in one evaluation)")
+            p.add_argument("--official_test", default=None, help="freeze manifest: checkpoints and test SHA-256")
+            p.add_argument("--no_metrics", action="store_true", help="speed only: no labels or metric are kept")
             p.add_argument("files", nargs="+")
             continue
-        p.add_argument("--seed", type=int, default=2026)
-        p.add_argument("--model", default="MoAE")
-        p.add_argument("--lr", type=float, required=True)  # no default: the value must be visible in the record
-        p.add_argument("--hidden_dim", type=int, default=16)
-        p.add_argument("--lamda", type=float, default=0.1)
-        p.add_argument("--pcgrad", action="store_true")
-        p.add_argument("--gcsgrad", action="store_true")
-        p.add_argument("--main_view", default="last")
-        p.add_argument("--aux_views", nargs="*", default=[])
+        p.add_argument("--out", default=None)
+        p.add_argument("--resume", default=None, help="continue a stopped run folder from its last finished file")
+        p.add_argument("--stop_after", default=None, help="stop after this file (tests of --resume)")
+        p.add_argument("--seed", type=int, default=None)
+        p.add_argument("--model", default=None)
+        p.add_argument("--lr", type=float, default=None)  # no default: the value must be visible in the record
+        p.add_argument("--hidden_dim", type=int, default=None)
+        p.add_argument("--lamda", type=float, default=None)
+        p.add_argument("--batch_size", type=int, default=None)
+        p.add_argument("--pcgrad", action="store_true", default=None)
+        p.add_argument("--gcsgrad", action="store_true", default=None)
+        p.add_argument("--main_view", default=None)
+        p.add_argument("--aux_views", nargs="*", default=None)
         p.add_argument("--train_files", nargs="*", default=None, help="default: the official 20 files in order")
-        p.add_argument("--ckpt_after", nargs="*", default=["train-17.parquet", "train-18.parquet", "train-19.parquet"])
+        p.add_argument("--ckpt_after", nargs="*", default=None, help="default: train-17, train-18, train-19")
     return ap
+
+
+DEFAULTS = {"seed": 2026, "model": "MoAE", "hidden_dim": 16, "lamda": 0.1, "batch_size": 4096, "pcgrad": False,
+            "gcsgrad": False, "main_view": "last"}  # the official defaults, applied to new runs only
 
 
 def main(argv: list[str]) -> None:
@@ -279,6 +434,14 @@ def main(argv: list[str]) -> None:
         print(f"wrote {train(a)}")
     else:
         predict(a)
+
+
+def with_defaults(a):
+    if not a.resume:
+        for k, v in DEFAULTS.items():
+            if getattr(a, k) is None:
+                setattr(a, k, v)
+    return a
 
 
 if __name__ == "__main__":

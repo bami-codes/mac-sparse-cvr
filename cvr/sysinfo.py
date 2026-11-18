@@ -24,3 +24,16 @@ def cpu_name() -> str:
             if line.lower().startswith("model name"):
                 return line.split(":", 1)[1].strip()
     return platform.processor() or platform.machine()
+
+
+def container_peak_memory_gb() -> float | None:
+    """Peak memory of the whole container (every process, e.g. the 8 DataLoader workers) from the Linux cgroup,
+    or None where there is no cgroup memory file (macOS). Covers the time since the container started."""
+    for f, scale in (("/sys/fs/cgroup/memory.peak", 1), ("/sys/fs/cgroup/memory/memory.max_usage_in_bytes", 1)):
+        p = Path(f)
+        if p.exists():
+            try:
+                return round(int(p.read_text().split()[0]) * scale / 1e9, 2)
+            except (OSError, ValueError):
+                return None
+    return None

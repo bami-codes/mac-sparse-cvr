@@ -5,7 +5,9 @@ Synthetic MAC-shaped files in the official layout (<path>/data/{train,test,vocab
   recorder because it is not installed), gives the same per-step losses and final parameters as the runner;
 - the checkpoint after file k equals a run on files 0..k (the schedule length does not depend on the file count);
 - predictions are saved in file row order and equal a direct forward pass; AUC/GAUC agree with this project's code;
-- the official test file is refused without a freeze manifest; unknown arguments are an error;
+- the official test file is scored once per freeze manifest, with every checkpoint and the test file's SHA-256 listed;
+- predictions of different checkpoints never replace each other; a stopped run resumed from its last file equals
+  the uninterrupted run; the pilot mode keeps no labels or metric; unknown arguments are an error;
 - third_party/pymal is byte-identical to the pinned upstream commit.
 """
 
@@ -120,11 +122,8 @@ def test_predictions_keep_the_row_order_and_match_a_direct_forward_pass(tree, tm
     _, mac = tree
     run = ours(tree, tmp_path / "run", TRAIN[:2], ["train-01.parquet"])
     ckpt = run / "model_after_train-01.pt"
-    a = R.parser().parse_args(["predict", "--mac", str(mac), "--cache", str(mac / "cached"), "--ckpt", str(ckpt),
-                               "--out", str(tmp_path / "pred"), "--device", "cpu", "--num_workers", "0",
-                               "train-02.parquet"])
-    rec = R.predict(a)
-    z = np.load(tmp_path / "pred" / "train-02.npz")
+    rec = R.predict(predict_args(mac, tmp_path / "pred", [ckpt], "train-02.parquet"))[str(ckpt)]
+    z = np.load(tmp_path / "pred" / f"{ckpt.stem}_{R.sha256(ckpt)[:12]}" / "train-02.npz")
 
     D, U = R.official()
     import pickle
@@ -145,23 +144,88 @@ def test_predictions_keep_the_row_order_and_match_a_direct_forward_pass(tree, tm
     assert set(z.files) >= {"p_first", "p_mta", "p_linear", "y_last"}
 
     y = z["y_last"]
-    m = rec["files"]["train-02.parquet"]
+    m = rec["train-02.parquet"]
     assert abs(m["auc"] - roc_auc_score(y, z["p_last"])) <= 1e-9
     assert abs(m["gauc"] - gauc(y, z["p_last"], z["user"])["gauc"]) <= 1e-9  # official and project GAUC agree
 
 
-def test_the_official_test_file_needs_a_freeze_manifest(tree, tmp_path):
+def predict_args(mac: Path, out: Path, ckpts: list[Path], *rest: str) -> argparse.Namespace:
+    return R.parser().parse_args(["predict", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(out),
+                                  "--device", "cpu", "--num_workers", "0", *[x for c in ckpts for x in ("--ckpt", str(c))],
+                                  *rest])
+
+
+def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_listed(tree, tmp_path):
+    _, mac = tree
+    run = ours(tree, tmp_path / "run", TRAIN[:2], ["train-00.parquet", "train-01.parquet"])
+    c0, c1 = run / "model_after_train-00.pt", run / "model_after_train-01.pt"
+    out = tmp_path / "pred"
+    with pytest.raises(ValueError, match="freeze manifest"):
+        R.predict(predict_args(mac, out, [c0], "test.parquet"))
+    with pytest.raises(ValueError, match="bare official names"):  # review: ./test.parquet was scored without one
+        R.predict(predict_args(mac, out, [c0], "./test.parquet"))
+    test_sha = R.sha256(mac / "test" / "test.parquet")
+    manifest = tmp_path / "freeze_q2.json"
+    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0)], "official_test_sha256": test_sha}))
+    with pytest.raises(ValueError, match="not listed"):
+        R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))
+    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": "0" * 64}))
+    with pytest.raises(ValueError, match="official test file named"):
+        R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))
+    assert not list(tmp_path.glob("*.lock"))  # every refusal above leaves the evaluation unused
+    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha}))
+    R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))  # both seeds at once
+    assert json.loads((tmp_path / "freeze_q2.official_test_status.json").read_text())["state"] == "done"
+    with pytest.raises(ValueError, match="already used"):  # review: the same manifest scored the test twice
+        R.predict(predict_args(mac, tmp_path / "pred2", [c0, c1], "--official_test", str(manifest), "test.parquet"))
+
+
+def test_predictions_of_two_checkpoints_never_replace_each_other(tree, tmp_path):
+    _, mac = tree
+    run = ours(tree, tmp_path / "run", TRAIN[:2], ["train-00.parquet", "train-01.parquet"])
+    c0, c1 = run / "model_after_train-00.pt", run / "model_after_train-01.pt"
+    out = tmp_path / "pred"
+    rec = R.predict(predict_args(mac, out, [c0], "train-02.parquet"))
+    rec |= R.predict(predict_args(mac, out, [c1], "train-02.parquet"))  # review: this used to replace the first file
+    files = sorted(out.rglob("train-02.npz"))
+    assert len(files) == 2
+    for c in (c0, c1):
+        r = rec[str(c)]["train-02.parquet"]
+        f = out / f"{c.stem}_{R.sha256(c)[:12]}" / "train-02.npz"
+        assert R.sha256(f) == r["sha256"]
+    with pytest.raises(ValueError, match="never overwritten"):
+        R.predict(predict_args(mac, out, [c1], "train-02.parquet"))
+
+
+def test_a_stopped_run_resumed_from_its_last_file_equals_the_uninterrupted_run(tree, tmp_path):
+    _, mac = tree
+    full = ours(tree, tmp_path / "full", TRAIN, ["train-01.parquet", "train-02.parquet"])
+    base = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--device", "cpu", "--num_workers", "0"]
+    R.train(R.parser().parse_args(base + ["--out", str(tmp_path / "cut"), *MOAE, "--train_files", *TRAIN,
+                                          "--ckpt_after", "train-01.parquet", "train-02.parquet",
+                                          "--stop_after", "train-01.parquet"]))
+    cut = tmp_path / "cut"
+    assert (cut / "resume.pt").exists() and not (cut / "run.json").exists()
+    with pytest.raises(ValueError, match="keeps its training settings"):
+        R.train(R.parser().parse_args(base + ["--resume", str(cut), "--lr", "0.004"]))
+    R.train(R.parser().parse_args(base + ["--resume", str(cut)]))
+    a, b = torch.load(full / "model_after_train-02.pt"), torch.load(cut / "model_after_train-02.pt")
+    assert all(torch.equal(a[k], b[k]) for k in a)
+    assert np.array_equal(np.load(full / "loss_train-02.npy"), np.load(cut / "loss_train-02.npy"))
+    rec = json.loads((cut / "run.json").read_text())
+    assert len(rec["sessions"]) == 2 and rec["sessions"][1]["start_file"] == "train-02.parquet"
+    assert not (cut / "resume.pt").exists()  # removed when the run finished
+
+
+def test_the_pilot_mode_keeps_no_labels_or_metric(tree, tmp_path):
     _, mac = tree
     run = ours(tree, tmp_path / "run", TRAIN[:1], ["train-00.parquet"])
-    ckpt = run / "model_after_train-00.pt"
-    base = ["predict", "--mac", str(mac), "--cache", str(mac / "cached"), "--ckpt", str(ckpt), "--out",
-            str(tmp_path / "pred"), "--device", "cpu", "--num_workers", "0"]
-    with pytest.raises(ValueError, match="freeze manifest"):
-        R.predict(R.parser().parse_args(base + ["test.parquet"]))
-    manifest = tmp_path / "freeze.json"
-    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(ckpt)]}))
-    R.predict(R.parser().parse_args(base + ["--official_test", str(manifest), "test.parquet"]))
-    assert (tmp_path / "pred" / "test.npz").exists()
+    rec = R.predict(predict_args(mac, tmp_path / "pred", [run / "model_after_train-00.pt"], "--no_metrics",
+                                 "train-00.parquet"))
+    r = next(iter(rec.values()))["train-00.parquet"]
+    assert "auc" not in r and r["rows_per_second"] > 0
+    z = np.load(next((tmp_path / "pred").rglob("train-00.npz")))
+    assert not [f for f in z.files if f.startswith("y_")]
 
 
 def test_unknown_arguments_are_an_error():
