@@ -20,6 +20,7 @@ MM_COLS = ["mm_feat0_seq", "mm_feat1_seq"]
 
 GROUP_KEY = "ad_feat1"  # [추정] category-like anonymous item feature
 SHOP_KEY = "ad_feat2"  # [추정] shop-like anonymous item feature
+DOMAIN_KEY = "context_feat1"  # study C domain: anonymous ad-context groups (docs/DESIGN.md §16), not asserted to be scenarios
 
 # integer codes reserved by the vocabulary
 UNKNOWN = 0  # value not seen in the training files

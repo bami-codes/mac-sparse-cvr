@@ -94,6 +94,11 @@ class LogReg:
 
 
 # ---------------------------------------------------------------- M2: LightGBM
+def early_stopping_users(df: pl.DataFrame) -> np.ndarray:
+    """~10% of TRAINING users (second key digit == 0) used only to pick the number of boosting rounds."""
+    return ((df["user_key"] // 100) % 10 == 0).to_numpy()
+
+
 @dataclass
 class GBDT:
     booster: Any  # lightgbm.Booster
@@ -113,7 +118,7 @@ class GBDT:
         inputs = inputs or (CAT_INPUTS + NUM_INPUTS)
         assert_no_label_inputs(inputs)
         cat_idx = [i for i, c in enumerate(inputs) if c in CAT_INPUTS]
-        es = ((train["user_key"] // 100) % 10 == 0).to_numpy()
+        es = early_stopping_users(train)
         X, y = train.select(inputs).to_numpy().astype(np.float64), train[label].to_numpy()
         p = dict(params, seed=seed, objective="binary", deterministic=True, force_row_wise=True, verbose=-1)
         dtr = lgb.Dataset(X[~es], y[~es], categorical_feature=cat_idx, free_raw_data=True)
