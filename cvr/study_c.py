@@ -3,7 +3,8 @@ G-shared) -> NN tuning job -> NN final job -> (ii) / (iii-d) on V1 -> V2 selecti
 
     uv run python -m cvr.study_c configs/c_dev_train08_10.toml
 
-The test files are never read here (sources() refuses a development config that lists them). V2 chooses the NN
+The holdout files are never read here: domain_eval.check_development_sources refuses a config that lists
+train-13 / train-14 / test, uses one file in two roles, or overlaps smoke buckets. V2 chooses the NN
 learning rate / epochs, every lambda and the single interpretation candidate; selection.json freezes the choice
 before any test file is opened. PyTorch runs only in the worker processes (cvr/study_c_worker.py).
 """
@@ -27,7 +28,7 @@ from . import groups as G
 from . import metrics as M
 from . import vocab as V
 from .artifacts import load_gbdt, save_gbdt
-from .calibration import GlobalPlatt, GroupShrunkPlatt
+from .calibration import GlobalPlatt, fit_group_shrunk_exact
 from .checks import RELOAD_TOL, require_close, require_finite_probs
 from .domain_models import (G_INT_INPUTS, G_SHARED_INPUTS, GBDTOffset, load_domain_calibrators, load_gbdt_offset,
                             save_domain_calibrators, save_gbdt_offset)
@@ -65,6 +66,7 @@ def main(config_path: str) -> Path:
     def lap(name: str) -> None:
         timings[name] = round(time.time() - t0 - sum(timings.values()), 1)
 
+    D.check_development_sources(cfg["data"])
     srcs = sources(cfg)
     user_pct = cfg["data"].get("smoke_user_pct")
     mc, nc, dc = cfg["models"], cfg["models"]["nn"], cfg["domains"]
@@ -109,6 +111,8 @@ def main(config_path: str) -> Path:
     reload_check: dict[str, float] = {}
     models_dir = run_dir / "models"
     models_dir.mkdir()
+    preds_dir = run_dir / "preds"
+    preds_dir.mkdir()
     head = data["v2"].head(RELOAD_ROWS)
     lgb_params = mc["lgb"]
     for seed in seeds:
@@ -124,6 +128,7 @@ def main(config_path: str) -> Path:
             for r in preds:
                 preds[r][name] = m.predict(data[r])
                 require_finite_probs(f"{name} {r}", preds[r][name])
+                np.save(preds_dir / f"{name}_{r}.npy", preds[r][name])  # so selection can be recomputed later
             save(m, models_dir / name)
             p_re = load(models_dir / name).predict(head)
             reload_check[name] = require_close(f"reload {name}", float(np.abs(p_re - preds["v2"][name][:head.height]).max()),
@@ -183,6 +188,7 @@ def main(config_path: str) -> Path:
     users2 = v2["user_key"].to_numpy()
     g1_groups2 = v2[GROUP_KEY].to_numpy()
     cal: dict[str, dict] = {}
+    cal_solver: dict[str, dict] = {}
     rows: dict[str, dict] = {}
 
     def rep(key: str, p: np.ndarray) -> None:  # metrics only: calibrated V2 predictions are recomputed when needed
@@ -204,11 +210,12 @@ def main(config_path: str) -> Path:
             rep(f"{name}|raw", p2)
             rep(f"{name}|ii", glob.predict(p2))
             for lam in lambdas:
-                gs = GroupShrunkPlatt.fit(p1, y1, dom["v1"], glob, lam)
+                gs, sinfo = fit_group_shrunk_exact(p1, y1, dom["v1"], glob, lam)  # exact per-domain solve (rev. 4)
                 if gs.n_nonpositive_slopes or not gs.converged:
                     raise RuntimeError(f"(iii-d) fit of {name}, lambda {lam}: converged={gs.converged}, "
-                                       f"non-positive slopes={gs.n_nonpositive_slopes}")
+                                       f"non-positive slopes={gs.n_nonpositive_slopes}, {sinfo}")
                 cal[name]["iiid"][lam] = gs
+                cal_solver[f"{name}|lam{lam:g}"] = sinfo
                 rep(f"{name}|iiid_lam{lam:g}", gs.predict(p2, dom["v2"]))
     lap("calibration")
 
@@ -228,7 +235,7 @@ def main(config_path: str) -> Path:
 
     def boot(a: str, b: str, ca: str = "iiid", cb: str = "iiid") -> dict:
         out = D.paired_bootstrap(y2, calibrated(a, ca), calibrated(b, cb), dom["v2"], cls["v2"], users2,
-                                 bs["reps"], bs["seed"])
+                                 bs["reps"], bs["seed"], pair_seeds=seeds)
         out["compared"] = f"{a} ({ca}) - {b} ({cb})"
         return out
 
@@ -236,7 +243,7 @@ def main(config_path: str) -> Path:
     l_int = seed_mean(ctrl, f"iiid_lam{lam_of[ctrl]:g}")
     lo, hi = primary["ci95"]["small_macro"]
     power = D.power_check((hi - lo) / 2, l_int)
-    verdict_dry = D.verdict(primary, l_int, p99_ms=None) | {
+    verdict_dry = D.verdict(primary, l_int, p99_by_seed=None, seeds=seeds) | {
         "note": "DRY RUN of the verdict code on V2 = selection data; not a result (latency measured later)"}
     loo = D.leave_one_domain_out(y2, calibrated(cand), calibrated(ctrl), dom["v2"], cls["v2"])
     best_g = min(["G-int", "G-shared"], key=lambda f: seed_mean(f, f"iiid_lam{lam_of[f]:g}"))
@@ -245,6 +252,8 @@ def main(config_path: str) -> Path:
                  "N-star-noPN - N-star": boot("N-star-noPN", "N-star"), "best NN - best GBDT": boot(best_n, best_g),
                  f"{cand}: iiid - ii": boot(cand, cand, "iiid", "ii"),
                  f"{ctrl}: iiid - ii": boot(ctrl, ctrl, "iiid", "ii")}
+    if cand != "G-shared":  # what would be taken to a serving system (review of §16): the candidate vs G-shared
+        secondary[f"{cand} - G-shared"] = boot(cand, "G-shared")
     selection = {
         "selected_on": "V2 small-domain macro LogLoss (seed mean) after (iii-d), docs/DESIGN.md §16.6",
         "nn_settings": {fam: tuning[fam]["chosen"] for fam in NN_FAMILIES} | {ABLATION[0]: tuning["N-star"]["chosen"]},
@@ -281,7 +290,12 @@ def main(config_path: str) -> Path:
                          "lightgbm": lightgbm.__version__, "numpy": np.__version__},
             "timings_seconds": timings | {"total": round(time.time() - t0, 1)},
             "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2),
-            "fitted": fitted, "reload_check_max_abs_diff": reload_check, "nn_seed1_reproduction": repro}
+            "fitted": fitted, "reload_check_max_abs_diff": reload_check, "nn_seed1_reproduction": repro,
+            "calibration_solver": {"solver": "per-group Newton (cvr/calibration.fit_group_shrunk_exact)",
+                                   "max_projected_gradient": max(v["max_projected_gradient"] for v in cal_solver.values()),
+                                   "max_iterations": max(v["max_iterations"] for v in cal_solver.values()),
+                                   "fits_with_a_group_at_the_slope_bound":
+                                       sum(v["groups_at_slope_bound"] > 0 for v in cal_solver.values())}}
     out = {"meta": meta, "domains": domain_summary, "nn_tuning": tuning, "selection": selection,
            "v2_primary_bootstrap": primary, "v2_verdict_dry_run": verdict_dry, "v2_leave_one_domain_out": loo,
            "v2_secondary": secondary, "v2_rows": rows}

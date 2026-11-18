@@ -119,3 +119,71 @@ def load_calibrators(path: Path) -> tuple[GlobalPlatt, GroupShrunkPlatt, FreqAwa
     gs = GroupShrunkPlatt(glob.a, glob.b, float(z["lam"]), z["group_ids"], z["da"], z["db"], 0, True)
     fa = FreqAware(z["fa_w"], float(z["fa_w0"]))
     return glob, gs, fa, pl.read_parquet(path.with_suffix(".group_clicks.parquet"))
+
+
+# ---------------------------------------------------------------- exact (iii) solver (study C, docs/DESIGN.md §16)
+def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, base: GlobalPlatt, lam: float,
+                           tol: float = 1e-9, max_iter: int = 100) -> tuple[GroupShrunkPlatt, dict]:
+    """The SAME objective as GroupShrunkPlatt.fit, solved group by group.
+
+    With the global (a, b) and lam fixed, the objective separates into one convex 2-parameter problem per group:
+        sum_i softplus(s_i) - y_i s_i + lam (da^2 + db^2),   s_i = (a + da) z_i + (b + db),   a + da >= MIN_SLOPE.
+    Each is solved by Newton's method with a backtracking line search kept inside the slope bound; at the bound
+    the intercept is solved alone. Stops when the projected gradient (sum scale) is below `tol`.
+    Review of §16: the joint L-BFGS-B fit reported converged=True while its small-domain macro LogLoss moved by up to
+    3.9e-6 when solved more precisely, more than the candidate tie tolerance (1e-6)."""
+    z = logit(p)
+    gid, gi = np.unique(groups, return_inverse=True)
+    order = np.argsort(gi, kind="stable")
+    bounds = np.r_[0, np.cumsum(np.bincount(gi, minlength=gid.size))]
+    da, db = np.zeros(gid.size), np.zeros(gid.size)
+    worst, iters, at_bound = 0.0, 0, 0
+    lo = -base.a + MIN_SLOPE
+
+    def obj(zg, yg, x):
+        s = (base.a + x[0]) * zg + (base.b + x[1])
+        return float(np.logaddexp(0.0, s).sum() - (yg * s).sum() + lam * (x @ x))
+
+    for k in range(gid.size):
+        rows = order[bounds[k]:bounds[k + 1]]
+        zg, yg = z[rows], y[rows].astype(float)
+        x = np.zeros(2)
+        f = obj(zg, yg, x)
+        for it in range(max_iter):
+            s = (base.a + x[0]) * zg + (base.b + x[1])
+            q = expit(s)
+            r, w = q - yg, q * (1 - q)
+            g = np.array([r @ zg + 2 * lam * x[0], r.sum() + 2 * lam * x[1]])
+            on_bound = x[0] <= lo + 1e-15 and g[0] > 0  # the slope wants to go below the bound
+            pg = np.array([0.0, g[1]]) if on_bound else g
+            if np.abs(pg).max() < tol:
+                break
+            H = np.array([[w @ (zg * zg) + 2 * lam, w @ zg], [w @ zg, w.sum() + 2 * lam]])
+            if on_bound:
+                step = np.array([0.0, -g[1] / H[1, 1]])
+            else:
+                step = -np.linalg.solve(H, g)
+                if x[0] + step[0] < lo and x[0] - lo < 1e-12:
+                    # at the bound but the slope should move up (g[0] < 0); the coupled Newton step still points
+                    # outside, so it would be cut to length 0. A diagonally scaled gradient step is a descent
+                    # direction that moves the slope inward.
+                    step = -g / np.diag(H)
+            t = 1.0
+            if x[0] + step[0] < lo:  # stay feasible: shorten the step to the bound
+                t = (lo - x[0]) / step[0]
+            while True:
+                x_new = x + t * step
+                x_new[0] = max(x_new[0], lo)
+                f_new = obj(zg, yg, x_new)
+                # Armijo, or no worse than float noise of the objective near the optimum
+                if f_new <= f + 1e-4 * (g @ (x_new - x)) or f_new <= f + 1e-13 * (1 + abs(f)) or t < 1e-12:
+                    break
+                t *= 0.5
+            x, f = x_new, f_new
+        iters = max(iters, it + 1)
+        worst = max(worst, float(np.abs(pg).max()))
+        at_bound += int(x[0] <= lo + 1e-15)
+        da[k], db[k] = x
+    gs = GroupShrunkPlatt(base.a, base.b, lam, gid, da, db, int((base.a + da <= 0).sum()), bool(worst < tol))
+    return gs, {"solver": "per-group Newton", "max_projected_gradient": worst, "max_iterations": iters,
+                "groups_at_slope_bound": at_bound, "tol": tol}

@@ -38,7 +38,12 @@ PN statistics (implementation choices, §16.4):
 - PER DIMENSION, a domain (or batch) variance below PN_REL_VAR x the global variance is replaced by the global
   mean and variance of that dimension: enough rows do not make every feature vary (e.g. a purchase-history
   match that is always 0 in one group), and dividing by that near-zero variance blew up a later 1;
-- the global variance is floored at PN_VAR_FLOOR.
+- the global variance is floored at PN_VAR_FLOOR;
+- the dimensions of the DOMAIN-ID embedding always use the global statistics, in training and evaluation
+  (revision 4). Within a domain that embedding is constant at any one step, so its own variance is 0 while
+  training, but the running mean / mean of squares mix values from different steps, so at evaluation its variance
+  could pass the 1% rule and switch the normalization (review counterexample: -0.577 in training, +1.000 in
+  evaluation for the same state and input).
 
 Run this module in a process that does NOT use LightGBM (see cvr/m3_worker.py for why).
 """
@@ -105,6 +110,8 @@ class PartitionedNorm(nn.Module):
         self.register_buffer("glob_mean", torch.zeros(width))
         self.register_buffer("glob_msq", torch.ones(width))
         self.register_buffer("glob_updates", torch.zeros((), dtype=torch.long))
+        # dimensions that always use the global statistics (set by MDNet: the domain-ID embedding); not saved
+        self.register_buffer("global_dims", torch.zeros(width, dtype=torch.bool), persistent=False)
         self._snapshot: tuple[torch.Tensor, torch.Tensor] | None = None  # global stats read at the step start
         self._acc: list | None = None  # [rows, sum, sum of squares] of the step, for the end-of-step update
 
@@ -167,7 +174,8 @@ class PartitionedNorm(nn.Module):
             self._update_domain(d, mu.detach(), (z.detach() ** 2).mean(0))
         else:
             mu, var = self.dom_mean[d].clone(), self._var(self.dom_mean[d], self.dom_msq[d])
-        own = var.detach() >= PN_REL_VAR * g_var  # a (near-)constant dimension of this domain uses the global stats
+        # a (near-)constant dimension of this domain, or a domain-ID dimension, uses the global statistics
+        own = (var.detach() >= PN_REL_VAR * g_var) & ~self.global_dims
         return torch.where(own, mu, g_mu), torch.where(own, var, g_var)
 
     def forward(self, z: torch.Tensor, d: torch.Tensor, seen: bool) -> torch.Tensor:
@@ -195,6 +203,9 @@ class MDNet(nn.Module):
         if variant in ("star", "star_nopn"):
             self.layers = nn.ModuleList([StarLinear(n_dom, a, b, sparse) for a, b in zip(dims[:-1], dims[1:])])
             self.pn = PartitionedNorm(n_dom, d_in, sparse) if variant == "star" else None
+            if self.pn is not None:
+                start = self.in_cols.index(dom_col) * dim
+                self.pn.global_dims[start:start + dim] = True
             self.aux_emb = _table(n_dom, dim, sparse, None)
             self.aux = nn.Sequential(nn.Linear(dim, aux_hidden), nn.ReLU(), nn.Linear(aux_hidden, 1))
         else:
@@ -381,6 +392,7 @@ class MDModel:
                     "steps": len(losses), "train_loss_last100_mean": float(torch.stack(losses[-100:]).mean()),
                     "params": int(sum(p.numel() for p in net.parameters())),
                     "domains_seen": int((counts > 0).sum()), "num_constant_columns": int((model.num_keep == 0).sum()),
+                    "pn_global_only_dims": int(net.pn.global_dims.sum()) if getattr(net, "pn", None) is not None else None,
                     "step_rows_epoch1": {"min": int(min(step_rows)), "median": float(np.median(step_rows)),
                                          "max": int(max(step_rows))},
                     "domain_rows": {int(d): int(counts[d]) for d in dom_ids},

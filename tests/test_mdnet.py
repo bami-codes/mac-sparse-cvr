@@ -380,3 +380,34 @@ def test_reload_check_rows_keep_every_prediction_batch_identical():
     assert same_batch_rows(50_000, 10_000) == 10_000  # one batch either way
     assert same_batch_rows(50_000, 20_000) == 20_000  # the whole split: the same batches as the full pass
     assert same_batch_rows(50_000, 60_000) == 49_152  # a prefix must end on a batch boundary
+
+
+# ---------------------------------------------------------------- review counterexample (§16 revision 4)
+def test_domain_id_embedding_dimensions_always_use_the_global_statistics():
+    import copy
+    m = _fit("star", epochs=2)[1]
+    net, pn = m.net, m.net.pn
+    dim = net.emb[DOM_COL].embedding_dim
+    start = net.in_cols.index(DOM_COL) * dim
+    assert pn.global_dims.sum() == dim and pn.global_dims[start:start + dim].all()
+    sub = _rows_with_domain(2, k=300)
+    cat, num = m.tensors(sub, slice(None))
+    ids = slice(start, start + dim)
+    other = slice(start + dim, start + 2 * dim) if start == 0 else slice(0, dim)  # another embedding's dims
+    with torch.no_grad():
+        g_mu, g_var = pn.global_stats()
+        # running statistics that mix the domain-ID embedding of different steps (it drifts while training) can
+        # carry a variance far above the 1% rule; the same mix is put on a non-ID block as a control
+        for sl in (ids, other):
+            pn.dom_msq[2, sl] = pn.dom_mean[2, sl] ** 2 + 4 * g_var[sl]
+        x = net.inputs(cat, num, net.domain(cat))
+        mu_eval, var_eval = pn.stats(x, 2, True)  # evaluation mode
+        trainer = copy.deepcopy(net).train()
+        trainer.pn.begin_step()
+        mu_tr, var_tr = trainer.pn.stats(x, 2, True)  # training mode, same state and input
+    assert torch.equal(mu_eval[other], pn.dom_mean[2, other])  # control: an ordinary dimension uses its own stats
+    assert torch.equal(mu_eval[ids], g_mu[ids]) and torch.equal(var_eval[ids], g_var[ids])
+    assert torch.equal(mu_tr[ids], g_mu[ids]) and torch.equal(var_tr[ids], g_var[ids])
+    z_eval = (x[:, ids] - mu_eval[ids]) / torch.sqrt(var_eval[ids] + PN_EPS)
+    z_tr = (x[:, ids] - mu_tr[ids]) / torch.sqrt(var_tr[ids] + PN_EPS)
+    assert torch.equal(z_eval, z_tr)  # review: -0.577 (training) vs +1.000 (evaluation) before the rule

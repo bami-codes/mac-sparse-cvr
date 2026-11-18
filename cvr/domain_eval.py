@@ -24,6 +24,35 @@ ADOPT_REL = 0.003  # relative improvement point estimate (project-internal adopt
 ADOPT_LARGE = 1e-4  # upper 95% bound of the large-domain click-weighted LogLoss difference
 ADOPT_P99_MS = 1.0
 POWER_FACTOR = (1.96 + 0.84) / 1.96  # effect detected with 80% power under a normal approximation, two-sided 95%
+SEEDS = [2026, 2027, 2028]  # fixed in §16.4; the verdict requires evidence from exactly these seeds
+HOLDOUT_FILES = ("train-13.parquet", "train-14.parquet", "test.parquet")  # never in a development config
+ROLES = ("train", "v1", "v2")
+
+
+# ---------------------------------------------------------------- configuration guard (review of §16)
+def check_development_sources(data: dict) -> None:
+    """Refuse a development `[data]` section that lists a holdout file, uses one file in two roles, or (smoke mode)
+    overlapping user buckets. Before revision 4 only a `test` key was refused."""
+    if "test" in data:
+        raise ValueError("a development config must not have a `test` entry")
+    if data["mode"] == "smoke":
+        names = [data["smoke_file"]]
+        ranges = [tuple(data[f"smoke_{r}_buckets"]) for r in ROLES]
+        for i in range(len(ranges)):
+            for j in range(i + 1, len(ranges)):
+                if max(ranges[i][0], ranges[j][0]) < min(ranges[i][1], ranges[j][1]):
+                    raise ValueError(f"smoke buckets of {ROLES[i]} and {ROLES[j]} overlap: {ranges[i]}, {ranges[j]}")
+    else:
+        names, owner = [], {}
+        for r in ROLES:
+            for f in data[r]:
+                if f in owner:
+                    raise ValueError(f"{f} is listed for both {owner[f]} and {r}")
+                owner[f] = r
+                names.append(f)
+    bad = [f for f in names if f.split("/")[-1] in HOLDOUT_FILES]
+    if bad:
+        raise ValueError(f"holdout files must not appear in a development config: {bad}")
 
 
 # ---------------------------------------------------------------- domain classes (§16.3)
@@ -128,7 +157,8 @@ class WeightedAUC:
 
 # ---------------------------------------------------------------- paired user bootstrap
 def paired_bootstrap(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], dom: np.ndarray, cls: np.ndarray,
-                     users: np.ndarray, reps: int = 1000, seed: int = 0, with_auc: bool = True) -> dict:
+                     users: np.ndarray, reps: int = 1000, seed: int = 0, with_auc: bool = True,
+                     pair_seeds: list[int] | None = None) -> dict:
     """A - B for four statistics, seed-paired (A seed k with B seed k), ONE user resample per replicate shared by
     every statistic and seed pair. Models are held fixed: only evaluation-user uncertainty is covered.
     - small_macro: macro LogLoss over small domains (primary); a domain enters a replicate if it has a resampled row
@@ -137,6 +167,8 @@ def paired_bootstrap(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], 
       enters if both classes are present in the replicate (the count of such domains is reported)."""
     if len(pa) != len(pb) or not pa:
         raise ValueError("seed-matched prediction lists must be non-empty and of equal length")
+    if pair_seeds is not None and len(pair_seeds) != len(pa):
+        raise ValueError("pair_seeds must name one seed per prediction pair")
     _, ui = np.unique(users, return_inverse=True)
     U = int(ui.max()) + 1
     small, large = cls == "small", cls == "large"
@@ -176,6 +208,7 @@ def paired_bootstrap(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], 
     ones = np.ones(U)
     point = stats(ones, diff, d_mat)
     point["per_pair_small_macro"] = [stats(ones, r, by_user(r))["small_macro"] for r in per_pair]
+    point["per_pair_seeds"] = list(pair_seeds) if pair_seeds is not None else None
     if aucs is not None:
         point["small_auc_macro"], point["auc_domains"] = auc_diff(np.ones(int(small.sum())))
     rng = np.random.default_rng(seed)
@@ -224,15 +257,23 @@ def power_check(h_v2: float, l_int: float) -> dict:
                     "and the three-seed direction rule are not included"}
 
 
-def verdict(boot: dict, l_int: float, p99_ms: float | None) -> dict:
-    """Two tiers (§16.6). `boot` is paired_bootstrap(selected, int); `l_int` the int's small macro LogLoss."""
+def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None, seeds: list[int] = SEEDS) -> dict:
+    """Two tiers (§16.6). `boot` is paired_bootstrap(selected, int, pair_seeds=seeds); `l_int` the int's small macro
+    LogLoss; `p99_by_seed` the selected candidate's raw-row p99 (ms) per seed, or None before latency is measured.
+    Raises if the evidence of any fixed seed is missing (review: one pair, or none, still gave adoption_candidate)."""
     pt, ci = boot["point"], boot["ci95"]
-    improved = bool(pt["small_macro"] < 0 and ci["small_macro"][1] < 0 and all(x < 0 for x in pt["per_pair_small_macro"]))
+    per, got = pt["per_pair_small_macro"], pt.get("per_pair_seeds")
+    if not seeds or got is None or sorted(got) != sorted(seeds) or len(per) != len(seeds):
+        raise ValueError(f"seed pairs {got} (n={len(per)}) do not match the fixed seeds {seeds}")
+    if p99_by_seed is not None and sorted(p99_by_seed) != sorted(seeds):
+        raise ValueError(f"p99 measured for seeds {sorted(p99_by_seed)}, expected {sorted(seeds)}")
+    p99_ms = None if p99_by_seed is None else float(max(p99_by_seed.values()))
+    improved = bool(pt["small_macro"] < 0 and ci["small_macro"][1] < 0 and all(x < 0 for x in per))
     rel = float(-pt["small_macro"] / l_int)
     conditions = {"effect_size": {"relative_improvement": rel, "needed": ADOPT_REL, "met": rel >= ADOPT_REL},
                   "large_domains": {"ci95_upper": ci["large_click"][1], "needed_at_most": ADOPT_LARGE,
                                     "met": bool(ci["large_click"][1] <= ADOPT_LARGE)},
-                  "latency": {"p99_ms_max_over_seeds": p99_ms, "needed_at_most": ADOPT_P99_MS,
+                  "latency": {"p99_ms_max_over_seeds": p99_ms, "p99_ms_by_seed": p99_by_seed, "needed_at_most": ADOPT_P99_MS,
                               "met": None if p99_ms is None else bool(p99_ms <= ADOPT_P99_MS)}}
     adopted = improved and all(c["met"] is True for c in conditions.values())
     failed = [k for k, c in conditions.items() if c["met"] is False]

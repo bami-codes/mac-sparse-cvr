@@ -118,21 +118,67 @@ def test_power_check_compares_in_absolute_logloss_units():
     assert out["underpowered_expected"] is True
 
 
-def _boot(diff, hi, pairs, large_hi):
-    return {"point": {"small_macro": diff, "per_pair_small_macro": pairs},
+def _boot(diff, hi, pairs, large_hi, seeds=(2026, 2027, 2028)):
+    return {"point": {"small_macro": diff, "per_pair_small_macro": pairs, "per_pair_seeds": list(seeds)},
             "ci95": {"small_macro": [diff - 1e-4, hi], "large_click": [-1e-4, large_hi]}}
 
 
+P99 = {2026: 0.2, 2027: 0.3, 2028: 0.25}
+
+
 def test_verdict_names_each_failed_condition():
-    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_ms=0.3)
+    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_by_seed=P99)
     assert v["tier"] == "adoption_candidate" and not v["failed_conditions"]
-    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_ms=1.2)
+    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_by_seed=P99 | {2027: 1.2})
     assert v["tier"] == "improvement_confirmed" and v["failed_conditions"] == ["latency"]
-    v = D.verdict(_boot(-0.0001, -0.00001, [-1e-4, -1e-4, -1e-4], 5e-5), l_int=0.05, p99_ms=0.3)
+    v = D.verdict(_boot(-0.0001, -0.00001, [-1e-4, -1e-4, -1e-4], 5e-5), l_int=0.05, p99_by_seed=P99)
     assert v["failed_conditions"] == ["effect_size"]  # 0.2% < 0.3%
-    v = D.verdict(_boot(-0.0002, 0.00001, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_ms=0.3)
+    v = D.verdict(_boot(-0.0002, 0.00001, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_by_seed=P99)
     assert v["tier"] == "not_confirmed"
-    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, 1e-5, -3e-4], 5e-5), l_int=0.05, p99_ms=0.3)
+    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, 1e-5, -3e-4], 5e-5), l_int=0.05, p99_by_seed=P99)
     assert v["tier"] == "not_confirmed"  # one seed pair positive
-    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_ms=None)
+    v = D.verdict(_boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5), l_int=0.05, p99_by_seed=None)
     assert v["tier"] == "improvement_confirmed" and v["pending_conditions"] == ["latency"]
+
+
+def test_verdict_refuses_missing_seed_evidence():
+    ok = _boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5)
+    one = _boot(-0.0002, -0.00005, [-1e-4], 5e-5, seeds=(2026,))
+    none = _boot(-0.0002, -0.00005, [], 5e-5, seeds=())
+    for b in (one, none):  # review: both gave adoption_candidate before
+        with pytest.raises(ValueError, match="seed pairs"):
+            D.verdict(b, l_int=0.05, p99_by_seed=P99)
+    with pytest.raises(ValueError, match="p99 measured"):
+        D.verdict(ok, l_int=0.05, p99_by_seed={2026: 0.2, 2027: 0.3})
+    v = D.verdict(ok, l_int=0.05, p99_by_seed=P99 | {2028: 0.9})
+    assert v["conditions"]["latency"]["p99_ms_max_over_seeds"] == 0.9
+
+
+def test_bootstrap_records_the_seed_of_each_pair():
+    y, pa, pb, dom, cls, users = _eval_data()
+    out = D.paired_bootstrap(y, pa, pb, dom, cls, users, reps=5, seed=1, with_auc=False, pair_seeds=[2026, 2027, 2028])
+    assert out["point"]["per_pair_seeds"] == [2026, 2027, 2028]
+    with pytest.raises(ValueError, match="pair_seeds"):
+        D.paired_bootstrap(y, pa, pb, dom, cls, users, reps=5, pair_seeds=[2026])
+
+
+def _files(**over):
+    d = {"mode": "files", "train": ["train-08.parquet", "train-09.parquet", "train-10.parquet"],
+         "v1": ["train-11.parquet"], "v2": ["train-12.parquet"]}
+    return d | over
+
+
+def test_development_config_guard():
+    D.check_development_sources(_files())
+    bad = [_files(v2=["train-13.parquet"]), _files(train=["train-14.parquet"]), _files(v1=["train-12.parquet"]),
+           _files(test="test.parquet"), _files(v2=["../test/test.parquet"])]
+    for d in bad:  # review: the first three passed before (only a `test` key was refused)
+        with pytest.raises(ValueError):
+            D.check_development_sources(d)
+    smoke = {"mode": "smoke", "smoke_file": "train-08.parquet", "smoke_train_buckets": [0, 60],
+             "smoke_v1_buckets": [60, 80], "smoke_v2_buckets": [80, 100]}
+    D.check_development_sources(smoke)
+    with pytest.raises(ValueError, match="holdout"):
+        D.check_development_sources(smoke | {"smoke_file": "train-13.parquet"})
+    with pytest.raises(ValueError, match="overlap"):
+        D.check_development_sources(smoke | {"smoke_v1_buckets": [50, 80]})
