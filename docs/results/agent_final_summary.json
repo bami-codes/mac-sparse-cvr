@@ -1,0 +1,156 @@
+{
+  "sessions": 5,
+  "hypotheses": 22,
+  "unique_tests": 11,
+  "tested_in_bh_family": 6,
+  "verdicts": {
+    "confirmed": 4,
+    "opposite_direction": 0,
+    "not_confirmed": 11,
+    "insufficient_data": 7,
+    "needs_experiment": 0,
+    "invalid": 0
+  },
+  "executable_share": 1.0,
+  "planner_structural_compliance": 1.0,
+  "verdict_scope": "each verdict answers the code-generated test question; the planner's sentence and the reporter's text are shown separately and their meaning is NOT verified",
+  "llm_text_with_digits": 0,
+  "llm_text_causal_word_flags": 1,
+  "items_missing_from_report": 0,
+  "stability_mean_jaccard": 0.3412698412698412,
+  "negative_control": {
+    "session_run": true,
+    "selected_by_planner": false,
+    "verdicts": [],
+    "status": "not conducted (planner did not select it)",
+    "note": "the label comes from the experiment design (E8 was planted on purpose); the agent does not detect false evidence"
+  },
+  "arm_gate": {
+    "min_rows": 200,
+    "min_positives": 312,
+    "min_users": 2,
+    "min_converting_users": 2
+  },
+  "training_sensitivity": {
+    "comparisons": 10,
+    "computable": 10,
+    "alpha": 0.05,
+    "different_at_alpha": 2,
+    "noise_model_better_at_alpha": 1,
+    "max_abs_estimate": 2.2305016664379072e-05,
+    "note": "noise model minus full model, uncorrected alpha; describes training sensitivity, not the false-positive rate of the test",
+    "detail": [
+      {
+        "replicate": 0,
+        "segment": "all",
+        "status": "ok",
+        "estimate": -1.0564902507278347e-05,
+        "ci95": [
+          -1.9706790304073412e-05,
+          -3.844214641216914e-06
+        ],
+        "p_value": 0.002
+      },
+      {
+        "replicate": 0,
+        "segment": "sparse_G1",
+        "status": "ok",
+        "estimate": -1.3955765437162361e-05,
+        "ci95": [
+          -3.999598133952039e-05,
+          5.810828402094422e-06
+        ],
+        "p_value": 0.216
+      },
+      {
+        "replicate": 1,
+        "segment": "all",
+        "status": "ok",
+        "estimate": -3.682967415626856e-06,
+        "ci95": [
+          -1.2174049735691911e-05,
+          3.895801233664644e-06
+        ],
+        "p_value": 0.32
+      },
+      {
+        "replicate": 1,
+        "segment": "sparse_G1",
+        "status": "ok",
+        "estimate": -4.563166298773252e-06,
+        "ci95": [
+          -2.3708147348503642e-05,
+          1.252858172899908e-05
+        ],
+        "p_value": 0.58
+      },
+      {
+        "replicate": 2,
+        "segment": "all",
+        "status": "ok",
+        "estimate": 1.2119156950148157e-06,
+        "ci95": [
+          -5.432670959803389e-06,
+          8.822578027440965e-06
+        ],
+        "p_value": 0.756
+      },
+      {
+        "replicate": 2,
+        "segment": "sparse_G1",
+        "status": "ok",
+        "estimate": 1.883761003308527e-05,
+        "ci95": [
+          4.14408808795305e-06,
+          3.710058842016662e-05
+        ],
+        "p_value": 0.02
+      },
+      {
+        "replicate": 3,
+        "segment": "all",
+        "status": "ok",
+        "estimate": 2.636428380536407e-06,
+        "ci95": [
+          -3.952847104795682e-06,
+          9.715276001508367e-06
+        ],
+        "p_value": 0.42
+      },
+      {
+        "replicate": 3,
+        "segment": "sparse_G1",
+        "status": "ok",
+        "estimate": 7.06411755961081e-06,
+        "ci95": [
+          -7.253982906070843e-06,
+          2.5070432273722733e-05
+        ],
+        "p_value": 0.352
+      },
+      {
+        "replicate": 4,
+        "segment": "all",
+        "status": "ok",
+        "estimate": 6.465736288616595e-06,
+        "ci95": [
+          -4.2778543660464886e-06,
+          2.238870633375057e-05
+        ],
+        "p_value": 0.332
+      },
+      {
+        "replicate": 4,
+        "segment": "sparse_G1",
+        "status": "ok",
+        "estimate": 2.2305016664379072e-05,
+        "ci95": [
+          -1.6138316334096296e-06,
+          5.432936259069819e-05
+        ],
+        "p_value": 0.076
+      }
+    ]
+  },
+  "plans_sha256": "3befbfb084551baad06ccfc880a46d1b34621bf075029584a927ecbd406ac4e4"
+}
