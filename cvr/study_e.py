@@ -13,7 +13,6 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import polars as pl
 import pyarrow.parquet as pq
 
