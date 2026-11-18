@@ -260,3 +260,74 @@ def test_a_diverging_run_stops_and_is_recorded(tree, tmp_path):
     rec = json.loads((out / "run.json").read_text())
     assert rec["diverged"]["step"] >= 1 and not rec["checkpoints"]  # no checkpoint of a diverged run
     assert not (out / "resume.pt").exists()
+
+
+# ------------------------------------------------------------------ amendment 3: group-weighted main loss
+def g1_file(tree, tmp_path) -> Path:
+    """A G1 list of five ad_feat1 tokens that occur in the synthetic training files."""
+    _, mac = tree
+    toks = pq.read_table(mac / "train" / TRAIN[0], columns=["ad_feat1"]).column("ad_feat1").to_pylist()
+    g1 = sorted({t for t in toks if t != PAD})[:5]
+    f = tmp_path / "group_lists.json"
+    f.write_text(json.dumps({"G1": g1, "C": []}))
+    return f
+
+
+def weighted(tree, out: Path, groups: Path, w: str, files=TRAIN, stop=None) -> Path:
+    _, mac = tree
+    args = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(out), "--device", "cpu",
+            "--num_workers", "0", *MOAE, "--train_files", *files, "--ckpt_after", files[-1], "--g1_weight", w,
+            "--weight_groups", str(groups)]
+    return R.train(R.parser().parse_args(args + (["--stop_after", stop] if stop else [])))
+
+
+def test_weight_one_is_bit_identical_to_the_unweighted_run(tree, tmp_path):
+    groups = g1_file(tree, tmp_path)
+    a = ours(tree, tmp_path / "plain", TRAIN, [TRAIN[-1]])
+    b = weighted(tree, tmp_path / "w1", groups, "1")
+    sa, sb = torch.load(a / "model_after_train-02.pt"), torch.load(b / "model_after_train-02.pt")
+    assert all(torch.equal(sa[k], sb[k]) for k in sa)
+    for n in TRAIN:
+        assert np.array_equal(np.load(a / f"loss_{Path(n).stem}.npy"), np.load(b / f"loss_{Path(n).stem}.npy"))
+
+
+def test_weight_two_is_applied_per_click_and_normalized_to_mean_one(tree, tmp_path):
+    _, mac = tree
+    groups = g1_file(tree, tmp_path)
+    a = ours(tree, tmp_path / "plain", TRAIN, [TRAIN[-1]])
+    b = weighted(tree, tmp_path / "w2", groups, "2")
+    sa, sb = torch.load(a / "model_after_train-02.pt"), torch.load(b / "model_after_train-02.pt")
+    assert not all(torch.equal(sa[k], sb[k]) for k in sa)
+    rec = json.loads((b / "run.json").read_text())["group_weighting"]
+    toks = set(json.loads(groups.read_text())["G1"])
+    col = [t for n in TRAIN for t in pq.read_table(mac / "train" / n, columns=["ad_feat1"]).column("ad_feat1").to_pylist()]
+    share = sum(t in toks for t in col) / len(col)
+    assert rec["g1_rows"] == sum(t in toks for t in col) and abs(rec["g1_share"] - share) < 1e-15
+    assert abs(share * rec["w_g1"] + (1 - share) * rec["w_other"] - 1) < 1e-12 and abs(rec["w_g1"] / rec["w_other"] - 2) < 1e-12
+
+
+def test_the_weighted_main_loss_weights_each_click_before_the_mean():
+    D, _ = R.official()
+    probs = {"last": torch.tensor([[0.9, 0.1], [0.2, 0.8], [0.7, 0.3], [0.4, 0.6]])}
+    labels = {"last": torch.tensor([0, 1, 1, 0])}
+    ad = torch.zeros(4, len(D.AD_COLS), dtype=torch.long)
+    ad[:, D.AD_COLS.index("ad_feat1")] = torch.tensor([5, 6, 5, 7])
+    got = R.weighted_main_loss(probs, labels, "last", ad, (torch.tensor([5]), 1.5, 0.75))
+    p = torch.tensor([0.9, 0.8, 0.3, 0.4]) + D.EPSILON
+    want = torch.mean(-torch.log(p) * torch.tensor([1.5, 0.75, 1.5, 0.75]))
+    assert torch.equal(got, want)
+    assert not torch.equal(got, torch.mean(-torch.log(p)) * 1.125)  # not a rescaled batch mean
+
+
+def test_a_run_recorded_before_amendment_3_still_resumes(tree, tmp_path):
+    _, mac = tree
+    base = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--device", "cpu", "--num_workers", "0"]
+    R.train(R.parser().parse_args(base + ["--out", str(tmp_path / "old"), *MOAE, "--train_files", *TRAIN,
+                                          "--ckpt_after", TRAIN[-1], "--stop_after", TRAIN[0]]))
+    prog = tmp_path / "old" / "progress.json"
+    rec = json.loads(prog.read_text())
+    for k in R.NEW_SETTINGS:
+        rec["args"].pop(k)  # the grid's runs were recorded without these settings
+    prog.write_text(json.dumps(rec))
+    R.train(R.parser().parse_args(base + ["--resume", str(tmp_path / "old")]))
+    assert (tmp_path / "old" / "run.json").exists()

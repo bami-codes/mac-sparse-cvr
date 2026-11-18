@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Study E: copy from the main pod to this Mac (docs/DESIGN.md §18.1).
 #   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh records      # every job's records (small files only)
-#   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh checkpoints  # the 12 chosen checkpoints, then their SHA-256
+#   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh checkpoints  # the 12 chosen + 3 weighted checkpoints, then SHA-256
 #   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh devicecheck <run id>   # GPU vs Mac CPU on the same V2 rows
 # The chosen runs are read from runs/e_study/config_choice.json (both models, seeds 2026-2028); for each run the
 # train-17 checkpoint (Q2) and the train-19 checkpoint (Q1) are copied six at a time (one connection to the pod is
@@ -45,15 +45,17 @@ fmt = lambda x: f"{x:g}"
 print(" ".join(f"{m}_lr{fmt(c[m]['lr'])}_lam{fmt(c[m]['lamda'])}_s{s}" for m in ("MoAE", "BASE") for s in (2026, 2027, 2028)))
 PY
 )
-    for id in $ids; do for k in 17 19; do echo "$id/model_after_train-$k.pt"; done; done \
-      | xargs -P 6 -I{} rsync -a -e "$SSH" "$addr:/root/naver/runs/e_runs/{}" "runs/e_runs/{}"
-    python3 - $ids <<'PY'
+    wids=$(echo "$ids" | tr ' ' '\n' | grep '^MoAE_' | sed 's/^MoAE_/MoAE-g1w2_/' | tr '\n' ' ')
+    { for id in $ids; do for k in 17 19; do echo "$id/model_after_train-$k.pt"; done; done
+      for id in $wids; do echo "$id/model_after_train-17.pt"; echo "$id/run.json"; done; } \
+      | xargs -P 6 -I{} sh -c 'mkdir -p "runs/e_runs/$(dirname {})" && rsync -a -e "$0" "$1:/root/naver/runs/e_runs/{}" "runs/e_runs/{}"' "$SSH" "$addr"
+    python3 - $ids $wids <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 bad = 0
 for rid in sys.argv[1:]:
     rec = json.loads(Path(f"runs/e_runs/{rid}/run.json").read_text())["checkpoints"]
-    for k in (17, 19):
+    for k in ((17,) if rid.startswith("MoAE-g1w2_") else (17, 19)):
         f = Path(f"runs/e_runs/{rid}/model_after_train-{k}.pt")
         h = hashlib.sha256(f.read_bytes()).hexdigest()
         ok = h == rec[f"train-{k}.parquet"]["sha256"]

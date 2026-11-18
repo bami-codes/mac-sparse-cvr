@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pyarrow.parquet as pq
 
 from .sysinfo import container_peak_memory_gb, cpu_name, peak_rss_gb
 
@@ -47,7 +48,8 @@ TEST_FILE = "test.parquet"
 NAME = re.compile(r"train-\d{2}\.parquet|test\.parquet")
 TIMING_SKIP_STEPS = 50  # steps left out of the steady throughput (worker start-up, first allocations)
 TRAINING_SETTINGS = ("model", "lr", "lamda", "seed", "batch_size", "hidden_dim", "main_view", "aux_views", "pcgrad",
-                     "gcsgrad", "train_files", "ckpt_after")
+                     "gcsgrad", "train_files", "ckpt_after", "g1_weight", "weight_groups")
+NEW_SETTINGS = ("g1_weight", "weight_groups")  # absent from the records of runs made before amendment 3
 
 
 def official():
@@ -142,6 +144,45 @@ def build(a, vocabs, device):
     return model, optimizer, schedule
 
 
+def group_weights(mac: Path, s, vocabs) -> dict | None:
+    """Amendment 3: weight g1_weight on the main-target loss of the clicks of the fixed G1 groups, 1 elsewhere, then
+    divide by the mean weight over the training rows so the average weight is 1. The G1 share is counted again
+    from the training files themselves (raw ad_feat1 tokens)."""
+    if not s.g1_weight:
+        return None
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    tokens = json.loads(Path(s.weight_groups).read_text())["G1"]
+    missing = [t for t in tokens if t not in vocabs["ad_feat1"]]
+    if missing:
+        raise ValueError(f"{len(missing)} G1 tokens are not in the official ad_feat1 vocabulary")
+    rows = g1 = 0
+    value_set = pa.array(tokens)
+    for name in s.train_files:
+        col = pq.read_table(source_file(mac, name), columns=["ad_feat1"]).column("ad_feat1")
+        rows += len(col)
+        g1 += int(pc.sum(pc.is_in(col, value_set=value_set)).as_py() or 0)
+    share = g1 / rows
+    mean_r = s.g1_weight * share + (1 - share)
+    return {"g1_weight": s.g1_weight, "groups": len(tokens), "tokens_sha256": hashlib.sha256("\n".join(sorted(tokens)).encode()).hexdigest(),
+            "training_rows": rows, "g1_rows": g1, "g1_share": share, "w_g1": s.g1_weight / mean_r, "w_other": 1 / mean_r,
+            "g1_weight_share": s.g1_weight * share / mean_r, "vocab_indices": sorted(vocabs["ad_feat1"][t] for t in tokens)}
+
+
+def weighted_main_loss(probs, labels, main_view, ad_indices, gw):
+    """The official main-target loss (utils.log_loss: -mean(log(p_label + EPSILON))) with a weight per click inside
+    the mean. With every weight 1 it is bit-identical to the official value (tested)."""
+    import torch
+    D, _ = official()
+    idx, w_g1, w_other = gw
+    p_view = probs[main_view]
+    prob = p_view[torch.arange(p_view.shape[0], device=p_view.device), labels[main_view]] + D.EPSILON
+    in_g1 = torch.isin(ad_indices[:, D.AD_COLS.index("ad_feat1")], idx)
+    w = torch.where(in_g1, torch.full_like(prob, w_g1), torch.full_like(prob, w_other))
+    return torch.mean(-torch.log(prob) * w)
+
+
+
 def memory(device) -> dict:
     import torch
     out = {"peak_rss_gb": peak_rss_gb(), "container_peak_gb": container_peak_memory_gb()}
@@ -171,10 +212,10 @@ def train(a) -> Path:
         rec = json.loads((out / "progress.json").read_text())
         saved = rec["args"]
         given = {k: getattr(a, k) for k in TRAINING_SETTINGS if getattr(a, k) is not None}
-        changed = {k: (saved[k], v) for k, v in given.items() if v != saved[k] and k not in ("ckpt_after",)}
+        changed = {k: (saved.get(k), v) for k, v in given.items() if v != saved.get(k) and k not in ("ckpt_after",)}
         if changed:
             raise ValueError(f"a resumed run keeps its training settings; changed: {changed}")
-        s = argparse.Namespace(**{k: saved[k] for k in TRAINING_SETTINGS})
+        s = argparse.Namespace(**{k: saved.get(k) for k in TRAINING_SETTINGS})
     else:
         if a.out is None or a.lr is None:
             raise ValueError("--out and --lr are required for a new run")
@@ -197,10 +238,14 @@ def train(a) -> Path:
     vocabs = D.get_vocabs(str(Path(a.mac) / "vocabs"))
     model, optimizer, schedule = build(s, vocabs, device)
     all_p = list(model.parameters())
+    weighting = group_weights(Path(a.mac), s, vocabs)
+    gw = None if weighting is None else (torch.tensor(weighting["vocab_indices"], device=device),
+                                         float(weighting["w_g1"]), float(weighting["w_other"]))
     start, steps = 0, 0
     if rec is None:
         rec = {"upstream_commit": UPSTREAM_COMMIT, "args": vars(s), "parameters": int(sum(p.numel() for p in all_p)),
-               "files": {}, "checkpoints": {}, "official_test_evaluated": False, "sessions": []}
+               "files": {}, "checkpoints": {}, "official_test_evaluated": False, "sessions": [],
+               "group_weighting": None if weighting is None else {k: v for k, v in weighting.items() if k != "vocab_indices"}}
     else:
         state = torch.load(out / "resume.pt", map_location=device, weights_only=False)
         model.load_state_dict(state["model"])
@@ -230,6 +275,9 @@ def train(a) -> Path:
             labels = {k: v.to(device, non_blocking=True) for k, v in batch["label"].items()}
             probs = model(user_indices[:, 1:], ad_indices, buy_mm_scores, buy_seq_indices)
             main_loss, aux_loss_list = U.log_loss(probs, labels, s.main_view, s.aux_views)
+            logged = main_loss  # the official, unweighted main loss is what the loss files record
+            if gw is not None:  # amendment 3: the main-target loss weighted per click BEFORE the mean
+                main_loss = weighted_main_loss(probs, labels, s.main_view, ad_indices, gw)
             total_loss = main_loss + sum([s.lamda * x for x in aux_loss_list])
             optimizer.zero_grad()
             if s.gcsgrad:
@@ -242,7 +290,7 @@ def train(a) -> Path:
                 total_loss.backward()
             optimizer.step()
             schedule.step()
-            losses.append(main_loss.item())  # the official loop logs main_loss.item() every step (a device sync)
+            losses.append(logged.item())  # the official loop logs main_loss.item() every step (a device sync)
             if steps == 0:
                 rec["after_first_step"] = memory(device)
             steps += 1
@@ -431,6 +479,8 @@ def parser() -> argparse.ArgumentParser:
         p.add_argument("--aux_views", nargs="*", default=None)
         p.add_argument("--train_files", nargs="*", default=None, help="default: the official 20 files in order")
         p.add_argument("--ckpt_after", nargs="*", default=None, help="default: train-17, train-18, train-19")
+        p.add_argument("--g1_weight", type=float, default=None, help="amendment 3: weight of the G1 clicks' main loss")
+        p.add_argument("--weight_groups", default=None, help="group_lists.json holding the fixed G1 tokens")
     return ap
 
 

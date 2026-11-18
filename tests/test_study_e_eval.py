@@ -43,14 +43,15 @@ def write_case(tmp: Path, monkeypatch, shuffle_v2: bool = False) -> Path:
         pl.DataFrame({"ad_feat1": tok, "last": y.astype(float)}).write_parquet(data / name)
         files[name] = (tok, base, y, user)
     choice = {}
-    for model, shift in (("MoAE", 0.6), ("BASE", 0.9)):  # each model over-predicts the G1 groups by `shift` logits
+    # each model over-predicts the G1 groups by `shift` logits; the weighted MoAE (amendment 3) less than the plain one
+    for model, shift in (("MoAE", 0.6), ("BASE", 0.9), (Q.WEIGHTED, 0.3)):
         choice[model] = {"lr": 0.003, "lamda": 0.3}
         for s in Q.SEEDS:
             rid = Q.run_id(model, 0.003, 0.3, s)
             (runs / rid).mkdir(parents=True)
             ck17, ck19 = hashlib.sha256(f"17{rid}".encode()).hexdigest(), hashlib.sha256(f"19{rid}".encode()).hexdigest()
-            (runs / rid / "run.json").write_text(json.dumps({"checkpoints": {"train-17.parquet": {"sha256": ck17},
-                                                                            "train-19.parquet": {"sha256": ck19}}}))
+            cks = {"train-17.parquet": {"sha256": ck17}} | ({} if model == Q.WEIGHTED else {"train-19.parquet": {"sha256": ck19}})
+            (runs / rid / "run.json").write_text(json.dumps({"checkpoints": cks}))  # the weighted runs stop at train-17
             d = runs / "research" / f"{Q.CKPT}_{ck17[:12]}"
             d.mkdir(parents=True)
             for name, (tok, base, y, user) in files.items():
@@ -80,7 +81,11 @@ def test_calibration_choice_bootstrap_and_q3(tmp_path, monkeypatch):
             assert Q.calibrator_path(r, "iii", "main").exists()
         q_ii, q_iii = Q.load_calibrated(rids[1], "iii", "main", np.full(4, 0.05), np.array([0, 1, 15, -1]))
         assert np.all((q_iii > 0) & (q_iii < 1)) and q_ii[0] == q_ii[3]
-    assert len(list((tmp_path / "e_study" / "q2" / "calibrators").glob("*.npz"))) == 6 * 2 * 2  # runs x methods x rules
+    assert len(list((tmp_path / "e_study" / "q2" / "calibrators").glob("*.npz"))) == 9 * 2 * 2  # runs x methods x rules
+    q4 = rec["v2_bootstrap"]
+    assert q4["Q4: weighted ii - plain ii"]["diff"] < 0  # less G1 bias in the weighted model before group calibration
+    assert {"Q4: weighted iii - plain iii", "Q4 guard: weighted iii - plain iii, all clicks",
+            "Q4 guard: weighted iii - plain iii, G1 Poisson deviance"} <= set(q4)
     d = rec["v2_bootstrap"]["Q3 ii: (MoAE - BASE) on G1 minus on C"]
     assert abs(d["did"] - (d["diff_set_1"] - d["diff_set_2"])) < 1e-12
     assert d["ci95"][0] <= d["did"] <= d["ci95"][1]
@@ -116,15 +121,18 @@ def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
     monkeypatch.setattr(F, "FROZEN", E.OUT / "frozen")
     monkeypatch.setattr(F, "git_state", lambda: {"commit": "c" * 40, "dirty_files": []})
     choice = json.loads(choice_path.read_text())
-    for model, shift in (("MoAE", 0.6), ("BASE", 0.9)):
+    for model, shift in (("MoAE", 0.6), ("BASE", 0.9), (Q.WEIGHTED, 0.3)):
         for s in Q.SEEDS:
             rid = Q.run_id(model, choice[model]["lr"], choice[model]["lamda"], s)
-            ck17, ck19 = Q.checkpoint_sha(rid), Q.checkpoint_sha(rid, "train-19.parquet")
+            ck17 = Q.checkpoint_sha(rid)
             p = expit(base + np.random.default_rng(s).normal(0, 0.05, y.size) + np.where(np.isin(tok, G1), shift, 0.0))
             d = Q.prediction_file("research", Q.CKPT, ck17, "test.parquet").parent
             np.savez(d / "test.npz", p_last=p.astype(np.float32), y_last=y, user=user, row=np.arange(y.size))
             sha = hashlib.sha256((d / "test.npz").read_bytes()).hexdigest()
             (d / "test.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": ck17}))
+            if model == Q.WEIGHTED:  # Q1 reproduces the paper's two models only
+                continue
+            ck19 = Q.checkpoint_sha(rid, "train-19.parquet")
             d1 = Q.prediction_file("q1", "model_after_train-19", ck19, "test.parquet").parent
             d1.mkdir(parents=True)
             q = np.clip(p * 0.9, 1e-6, 1 - 1e-6).astype(np.float32)
@@ -150,6 +158,10 @@ def test_choose_freeze_dryrun_and_one_test_per_question(tmp_path, monkeypatch):
     assert dry["dryrun_passed"] and dry["values_reproduced"] > 50
     r = F.test("q2")
     assert set(r["verdict"]["conditions"]) == {"diff<0", "ci_upper<0", "all_pairs<0"} and r["primary"]["seed_pairs"] == 3
+    assert set(r["q4"]["hold"]) == {"all_click_logloss_worse", "g1_poisson_worse"}
+    frozen = json.loads((E.OUT / "frozen" / "freeze_q2.json").read_text())
+    assert len(frozen["checkpoints_sha256"]) == 9  # Q2 and Q4 in one claim
+    assert len(json.loads((E.OUT / "frozen" / "freeze_q1.json").read_text())["checkpoints_sha256"]) == 6
     with pytest.raises(F.CheckFailed, match="evaluated once"):
         F.test("q2")
     q1 = F.test("q1")
@@ -193,6 +205,8 @@ def test_the_choice_rule_breaks_ties_by_auc_then_the_published_values(tmp_path, 
     s.write_text("\n".join(json.dumps(r) for r in rows))
     out = F.choose(s)
     assert out["completeness"] == {"jobs": 45, "validated": 44, "diverged": 1}
+    saved = json.loads((tmp_path / "config_choice.json").read_text())
+    assert saved[Q.WEIGHTED]["lr"] == saved["MoAE"]["lr"] and saved[Q.WEIGHTED]["lamda"] == saved["MoAE"]["lamda"]
     assert (out["MoAE"]["lr"], out["MoAE"]["lamda"]) == (0.003, 0.3)  # tie on GAUC and AUC: closest to 0.003 / 0.3
     assert out["BASE"]["lr"] == 0.0004  # GAUC decides first
     with pytest.raises(F.CheckFailed, match="chosen once"):

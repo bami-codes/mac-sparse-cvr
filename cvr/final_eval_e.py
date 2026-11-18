@@ -120,7 +120,8 @@ def choose(summary: Path) -> dict:
     if dest.exists():
         raise CheckFailed(f"{dest} exists: the settings are chosen once")
     E.OUT.mkdir(parents=True, exist_ok=True)
-    dest.write_text(json.dumps({k: out[k] for k in ("MoAE", "BASE")}, indent=2))
+    out[Q.WEIGHTED] = {"lr": out["MoAE"]["lr"], "lamda": out["MoAE"]["lamda"], "derived_from": "MoAE (amendment 3)"}
+    dest.write_text(json.dumps({k: out[k] for k in ("MoAE", "BASE", Q.WEIGHTED)}, indent=2))
     (E.OUT / "config_choice_record.json").write_text(json.dumps(out, indent=2))
     return out
 
@@ -157,7 +158,8 @@ def freeze() -> dict:
     sel = json.loads((E.OUT / "q2" / "selection.json").read_text())
     if sel["choice"] != choice:
         raise CheckFailed("the Q2 selection was computed for other settings")
-    ck17, ck19 = checkpoints(choice, "train-17.parquet"), checkpoints(choice, "train-19.parquet")
+    ck17 = checkpoints(choice, "train-17.parquet")  # Q2 and Q4: nine checkpoints in one claim
+    ck19 = checkpoints({k: choice[k] for k in ("MoAE", "BASE")}, "train-19.parquet")  # Q1 reproduces the paper's two
     for rid, s in ck17.items():
         if sel["inputs"][rid]["checkpoint_sha256"] != s:
             raise CheckFailed(f"{rid}: the V1/V2 predictions were not made with its train-17 checkpoint")
@@ -173,6 +175,10 @@ def freeze() -> dict:
                     "improvement_confirmed": "difference < 0, 95% CI upper < 0, all three seed pairs < 0"},
         "secondary": ["BASE: iii - ii", "MoAE/BASE: iii0 - ii, iii0 - iii, iii (aggregate rule) - ii",
                       "Q3: (MoAE - BASE) on G1 minus on C, after (ii) and raw, no verdict"],
+        "q4": {"comparison": f"{Q.WEIGHTED} (iii) - MoAE (iii), each with its own lambda chosen on V2",
+               "metric": "G1 macro LogLoss on the official test, same bootstrap and verdict rule as Q2",
+               "guards": "hold the method if the all-click LogLoss difference has 95% CI lower > 0 or the G1 Poisson "
+                         "deviance gets worse", "design": "docs/DESIGN.md §18.10 amendment 3"},
         "lambda_chosen": lam}
     q1 = common | {"question": "Q1", "checkpoints_sha256": sorted(ck19.values()), "checkpoints": ck19,
                    "paper_table4": PAPER, "tolerance": TOL,
@@ -235,6 +241,8 @@ def q2_values(name: str, manifest: dict) -> dict:
     for k in ("ii", "raw"):
         out[f"Q3 {k}: (MoAE - BASE) on G1 minus on C"] = Q.did_bootstrap(
             y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT)
+    if Q.WEIGHTED in choice:
+        out |= Q.q4_comparisons(y, g, users, sets, seeds, "iii_main", "iii_main")
     return {"rows": rows, "bootstrap": out}
 
 
@@ -264,8 +272,9 @@ def dryrun() -> dict:
             if f in b:
                 require_close(f"dry run {key} {f}", abs(b[f] - rec[f]), DRYRUN_TOL)
                 n += 1
-        require_close(f"dry run {key} CI", max(abs(x - z) for x, z in zip(b["ci95"], rec["ci95"])), DRYRUN_TOL)
-        n += 1
+        if "ci95" in b:  # the Poisson guard is a point difference
+            require_close(f"dry run {key} CI", max(abs(x - z) for x, z in zip(b["ci95"], rec["ci95"])), DRYRUN_TOL)
+            n += 1
     git = git_state()
     out = {"dryrun_passed": True, "values_reproduced": n, "freeze_sha256": sha256(FROZEN / "freeze_q2.json"),
            "code_fingerprint": code_fingerprint(), "git": git,
@@ -322,8 +331,14 @@ def test(name: str) -> dict:
 
 def _test_q2(m: dict) -> dict:
     v = q2_values(Q.TEST, m)
-    return {"question": "Q2", "primary": v["bootstrap"]["MoAE: iii - ii"],
-            "verdict": verdict(v["bootstrap"]["MoAE: iii - ii"]), "secondary": v["bootstrap"], "rows": v["rows"]}
+    b = v["bootstrap"]
+    out = {"question": "Q2", "primary": b["MoAE: iii - ii"], "verdict": verdict(b["MoAE: iii - ii"]),
+           "secondary": b, "rows": v["rows"]}
+    if "Q4: weighted iii - plain iii" in b:
+        click, pois = b["Q4 guard: weighted iii - plain iii, all clicks"], b["Q4 guard: weighted iii - plain iii, G1 Poisson deviance"]
+        out["q4"] = {"primary": b["Q4: weighted iii - plain iii"], "verdict": verdict(b["Q4: weighted iii - plain iii"]),
+                     "hold": {"all_click_logloss_worse": click["ci95"][0] > 0, "g1_poisson_worse": pois["diff"] > 0}}
+    return out
 
 
 def _test_q1(m: dict) -> dict:
@@ -331,7 +346,8 @@ def _test_q1(m: dict) -> dict:
     codes = Q.token_codes()
     _, y = Q.file_columns(Q.TEST, codes)
     per, out = {}, {}
-    for model, c in m["choice"].items():
+    for model in ("MoAE", "BASE"):
+        c = m["choice"][model]
         vals = []
         for s in Q.SEEDS:
             rid = Q.run_id(model, c["lr"], c["lamda"], s)

@@ -33,6 +33,24 @@ def job(model: str, lr: float, lamda: float, seed: int) -> dict:
     return {"id": jid, "model": model, "lr": lr, "lamda": lamda, "seed": seed, "train_args": args}
 
 
+WEIGHTED = "MoAE-g1w2"  # amendment 3 (Q4)
+
+
+def weighted(lr: float, lamda: float) -> list[dict]:
+    """The chosen MoAE retrained on train-00..17 with the G1 clicks' main loss weighted 2x; only the train-17
+    checkpoint is kept and no validation run is made (the control is the chosen run's own train-17 checkpoint)."""
+    out = []
+    for seed in (2026, 2027, 2028):
+        j = job("MoAE", lr, lamda, seed)
+        j["id"] = j["id"].replace("MoAE_", f"{WEIGHTED}_", 1)
+        j["model"] = WEIGHTED
+        j["train_args"] += ["--g1_weight", "2", "--weight_groups", "runs/e_study/group_lists.json",
+                            "--train_files", *[f"train-{i:02d}.parquet" for i in range(18)], "--ckpt_after", "train-17.parquet"]
+        j["validate"] = False
+        out.append(j)
+    return out
+
+
 def grid() -> list[dict]:
     jobs = [job("MoAE", lr, lam, 2026) for lr in LRS for lam in LAMDAS]
     jobs += [job("BASE", lr, 0.3, 2026) for lr in LRS]  # BASE has no auxiliary target: lambda does not enter its loss
@@ -45,6 +63,8 @@ def state(j: dict) -> str:
         rec = json.loads((d / "run.json").read_text())
         if rec.get("diverged"):
             return "diverged"
+        if not j.get("validate", True):
+            return "done"
         return "done" if list((d / "val").rglob("train-19.json")) else "validate"
     if (d / "progress.json").exists():
         return "resume"
@@ -120,6 +140,7 @@ def main(argv: list[str]) -> None:
     p = sub.add_parser("seeds")
     p.add_argument("--moae", required=True, help="'<lr> <lamda>' chosen on train-19")
     p.add_argument("--base", required=True, help="'<lr>' chosen on train-19")
+    p.add_argument("--with-weighted", action="store_true", help="add amendment 3's three weighted MoAE runs")
     for name in ("run", "summary"):
         p = sub.add_parser(name)
         p.add_argument("jobs", type=Path)
@@ -131,8 +152,9 @@ def main(argv: list[str]) -> None:
         print(json.dumps(grid(), indent=1))
     elif a.cmd == "seeds":
         lr, lam = (float(x) for x in a.moae.split())
-        print(json.dumps([job("MoAE", lr, lam, s) for s in (2027, 2028)] +
-                         [job("BASE", float(a.base), 0.3, s) for s in (2027, 2028)], indent=1))
+        jobs = ([job("MoAE", lr, lam, s) for s in (2027, 2028)] + [job("BASE", float(a.base), 0.3, s) for s in (2027, 2028)]
+                + (weighted(lr, lam) if a.with_weighted else []))
+        print(json.dumps(jobs, indent=1))
     elif a.cmd == "run":
         run(json.loads(a.jobs.read_text()), a.gpus, ["--device", a.device, "--num_workers", str(a.num_workers)])
     else:

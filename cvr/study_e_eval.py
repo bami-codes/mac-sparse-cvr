@@ -39,6 +39,7 @@ V1, V2, TEST = "train-18.parquet", "train-19.parquet", "test.parquet"
 CKPT = "model_after_train-17"
 BOOT = {"reps": 1000, "seed": 20261119}
 METHODS = ("iii", "iii0")
+WEIGHTED = "MoAE-g1w2"  # amendment 3 (Q4): the chosen MoAE retrained with the G1 clicks' main loss weighted 2x
 
 
 def source(name: str) -> Path:
@@ -141,6 +142,39 @@ def did_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, seed: 
             "users": int(U), "seed_pairs": len(a)}
 
 
+def click_diff_bootstrap(y, a: list, b: list, users, reps: int, seed: int) -> dict:
+    """Click-weighted LogLoss(A) - LogLoss(B) over all rows, one user resample per replicate, seed pairs averaged."""
+    _, ui = np.unique(users, return_inverse=True)
+    U = ui.max() + 1
+    d = np.mean([M.bce(y, pa) - M.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
+    n, tot = np.bincount(ui, minlength=U).astype(float), np.bincount(ui, weights=d, minlength=U)
+    rng = np.random.default_rng(seed)
+    reps_ = []
+    for _ in range(reps):
+        w = np.bincount(rng.integers(U, size=U), minlength=U).astype(float)
+        reps_.append(float(w @ tot / (w @ n)))
+    lo, hi = np.quantile(reps_, [0.025, 0.975])
+    return {"diff": float(tot.sum() / n.sum()), "ci95": [float(lo), float(hi)], "reps": reps, "users": int(U),
+            "seed_pairs": len(a), "per_pair_diff": [float((M.bce(y, pa) - M.bce(y, pb)).mean()) for pa, pb in zip(a, b)]}
+
+
+def q4_comparisons(y, g, users, sets, get, iii_w: str, iii_u: str) -> dict:
+    """Amendment 3, the same code on V2 and on the test: `get(model, name)` gives the seed-ordered predictions."""
+    m1 = np.isin(g, sets["G1"])
+
+    def macro(a, b, label):
+        return M.paired_bootstrap_macro_diff(y[m1], [x[m1] for x in a], [x[m1] for x in b], g[m1], users[m1], **BOOT) | {
+            "compared": label}
+
+    w3, u3 = get(WEIGHTED, iii_w), get("MoAE", iii_u)
+    pois = [group_metrics(y, a, g, sets["G1"])["poisson_mean"] - group_metrics(y, b, g, sets["G1"])["poisson_mean"]
+            for a, b in zip(w3, u3)]
+    return {"Q4: weighted iii - plain iii": macro(w3, u3, f"{WEIGHTED} ({iii_w}) - MoAE ({iii_u}), G1 macro"),
+            "Q4: weighted ii - plain ii": macro(get(WEIGHTED, "ii"), get("MoAE", "ii"), f"{WEIGHTED} (ii) - MoAE (ii), G1 macro"),
+            "Q4 guard: weighted iii - plain iii, all clicks": click_diff_bootstrap(y, w3, u3, users, **BOOT),
+            "Q4 guard: weighted iii - plain iii, G1 Poisson deviance": {"diff": float(np.mean(pois)), "per_pair_diff": pois}}
+
+
 # ------------------------------------------------------------------ calibration on V1, choice on V2
 def fit_run(p1, y1, g1) -> tuple[GlobalPlatt, dict, dict]:
     glob = GlobalPlatt.fit(p1, y1)
@@ -226,6 +260,9 @@ def calibrate(choice_path: Path) -> dict:
         for name in ("ii", "raw"):
             v2[f"Q3 {name}: (MoAE - BASE) on G1 minus on C"] = did_bootstrap(
                 y2, seeds_of("MoAE", name), seeds_of("BASE", name), g2, users2, sets["G1"], sets["C"], **BOOT)
+    if {"MoAE", WEIGHTED} <= set(choice):
+        v2 |= q4_comparisons(y2, g2, users2, sets, seeds_of, f"iii_lam{lam[WEIGHTED]['iii']['main']:g}",
+                             f"iii_lam{lam['MoAE']['iii']['main']:g}")
     rec = {"choice": choice, "lambdas": LAMBDAS, "seeds": SEEDS, "lambda_chosen": lam, "v2_rows": rows,
            "v2_bootstrap": v2, "solver": solver,
            "inputs": {rid: {"v1": u["v1"]["sha256"], "v2": u["v2"]["sha256"], "checkpoint_sha256": u["checkpoint_sha256"]}
