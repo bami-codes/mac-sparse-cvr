@@ -1,0 +1,222 @@
+{
+ "run": "runs/p2_train00_02/20261117T131443Z",
+ "seeds": [
+  2026,
+  2027,
+  2028
+ ],
+ "design": "docs/DESIGN.md \u00a715.2",
+ "log": {
+  "rows": {
+   "train": 11608164,
+   "v1": 4054643,
+   "v2": 4090475
+  },
+  "seconds": {
+   "features": 59
+  },
+  "identity_check": {
+   "refit_rounds": 174,
+   "saved_rounds": 174,
+   "max_abs_pred_diff": 0.0
+  },
+  "stacking_last": {
+   "folds": 3,
+   "aux_label": "y",
+   "aux_col": "aux_last",
+   "aux_seed": 2026,
+   "fold_rows": [
+    3872278,
+    3876822,
+    3859064
+   ],
+   "aux_rounds": {
+    "folds": [
+     204,
+     243,
+     169
+    ],
+    "full": 307
+   },
+   "aux_label_rate": 0.01657695394379335,
+   "te_prior_strength": {
+    "ad_feat1": 106.12689252799561,
+    "ad_feat2": 66.33278777257121
+   },
+   "seconds": 424
+  },
+  "group_rate_max_abs_diff": {
+   "v1:te_ad_feat1": 2.416922217918227e-11,
+   "v1:te_ad_feat2": 2.045955349583295e-10,
+   "v1:logn_ad_feat1": 0.0,
+   "v1:logn_ad_feat2": 0.0,
+   "v2:te_ad_feat1": 2.416922217918227e-11,
+   "v2:te_ad_feat2": 2.045955349583295e-10,
+   "v2:logn_ad_feat1": 0.0,
+   "v2:logn_ad_feat2": 0.0
+  },
+  "fitted": {
+   "M2auxlast_s2026": {
+    "rounds": 93,
+    "seconds": 53
+   },
+   "M2auxlast_s2027": {
+    "rounds": 84,
+    "seconds": 48
+   },
+   "M2auxlast_s2028": {
+    "rounds": 85,
+    "seconds": 48
+   },
+   "M2bothlast_s2026": {
+    "rounds": 117,
+    "seconds": 63
+   },
+   "M2bothlast_s2027": {
+    "rounds": 100,
+    "seconds": 55
+   },
+   "M2bothlast_s2028": {
+    "rounds": 100,
+    "seconds": 55
+   }
+  }
+ },
+ "reproduction": {
+  "M2_s2026": {
+   "recomputed": 0.06437362740255326,
+   "stored": 0.06437362740255326
+  },
+  "M2_s2027": {
+   "recomputed": 0.06429417878605359,
+   "stored": 0.0642941787860536
+  },
+  "M2_s2028": {
+   "recomputed": 0.06437081277404105,
+   "stored": 0.06437081277404105
+  },
+  "M2aux_s2026": {
+   "recomputed": 0.06428905025841543,
+   "stored": 0.06428905025841543
+  },
+  "M2aux_s2027": {
+   "recomputed": 0.06424008933979747,
+   "stored": 0.06424008933979748
+  },
+  "M2aux_s2028": {
+   "recomputed": 0.06424242711209721,
+   "stored": 0.06424242711209723
+  },
+  "M2te_s2026": {
+   "recomputed": 0.06432251551178009,
+   "stored": 0.06432251551178009
+  },
+  "M2te_s2027": {
+   "recomputed": 0.06423037808570775,
+   "stored": 0.06423037808570774
+  },
+  "M2te_s2028": {
+   "recomputed": 0.06423820331042629,
+   "stored": 0.06423820331042629
+  },
+  "M2both_s2026": {
+   "recomputed": 0.0641400688116971,
+   "stored": 0.06414006881169712
+  },
+  "M2both_s2027": {
+   "recomputed": 0.06413340931392182,
+   "stored": 0.06413340931392182
+  },
+  "M2both_s2028": {
+   "recomputed": 0.0641292639375818,
+   "stored": 0.06412926393758181
+  }
+ },
+ "v2_G1_macro_logloss_ii_seed_mean": {
+  "M2": 0.06434620632088263,
+  "M2aux": 0.0642571889034367,
+  "M2te": 0.06426369896930471,
+  "M2both": 0.06413424735440025,
+  "M2auxlast": 0.06433203798083843,
+  "M2bothlast": 0.06420390872200195
+ },
+ "comparisons": [
+  {
+   "a": "M2aux",
+   "b": "M2auxlast",
+   "role": "core: same procedure, label mta vs last",
+   "diff": -7.484907740172698e-05,
+   "ci95": [
+    -0.00016891586642707964,
+    2.051570482532401e-05
+   ],
+   "reps": 1000,
+   "users": 122299,
+   "groups": 949,
+   "seed_pairs": 3,
+   "per_pair_diff": [
+    -4.107660961081472e-05,
+    -0.00010403157959053883,
+    -7.943904300382729e-05
+   ]
+  },
+  {
+   "a": "M2both",
+   "b": "M2bothlast",
+   "role": "core: same procedure, label mta vs last (with group rates)",
+   "diff": -6.966136760170306e-05,
+   "ci95": [
+    -0.00016479157346574984,
+    2.5809636921296523e-05
+   ],
+   "reps": 1000,
+   "users": 122299,
+   "groups": 949,
+   "seed_pairs": 3,
+   "per_pair_diff": [
+    -7.957082982773467e-05,
+    -5.154601676857872e-05,
+    -7.786725620879568e-05
+   ]
+  },
+  {
+   "a": "M2auxlast",
+   "b": "M2",
+   "role": "reference: adding a same-label out-of-fold prediction",
+   "diff": -1.4168340044198798e-05,
+   "ci95": [
+    -9.029474305303926e-05,
+    5.3751343386855735e-05
+   ],
+   "reps": 1000,
+   "users": 122299,
+   "groups": 949,
+   "seed_pairs": 3,
+   "per_pair_diff": [
+    -4.3500534527004073e-05,
+    4.9942133334415216e-05,
+    -4.894661894000751e-05
+   ]
+  },
+  {
+   "a": "M2aux",
+   "b": "M2",
+   "role": "reference: the second study's mta input",
+   "diff": -8.90174174459258e-05,
+   "ci95": [
+    -0.00018178068189611744,
+    2.1865758192266635e-06
+   ],
+   "reps": 1000,
+   "users": 122299,
+   "groups": 949,
+   "seed_pairs": 3,
+   "per_pair_diff": [
+    -8.457714413781887e-05,
+    -5.4089446256123644e-05,
+    -0.00012838566194383485
+   ]
+  }
+ ],
+ "seconds_total": 1334
+}
