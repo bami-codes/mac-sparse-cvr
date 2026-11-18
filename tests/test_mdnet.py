@@ -371,3 +371,12 @@ def test_star_step_does_not_depend_on_which_code_each_domain_has():
 
 def net_num_start(net):
     return sum(net.emb[i].embedding_dim for i in net.in_cols)
+
+
+def test_reload_check_rows_keep_every_prediction_batch_identical():
+    from cvr.study_c_worker import PREDICT_BATCH, same_batch_rows
+    assert PREDICT_BATCH == 16384
+    assert same_batch_rows(50_000, 4_000_000) == 49_152  # 3 full batches, no shorter last batch
+    assert same_batch_rows(50_000, 10_000) == 10_000  # one batch either way
+    assert same_batch_rows(50_000, 20_000) == 20_000  # the whole split: the same batches as the full pass
+    assert same_batch_rows(50_000, 60_000) == 49_152  # a prefix must end on a batch boundary

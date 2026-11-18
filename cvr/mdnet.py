@@ -331,7 +331,7 @@ class MDModel:
     info: dict = field(default_factory=dict)
 
     def tensors(self, a: MDArrays, idx: np.ndarray | slice) -> tuple[torch.Tensor, torch.Tensor]:
-        cat = torch.as_tensor(np.asarray(a.cat[idx]), dtype=torch.long)
+        cat = torch.as_tensor(np.array(a.cat[idx], dtype=np.int64))  # a copy: memory-mapped slices are read-only
         z = (np.asarray(a.num[idx]) - self.num_mean) / self.num_std * self.num_keep
         return cat, torch.as_tensor(z, dtype=torch.float32)
 

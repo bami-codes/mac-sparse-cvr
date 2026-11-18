@@ -14,7 +14,9 @@ V1 / V2 / test / serving rows get the offset fitted on all training rows.
 The offset logic below needs no LightGBM (tests run in the same process as PyTorch; OpenMP, see m3_worker).
 """
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -84,3 +86,32 @@ class GBDTOffset:
         full = lgb.train(p, lgb.Dataset(X, y, init_score=oof_domain_offset(train, folds), categorical_feature=cat_idx,
                                         free_raw_data=True), num_boost_round=rounds)
         return cls(full, inputs, rounds, SmoothedRate.fit(train, DOMAIN_KEY))
+
+
+# ---------------------------------------------------------------- save / load (runs/<...>/models/, never committed)
+def save_gbdt_offset(m: GBDTOffset, path: Path) -> None:
+    m.booster.save_model(str(path.with_suffix(".txt")))
+    m.rate.table.write_parquet(path.with_suffix(".rate.parquet"))
+    path.with_suffix(".json").write_text(json.dumps({"inputs": m.inputs, "rounds": m.rounds, "rate_key": m.rate.key,
+                                                     "rate_p0": m.rate.p0, "rate_m": m.rate.m}))
+
+
+def load_gbdt_offset(path: Path) -> GBDTOffset:
+    import lightgbm as lgb
+
+    meta = json.loads(path.with_suffix(".json").read_text())
+    rate = SmoothedRate(meta["rate_key"], meta["rate_p0"], meta["rate_m"], pl.read_parquet(path.with_suffix(".rate.parquet")))
+    return GBDTOffset(lgb.Booster(model_file=str(path.with_suffix(".txt"))), meta["inputs"], meta["rounds"], rate)
+
+
+def save_domain_calibrators(glob, gs, path: Path) -> None:
+    """(ii) and (iii-d) of one base model (cvr/calibration.py), groups = domain codes."""
+    np.savez(path.with_suffix(".npz"), a=glob.a, b=glob.b, lam=gs.lam, group_ids=gs.group_ids, da=gs.da, db=gs.db)
+
+
+def load_domain_calibrators(path: Path):
+    from .calibration import GlobalPlatt, GroupShrunkPlatt
+
+    z = np.load(path.with_suffix(".npz"))
+    glob = GlobalPlatt(float(z["a"]), float(z["b"]))
+    return glob, GroupShrunkPlatt(glob.a, glob.b, float(z["lam"]), z["group_ids"], z["da"], z["db"], 0, True)
