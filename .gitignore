@@ -1,4 +1,4 @@
-# 원본·파생 데이터 (CC BY-NC-SA 4.0, 레포에 올리지 않음)
+# 원본·파생 데이터 (MAC 데이터 카드 기준 Apache-2.0, docs/DESIGN.md §1; 크기 때문에 레포에 올리지 않음)
 data/
 *.parquet
 *.csv
