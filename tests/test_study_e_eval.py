@@ -96,3 +96,90 @@ def test_did_point_equals_two_group_reports():
 def test_predictions_in_another_row_order_are_refused(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="labels differ"):
         Q.calibrate(write_case(tmp_path, monkeypatch, shuffle_v2=True))
+
+
+# ------------------------------------------------------------------ choose -> calibrate -> freeze -> dry run -> test
+def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
+    from sklearn.metrics import roc_auc_score
+    from cvr import final_eval_e as F
+    tok, base, y, user = frame(20_000, 9)
+    test = tmp / "test" / "test.parquet"
+    test.parent.mkdir()
+    pl.DataFrame({"ad_feat1": tok, "last": y.astype(float)}).write_parquet(test)
+    test_sha = hashlib.sha256(test.read_bytes()).hexdigest()
+    (test.parent / "test.parquet.sha256").write_text(f"{test_sha}  test.parquet\n")
+    monkeypatch.setattr(Q, "TEST_PATH", test)
+    monkeypatch.setattr(F, "FROZEN", E.OUT / "frozen")
+    monkeypatch.setattr(F, "git_state", lambda: {"commit": "c" * 40, "dirty_files": []})
+    choice = json.loads(choice_path.read_text())
+    for model, shift in (("MoAE", 0.6), ("BASE", 0.9)):
+        for s in Q.SEEDS:
+            rid = Q.run_id(model, choice[model]["lr"], choice[model]["lamda"], s)
+            run = Q.RUNS / rid
+            (run / "run.json").write_text(json.dumps({"checkpoints": {"train-17.parquet": {"sha256": f"ck{rid}"},
+                                                                     "train-19.parquet": {"sha256": f"ck19{rid}"}}}))
+            p = expit(base + np.random.default_rng(s).normal(0, 0.05, y.size) + np.where(np.isin(tok, G1), shift, 0.0))
+            d = run / "research" / f"{Q.CKPT}_abcdef123456"
+            np.savez(d / "test.npz", p_last=p.astype(np.float32), y_last=y, user=user, row=np.arange(y.size))
+            sha = hashlib.sha256((d / "test.npz").read_bytes()).hexdigest()
+            (d / "test.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": f"ck{rid}"}))
+            d1 = run / "q1" / "model_after_train-19_abcdef123456"
+            d1.mkdir(parents=True)
+            q = np.clip(p * 0.9, 1e-6, 1 - 1e-6).astype(np.float32)
+            np.savez(d1 / "test.npz", p_last=q, y_last=y, user=user, row=np.arange(y.size))
+            (d1 / "test.json").write_text(json.dumps({
+                "checkpoint_sha256": f"ck19{rid}", "source_sha256": test_sha,
+                "auc": float(roc_auc_score(y, q)), "gauc": M.gauc(y, q.astype(np.float64), user)["gauc"]}))
+    return F
+
+
+def test_choose_freeze_dryrun_and_one_test_per_question(tmp_path, monkeypatch):
+    path = write_case(tmp_path, monkeypatch)
+    F = add_test_and_records(tmp_path, monkeypatch, path)
+    E.OUT.joinpath("config_choice.json").write_text(path.read_text())
+    Q.calibrate(path)
+    F.freeze()
+    with pytest.raises(F.CheckFailed, match="never rewritten"):
+        F.freeze()
+    with pytest.raises(F.CheckFailed, match="dry run must pass"):  # refused before the single run is claimed
+        F.test("q2")
+    assert not list((E.OUT / "frozen").glob("*.lock"))
+    dry = F.dryrun()
+    assert dry["dryrun_passed"] and dry["values_reproduced"] > 50
+    r = F.test("q2")
+    assert set(r["verdict"]["conditions"]) == {"diff<0", "ci_upper<0", "all_pairs<0"} and r["primary"]["seed_pairs"] == 3
+    with pytest.raises(F.CheckFailed, match="evaluated once"):
+        F.test("q2")
+    q1 = F.test("q1")
+    assert set(q1["summary"]) == {"MoAE", "BASE"} and q1["summary"]["MoAE"]["judgement"]["auc"] in (
+        "reproduced", "close", "not reproduced")
+
+
+def test_a_changed_calibrator_stops_the_dry_run(tmp_path, monkeypatch):
+    path = write_case(tmp_path, monkeypatch)
+    F = add_test_and_records(tmp_path, monkeypatch, path)
+    E.OUT.joinpath("config_choice.json").write_text(path.read_text())
+    Q.calibrate(path)
+    F.freeze()
+    f = next((E.OUT / "q2" / "calibrators").glob("*.npz"))
+    f.write_bytes(f.read_bytes() + b" ")
+    with pytest.raises(F.CheckFailed, match="changed since freeze"):
+        F.dryrun()
+
+
+def test_the_choice_rule_breaks_ties_by_auc_then_the_published_values(tmp_path, monkeypatch):
+    from cvr import final_eval_e as F
+    monkeypatch.setattr(E, "OUT", tmp_path)
+    rows = [{"model": "MoAE", "seed": 2026, "state": "done", "lr": 0.004, "lamda": 0.1, "val_gauc": 0.76, "val_auc": 0.86},
+            {"model": "MoAE", "seed": 2026, "state": "done", "lr": 0.0035, "lamda": 0.3, "val_gauc": 0.7600000004, "val_auc": 0.87},
+            {"model": "MoAE", "seed": 2026, "state": "done", "lr": 0.003, "lamda": 0.3, "val_gauc": 0.7600000002, "val_auc": 0.87},
+            {"model": "MoAE", "seed": 2026, "state": "diverged", "lr": 0.04, "lamda": 0.3},
+            {"model": "BASE", "seed": 2026, "state": "done", "lr": 0.003, "lamda": 0.3, "val_gauc": 0.74, "val_auc": 0.85},
+            {"model": "BASE", "seed": 2026, "state": "done", "lr": 0.0004, "lamda": 0.3, "val_gauc": 0.75, "val_auc": 0.84}]
+    s = tmp_path / "summary.jsonl"
+    s.write_text("\n".join(json.dumps(r) for r in rows))
+    out = F.choose(s)
+    assert (out["MoAE"]["lr"], out["MoAE"]["lamda"]) == (0.003, 0.3)  # tie on GAUC and AUC: closest to 0.003 / 0.3
+    assert out["BASE"]["lr"] == 0.0004  # GAUC decides first
+    with pytest.raises(F.CheckFailed, match="chosen once"):
+        F.choose(s)
