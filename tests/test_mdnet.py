@@ -219,12 +219,15 @@ def test_seed_determinism_and_exact_reload(tmp_path, variant):
 
 
 def test_star_mixed_evaluation_batch_equals_per_domain_evaluation():
+    # Exact on macOS arm64; on a Linux x86 GPU pod the batch-size-dependent float32 matmul kernels differ by up to
+    # 7.5e-9 (measured). Statistics leaking across rows in evaluation would differ by ~1e-2, far above 1e-6.
+    from cvr.checks import NN_SINGLE_VS_BATCH_TOL
     m = _fit("star")[0]
     a, _ = _data()
     full = m.predict(a)
     for d in ROWS:
         idx = np.flatnonzero(a.cat[:, DOM_COL] == d)
-        assert np.array_equal(m.predict(a.take(idx)), full[idx])
+        assert np.abs(m.predict(a.take(idx)) - full[idx]).max() <= NN_SINGLE_VS_BATCH_TOL
 
 
 # ---------------------------------------------------------------- 7. epoch checkpoints
