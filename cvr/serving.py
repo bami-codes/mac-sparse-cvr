@@ -26,6 +26,25 @@ def _load_maps(folder: Path) -> dict[str, dict[str, int]]:
             for p in folder.glob("*.parquet")}
 
 
+def row_features(vocab: dict[str, dict[str, int]], rows: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Codes of every vocabulary column and the history features of raw rows (must match cvr/features.py).
+    Shared by the first-study Server and the study C server (cvr/serving_c.py)."""
+    codes = {c: np.fromiter((vocab[c].get(r[c], UNKNOWN) for r in rows), np.int64, len(rows)) for c in VOCAB_COLS}
+    num = np.empty((len(rows), len(NUM_INPUTS)), dtype=np.float64)
+    for i, r in enumerate(rows):
+        vals = []
+        for tgt, seq in SEQ_PAIRS:
+            t = r[tgt]
+            vals.append(0 if t == PAD else sum(1 for s in r[seq] if s == t))
+        s0 = r["ad_feat0_seq"]
+        vals.append(1 if all(s == PAD for s in s0) else 0)  # hist_empty
+        for m in MM_COLS:
+            a = np.asarray(r[m], dtype=np.float64)
+            vals += [np.float32(a.max()), np.float32(a.mean())]  # float32 like the polars path
+        num[i] = vals
+    return codes, num
+
+
 class Server:
     def __init__(self, run_dir: Path, base: str, method: str):
         self.base, self.method = base, method
@@ -65,21 +84,7 @@ class Server:
 
     # ------------------------------------------------------------ features (must match cvr/features.py)
     def features(self, rows: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray]:
-        codes = {c: np.fromiter((self.vocab[c].get(r[c], UNKNOWN) for r in rows), np.int64, len(rows))
-                 for c in VOCAB_COLS}
-        num = np.empty((len(rows), len(NUM_INPUTS)), dtype=np.float64)
-        for i, r in enumerate(rows):
-            vals = []
-            for tgt, seq in SEQ_PAIRS:
-                t = r[tgt]
-                vals.append(0 if t == PAD else sum(1 for s in r[seq] if s == t))
-            s0 = r["ad_feat0_seq"]
-            vals.append(1 if all(s == PAD for s in s0) else 0)  # hist_empty
-            for m in MM_COLS:
-                a = np.asarray(r[m], dtype=np.float64)
-                vals += [np.float32(a.max()), np.float32(a.mean())]  # float32 like the polars path
-            num[i] = vals
-        return codes, num
+        return row_features(self.vocab, rows)
 
     # ------------------------------------------------------------ model scores
     def raw_score(self, rows: list[dict], codes: dict[str, np.ndarray], num: np.ndarray) -> np.ndarray:
