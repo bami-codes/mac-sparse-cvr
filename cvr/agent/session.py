@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 
 from .evidence import EVIDENCE, FALSE_EVIDENCE, evidence_text
-from .experiments import ASSOC_FEATURES, FEATURE_GROUPS, NEGATIVE_GROUP, SEGMENTS, Menu
+from .experiments import ASSOC_FEATURES, FEATURE_GROUPS, NEGATIVE_GROUP, SEGMENTS, Menu, empty_arm_by_definition
 from .llm import AuditLog, ClovaClient
 
 VERDICTS = ["confirmed", "opposite_direction", "not_confirmed", "insufficient_data", "needs_experiment", "invalid"]
@@ -117,7 +117,8 @@ REPORTER_SYSTEM = """너는 분석 보고서 작성자다. 가설별로 코드�
 - associational 결과는 인과로 해석하지 않는다. 예측에 도움이 된다는 결과도 '바꾸면 전환이 늘어난다'는 뜻이 아니다.
 - predictive 결과는 '같은 학습 조건으로 한 번 학습한 두 모델의 확증 자료상 성능 차이'다. 다른 학습 실행이나 다른 날짜에서도 같다거나, 특성 자체가 전환 정보를 가진다는 뜻으로 넓히지 않는다. 결과 문장의 '학습 민감도'는 정보 없는 잡음 특성을 넣었을 때의 차이로, 판정에는 쓰이지 않은 참고 정보다.
 - 판정은 test_question(코드가 쓴 검정 질문)에 대한 것이다. planner_statement는 참고용 원래 제안이며 검정 질문과 다를 수 있다. 다르면 planner_statement를 사실처럼 쓰지 말고 검정 질문의 결과만 해석한다.
-- interpretation에는 이 결과가 무엇을 뜻하고 무엇을 뜻하지 않는지, next_step에는 다음에 할 실험이나 확인을 한 문장씩 쓴다."""
+- interpretation에는 이 결과가 무엇을 뜻하고 무엇을 뜻하지 않는지, next_step에는 다음에 할 실험이나 확인을 한 문장씩 쓴다.
+- overall에는 이 세션 전체에서 무엇이 확인됐고 무엇이 확인되지 않았는지를 숫자 없이 한두 문장으로 쓴다. 비워 두지 않는다."""
 
 
 # ------------------------------------------------------------------ helpers
@@ -183,7 +184,32 @@ def validate(h: dict, known_ev: set[str]) -> list[str]:
         for a in REQUIRED_ARGS.get(h["tool"], []):
             if h.get(a, "none") == "none":
                 issues.append(f"tool {h['tool']} needs argument {a}")
+        if h["tool"] == "association" and h.get("feature", "none") != "none":
+            why = empty_arm_by_definition(h["feature"], h["segment"])
+            if why:
+                issues.append(f"comparison impossible by definition: {why}")
+        if h["tool"] == "interaction" and h["segment"] == h.get("segment_b"):
+            issues.append("comparison impossible by definition: segment and segment_b are the same")
     return issues
+
+
+def control_hypothesis(plan: dict) -> dict:
+    """The planted false claim (E8), added by code to the negative-control session so the control always runs.
+    In the final run the planner did not pick it, so the control was not conducted and said nothing.
+    It is frozen with the plans (so it is in the BH family) and kept out of the planner's metrics."""
+    ids = [h.get("id") for h in plan.get("hypotheses", []) if isinstance(h.get("id"), int)]
+    return {"id": max(ids, default=0) + 1, "source": "control",
+            "statement": "사용자 점수(user_score) 그룹은 희소 그룹 전환 예측에 도움이 된다 (심어 둔 근거 E8, 코드가 추가한 대조)",
+            "claim_type": "predictive", "evidence": ["E8"], "tool": "ablation_effect", "group": NEGATIVE_GROUP,
+            "feature": "none", "segment": "sparse_G1", "segment_b": "none", "relative_mde": 0.05,
+            "expected": "group_helps"}
+
+
+def code_overall(recs: list[dict]) -> str:
+    """Session summary written by code from the verdicts (shown whatever the LLM wrote)."""
+    counts = ", ".join(f"{VERDICT_KO[v]} {n}" for v in VERDICTS if (n := sum(r["verdict"] == v for r in recs)))
+    confirmed = sorted({r["test_question"] for r in recs if r["verdict"] == "confirmed"})
+    return f"가설 {len(recs)}개: {counts}." + (f" 확인된 검정 질문: {' / '.join(confirmed)}" if confirmed else "")
 
 
 def run_tool(h: dict, menu: Menu) -> dict:
@@ -262,22 +288,28 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
         llm = make_llm(k)
         plan = llm.structured(PLANNER_SYSTEM, f"근거 자료:\n{evidence_text(neg)}\n\n사용 가능한 인자:\n"
                               f"{json.dumps(lists, ensure_ascii=False)}", plan_schema(groups), role=f"planner_s{k}")
-        plans.append({"session": k, "negative_control": neg, "plan": plan})
+        plans.append({"session": k, "negative_control": neg, "plan": plan,
+                      **({"control": control_hypothesis(plan)} if neg else {})})
     frozen = json.dumps(plans, ensure_ascii=False, sort_keys=True)
     (out / "plans_frozen.json").write_text(frozen)
     plans_sha = hashlib.sha256(frozen.encode()).hexdigest()
     if plans_only:
-        return {"sessions": len(plans), "plans_sha256": plans_sha, "plans_file": str(out / "plans_frozen.json")}
+        picked = any(h.get("group") == NEGATIVE_GROUP for p in plans if p["negative_control"]
+                     for h in p["plan"].get("hypotheses", []))
+        return {"sessions": len(plans), "plans_sha256": plans_sha, "plans_file": str(out / "plans_frozen.json"),
+                "negative_control_session": any(p["negative_control"] for p in plans),
+                "planted_claim_selected_by_planner": picked}
     menu = Menu(menu_dir)
 
     # 2) validate, deduplicate, execute each unique test once, one BH family for the whole run
     records, unique = [], {}
     for p in plans:
         known = {e["id"] for e in EVIDENCE} | ({FALSE_EVIDENCE["id"]} if p["negative_control"] else set())
-        for raw in p["plan"]["hypotheses"]:
+        for raw in p["plan"]["hypotheses"] + ([p["control"]] if p.get("control") else []):
             h = normalize(raw)
             issues = validate(h, known)
-            rec = {"session": p["session"], "hypothesis": h, "issues": issues, "hypothesis_key": hypothesis_key(h)}
+            rec = {"session": p["session"], "source": h.get("source", "planner"), "hypothesis": h, "issues": issues,
+                   "hypothesis_key": hypothesis_key(h)}
             if issues:
                 rec["verdict"] = "invalid"
             else:
@@ -325,7 +357,7 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
         for r in recs:
             it = by_id.get(r["hypothesis"]["id"], {"interpretation": "", "next_step": ""})
             chk = check_text(it["interpretation"] + " " + it["next_step"], r["verdict"])
-            items.append({"id": r["hypothesis"]["id"], "test_question": r.get("test_question"),
+            items.append({"id": r["hypothesis"]["id"], "source": r["source"], "test_question": r.get("test_question"),
                           "statement": r["hypothesis"]["statement"],
                           "claim_type": r["hypothesis"]["claim_type"], "verdict": r["verdict"],
                           "result_sentence": render_result(r), "interpretation": it["interpretation"],
@@ -333,7 +365,8 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
                           "missing_from_report": r["hypothesis"]["id"] not in by_id})
         overall_chk = check_text(rep.get("overall", ""), "not_confirmed")
         reports.append({"session": p["session"], "items": items, "overall": rep.get("overall", ""),
-                        "overall_check": overall_chk})
+                        "overall_empty": not rep.get("overall", "").strip(), "overall_check": overall_chk,
+                        "overall_code": code_overall(recs)})
 
     summary = summarize(plans, records, reports, unique, menu) | {"plans_sha256": plans_sha}
     (out / "records.json").write_text(json.dumps(records, ensure_ascii=False, indent=2, default=float))
@@ -345,30 +378,39 @@ def run(menu_dir: Path, out: Path, make_llm, sessions: int, negative_control_ses
 
 def summarize(plans, records, reports, unique, menu) -> dict:
     normal = [p["session"] for p in plans if not p["negative_control"]]
-    keysets = [{r["hypothesis_key"] for r in records if r["session"] == s} for s in normal]
+    planner = [r for r in records if r["source"] == "planner"]
+    keysets = [{r["hypothesis_key"] for r in planner if r["session"] == s} for s in normal]
     jacc = [len(a & b) / len(a | b) for i, a in enumerate(keysets) for b in keysets[i + 1:] if a | b]
-    neg = [r for r in records if r["hypothesis"].get("group") == NEGATIVE_GROUP]
+    picked = [r for r in planner if r["hypothesis"].get("group") == NEGATIVE_GROUP]
+    control = [r for r in records if r["source"] == "control"]
+    neg = control or picked  # plans frozen before the code-added control existed: the planner's pick only
     items = [it for rep in reports for it in rep["items"]]
+    tested = {r["key"] for r in records if "bh_adjusted_p" in r}
     return {
-        "sessions": len(plans), "hypotheses": len(records), "unique_tests": len(unique),
-        "tested_in_bh_family": len({r["key"] for r in records if "bh_adjusted_p" in r}),
-        "verdicts": {v: sum(r["verdict"] == v for r in records) for v in VERDICTS},
-        "executable_share": float(np.mean([r["verdict"] != "invalid" for r in records])),
-        "planner_structural_compliance": float(np.mean([not r["issues"] for r in records])),
+        "sessions": len(plans), "hypotheses": len(planner), "control_hypotheses": len(control),
+        "unique_tests": len(unique), "unique_tests_judged": len(tested),
+        "unique_tests_confirmed": len({r["key"] for r in records if r["verdict"] == "confirmed"}),
+        "tested_in_bh_family": len(tested),
+        "verdicts": {v: sum(r["verdict"] == v for r in planner) for v in VERDICTS},
+        "executable_share": float(np.mean([r["verdict"] != "invalid" for r in planner])),
+        "planner_structural_compliance": float(np.mean([not r["issues"] for r in planner])),
         "verdict_scope": "each verdict answers the code-generated test question; the planner's sentence and the "
                          "reporter's text are shown separately and their meaning is NOT verified",
         "llm_text_with_digits": sum(it["text_check"]["digits"] > 0 for it in items)
         + sum(rep["overall_check"]["digits"] > 0 for rep in reports),
         "llm_text_causal_word_flags": sum(bool(it["text_check"]["causal_words"]) for it in items),
         "items_missing_from_report": sum(it["missing_from_report"] for it in items),
+        "reports_with_empty_overall": sum(rep["overall_empty"] for rep in reports),
         "stability_mean_jaccard": float(np.mean(jacc)) if jacc else None,
         "negative_control": {"session_run": any(p["negative_control"] for p in plans),
-                             "selected_by_planner": bool(neg),
+                             "selected_by_planner": bool(picked), "added_by_code": bool(control),
                              "verdicts": [r["verdict"] for r in neg],
                              "status": ("not run" if not any(p["negative_control"] for p in plans) else
                                         "not conducted (planner did not select it)" if not neg else
                                         "planted false claim confirmed (not caught)"
-                                        if any(r["verdict"] == "confirmed" for r in neg)
+                                        if any(r["verdict"] == "confirmed" for r in neg) else
+                                        "control could not be judged (insufficient data or invalid)"
+                                        if all(r["verdict"] in ("insufficient_data", "invalid") for r in neg)
                                         else "planted false claim not confirmed"),
                              "note": "the label comes from the experiment design (E8 was planted on purpose); "
                                      "the agent does not detect false evidence"},
@@ -380,16 +422,20 @@ def summarize(plans, records, reports, unique, menu) -> dict:
 def render_markdown(reports: list[dict], summary: dict) -> str:
     ts = summary["training_sensitivity"]
     lines = ["# Hypothesis agent run", "",
-             f"- sessions {summary['sessions']}, hypotheses {summary['hypotheses']}, unique tests {summary['unique_tests']}, "
-             f"BH family {summary['tested_in_bh_family']} (q = 0.05, one family for the whole run, plans frozen "
-             f"`{summary['plans_sha256'][:12]}` before execution)",
-             f"- verdicts {summary['verdicts']}",
+             f"- sessions {summary['sessions']}, planner hypotheses {summary['hypotheses']} (+ {summary['control_hypotheses']} "
+             f"control added by code), unique tests {summary['unique_tests']}, judged {summary['unique_tests_judged']}, "
+             f"confirmed {summary['unique_tests_confirmed']}; BH family {summary['tested_in_bh_family']} (q = 0.05, one "
+             f"family for the whole run, plans frozen `{summary['plans_sha256'][:12]}` before execution)",
+             f"- planner-hypothesis verdicts (duplicates across sessions counted each time) {summary['verdicts']}",
              f"- verdict scope: {summary['verdict_scope']}",
              f"- executable {summary['executable_share']:.0%}, planner structural-rule compliance "
              f"{summary['planner_structural_compliance']:.0%} (fields only, not meaning), "
              f"LLM text with digits {summary['llm_text_with_digits']}, causal-word flags {summary['llm_text_causal_word_flags']}",
              f"- stability (mean Jaccard of tests across sessions) {summary['stability_mean_jaccard']}",
-             f"- negative control: {summary['negative_control']['status']} ({summary['negative_control']['note']})",
+             f"- negative control: {summary['negative_control']['status']}; selected by the planner: "
+             f"{summary['negative_control']['selected_by_planner']}, added by code: "
+             f"{summary['negative_control']['added_by_code']} ({summary['negative_control']['note']})",
+             f"- LLM session summaries left empty: {summary['reports_with_empty_overall']}/{summary['sessions']}",
              f"- arm gate (per compared arm): {summary['arm_gate']}",
              f"- training sensitivity (full + one noise feature vs full, same training conditions, alpha {ts['alpha']}, "
              f"descriptive): {ts['different_at_alpha']}/{ts['computable']} comparisons differ (noise model better in "
@@ -404,7 +450,8 @@ def render_markdown(reports: list[dict], summary: dict) -> str:
                 flags.append("LLM 문장에 숫자 포함")
             if it["text_check"]["causal_words"]:
                 flags.append(f"인과 표현 의심: {', '.join(it['text_check']['causal_words'])}")
-            lines += [f"**H{it['id']}** ({it['claim_type']}) 검정 질문 (코드): {it['test_question'] or '없음 (무효)'}", "",
+            tag = " · 대조 (코드가 추가, 플래너 제안 아님)" if it.get("source") == "control" else ""
+            lines += [f"**H{it['id']}** ({it['claim_type']}{tag}) 검정 질문 (코드): {it['test_question'] or '없음 (무효)'}", "",
                       f"- 판정·결과 (코드, 위 질문에 대한 것): {it['result_sentence']}",
                       f"- 플래너 제안 문장 (LLM, 의미 검증 안 함): {it['statement']}",
                       f"- 해석 (LLM, 의미 검증 안 함): {it['interpretation']}",
@@ -412,7 +459,9 @@ def render_markdown(reports: list[dict], summary: dict) -> str:
             if flags:
                 lines.append(f"- ⚠️ {'; '.join(flags)}")
             lines.append("")
-        lines += [f"종합 (LLM, 의미 검증 안 함): {rep['overall']}", ""]
+        lines.append(f"종합 (코드, 판정에서 작성): {rep['overall_code']}")
+        lines += ["", f"종합 (LLM, 의미 검증 안 함): {rep['overall']}" if not rep["overall_empty"]
+                  else "종합 (LLM): ⚠️ 비어 있음", ""]
     return "\n".join(lines) + "\n"
 
 

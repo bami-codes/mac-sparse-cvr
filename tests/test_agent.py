@@ -252,3 +252,80 @@ def test_two_step_run_executes_exactly_the_committed_plans(tmp_path):
     # same values (key order differs: the frozen file is written with sorted keys)
     assert json.loads((two / "records.json").read_text()) == json.loads((one / "records.json").read_text())
     assert json.loads((two / "reports.json").read_text()) == json.loads((one / "reports.json").read_text())
+
+
+def test_comparisons_impossible_by_definition_are_invalid(tmp_path):
+    # final run (349cd32): feature = segment, and empty_history inside has_history, were reported "insufficient data"
+    from itertools import product
+
+    from cvr.agent.experiments import ASSOC_FEATURES, SEGMENTS, empty_arm_by_definition
+    from cvr.agent.session import normalize, validate
+
+    base = {"claim_type": "associational", "test": "association", "evidence": ["E3"], "statement": "s"}
+    for feature, segment, direction in [("high_visual_similarity", "high_visual_similarity", "higher_cvr_with_feature"),
+                                        ("empty_history", "has_history", "higher_cvr_with_feature")]:
+        h = normalize(base | {"id": 1, "feature": feature, "segment": segment, "direction": direction})
+        assert any("impossible by definition" in i for i in validate(h, {"E3"}))
+    inter = normalize({"id": 2, "claim_type": "predictive", "test": "interaction", "group": "context",
+                       "segment": "sparse_G1", "segment_b": "sparse_G1", "evidence": ["E3"], "statement": "s"})
+    assert any("segment and segment_b are the same" in i for i in validate(inter, {"E3"}))
+
+    # the rule matches the masks: on data where every combination the feature code allows occurs (only rule:
+    # an empty history has no same-item match), an arm is empty exactly when the rule says so
+    folder = _menu(tmp_path / "menu")
+    path = folder / "confirmation_predictions.parquet"
+    df = pl.read_parquet(path)
+    rng = np.random.default_rng(1)
+    n = df.height
+    empty = (rng.uniform(size=n) < 0.3).astype(np.int8)
+    df = df.with_columns(pl.Series("hist_empty", empty),
+                         pl.Series("match_ad_feat0", np.where(empty == 1, 0, rng.integers(0, 2, n)).astype(np.int16)),
+                         pl.Series("match_ad_feat1", rng.integers(0, 2, n).astype(np.int16)),
+                         pl.Series("match_ad_feat2", rng.integers(0, 2, n).astype(np.int16)),
+                         pl.Series("high_visual", rng.uniform(size=n) < 0.5))
+    df.write_parquet(path)
+    menu = Menu(folder)
+    for feature, segment in product(ASSOC_FEATURES, SEGMENTS):
+        r = menu.association(feature, segment)
+        assert (min(r["rows_with"], r["rows_without"]) == 0) == (empty_arm_by_definition(feature, segment) is not None)
+
+
+def test_negative_control_runs_even_if_the_planner_skips_it(tmp_path):
+    # final run: the planner of the control session did not pick E8, so the control was "not conducted"
+    folder = _menu(tmp_path / "menu")
+    out = tmp_path / "run"
+    skip = scripted_factory(AuditLog(out / "audit.jsonl"), None)  # session 2 sees E8 but proposes no user_score test
+    frozen = run(folder, out, skip, 2, 2, plans_only=True)
+    assert frozen["negative_control_session"] and not frozen["planted_claim_selected_by_planner"]
+    plans = json.loads((out / "plans_frozen.json").read_text())
+    assert [("control" in p) for p in plans] == [False, True]  # frozen with the plans, so it is in the BH family
+    summary = run(folder, out, skip, 2, 2, from_plans=out / "plans_frozen.json")
+    nc = summary["negative_control"]
+    assert not nc["selected_by_planner"] and nc["added_by_code"] and nc["status"] != "not conducted (planner did not select it)"
+    assert summary["hypotheses"] == 10 and summary["control_hypotheses"] == 1  # planner metrics exclude the control
+    records = json.loads((out / "records.json").read_text())
+    ctrl = [r for r in records if r["source"] == "control"]
+    assert len(ctrl) == 1 and ctrl[0]["hypothesis"]["group"] == NEGATIVE_GROUP and ctrl[0]["verdict"] != "invalid"
+    assert "대조 (코드가 추가, 플래너 제안 아님)" in (out / "report.md").read_text()
+
+
+class _SilentReporter(_Reporter):
+    def structured(self, system, user, schema, role, **kw):
+        return super().structured(system, user, schema, role, **kw) | {"overall": " "}
+
+
+def test_empty_llm_summary_is_counted_and_a_code_summary_is_shown(tmp_path):
+    # final run: the reporter's overall text was empty in all five sessions, and no metric counted it
+    from cvr.agent.session import normalize
+
+    h = normalize({"id": 1, "statement": "s", "claim_type": "predictive", "evidence": ["E2"], "test": "ablation_effect",
+                   "group": "history_match", "segment": "sparse_G1"})
+    folder = _menu(tmp_path / "menu")
+    plans = tmp_path / "plans.json"
+    plans.write_text(json.dumps([{"session": 1, "negative_control": False, "plan": {"hypotheses": [h]}}]))
+    summary = run(folder, tmp_path / "run", lambda k: _SilentReporter(), 1, None, from_plans=plans)
+    assert summary["reports_with_empty_overall"] == 1
+    md = (tmp_path / "run" / "report.md").read_text()
+    assert "종합 (LLM): ⚠️ 비어 있음" in md and "종합 (코드, 판정에서 작성): 가설 1개: 확인됨 1." in md
+    summary2 = run(folder, tmp_path / "run2", lambda k: _Reporter(), 1, None, from_plans=plans)
+    assert summary2["reports_with_empty_overall"] == 0

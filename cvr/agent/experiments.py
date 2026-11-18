@@ -64,6 +64,33 @@ ASSOC_FEATURES = {  # binary feature -> expression on the confirmation frame
     "high_visual_similarity": pl.col("high_visual"),
     "empty_history": pl.col("hist_empty") == 1,
 }
+# What a segment fixes, as (condition, value), and the condition each association feature tests. Used to reject
+# association requests whose comparison is impossible BY DEFINITION (one arm is empty whatever the data), which
+# the final run reported as "insufficient data" (feature = segment, or empty_history inside has_history).
+SEGMENT_FIXES = {"no_history": ("empty_history", True), "has_history": ("empty_history", False),
+                 "same_category_in_history": ("same_category_in_history", True),
+                 "no_same_category_in_history": ("same_category_in_history", False),
+                 "high_visual_similarity": ("high_visual_similarity", True),
+                 "low_visual_similarity": ("high_visual_similarity", False)}
+# implications that follow from the feature code itself (not from the data): an empty history is all padding and
+# matching skips padding, so no click with an empty history has the same item in its history (match_ad_feat0
+# compares the item sequence that defines hist_empty). Other matches use other sequences, so they are left to the
+# data gate.
+IMPLIED_BY = {("empty_history", True): [("same_item_in_history", False)]}
+
+
+def empty_arm_by_definition(feature: str, segment: str) -> str | None:
+    """Why association(feature, segment) has an arm that is empty by definition, or None."""
+    fixed = SEGMENT_FIXES.get(segment)
+    if fixed is None:
+        return None
+    for cond, value in [fixed] + IMPLIED_BY.get(fixed, []):
+        if cond == feature:
+            arm = "without_feature" if value else "with_feature"
+            return f"segment {segment} fixes {feature} = {value}, so the {arm} arm is empty by definition"
+    return None
+
+
 BOOT_REPS, BOOT_SEED = 500, 20261118
 TEST_MODEL_COMPARISON = "paired user bootstrap, fitted models held fixed"
 

@@ -21,9 +21,10 @@ BASE = [
     {"id": 4, "statement": "맥락 특성은 희소 그룹에서 도움이 된다", "claim_type": "predictive",
      "evidence": ["E999"], "tool": "ablation_effect", "group": "context", "feature": "none",
      "segment": "sparse_G1", "segment_b": "none", "relative_mde": 0.05, "expected": "group_helps"},
-    {"id": 5, "statement": "구매 이력이 없으면 같은 상품 재구매 연관을 볼 수 있다", "claim_type": "associational",
+    # empty "with" arm because of the data (the synthetic menu has no same-item match), not by definition
+    {"id": 5, "statement": "구매 이력이 있으면 같은 상품이 이력에 있을 때 전환율이 높다", "claim_type": "associational",
      "evidence": ["E7"], "tool": "association", "group": "none", "feature": "same_item_in_history",
-     "segment": "no_history", "segment_b": "none", "relative_mde": 0.05, "expected": "higher_cvr_with_feature"},
+     "segment": "has_history", "segment_b": "none", "relative_mde": 0.05, "expected": "higher_cvr_with_feature"},
 ]
 NEGATIVE = {"id": 6, "statement": "사용자 점수는 희소 그룹 전환 예측에 도움이 된다", "claim_type": "predictive",
             "evidence": ["E8"], "tool": "ablation_effect", "group": "user_score", "feature": "none",
