@@ -158,8 +158,13 @@ def freeze() -> dict:
     sel = json.loads((E.OUT / "q2" / "selection.json").read_text())
     if sel["choice"] != choice:
         raise CheckFailed("the Q2 selection was computed for other settings")
+    if set(choice) != {"MoAE", "BASE", Q.WEIGHTED}:  # review: a freeze without the weighted runs passed
+        raise CheckFailed(f"the freeze needs MoAE, BASE and {Q.WEIGHTED}; got {sorted(choice)}")
     ck17 = checkpoints(choice, "train-17.parquet")  # Q2 and Q4: nine checkpoints in one claim
     ck19 = checkpoints({k: choice[k] for k in ("MoAE", "BASE")}, "train-19.parquet")  # Q1 reproduces the paper's two
+    if len(set(ck17.values())) != 9 or len(set(ck19.values())) != 6:
+        raise CheckFailed(f"expected 9 distinct train-17 and 6 train-19 checkpoints, got {len(set(ck17.values()))} "
+                          f"and {len(set(ck19.values()))}")
     for rid, s in ck17.items():
         if sel["inputs"][rid]["checkpoint_sha256"] != s:
             raise CheckFailed(f"{rid}: the V1/V2 predictions were not made with its train-17 checkpoint")
@@ -246,6 +251,12 @@ def q2_values(name: str, manifest: dict) -> dict:
     return {"rows": rows, "bootstrap": out}
 
 
+def hold_flags(b: dict) -> dict:
+    """Amendment 3's reasons to hold the weighted training even when it improves G1."""
+    click, pois = b["Q4 guard: weighted iii - plain iii, all clicks"], b["Q4 guard: weighted iii - plain iii, G1 Poisson deviance"]
+    return {"all_click_logloss_worse": bool(click["ci95"][0] > 0), "g1_poisson_worse": bool(pois["diff"] > 0)}
+
+
 def verdict(b: dict) -> dict:
     ok = b["diff"] < 0 and b["ci95"][1] < 0 and all(d < 0 for d in b["per_pair_diff"])
     return {"improvement_confirmed": bool(ok), "conditions": {"diff<0": b["diff"] < 0, "ci_upper<0": b["ci95"][1] < 0,
@@ -275,8 +286,22 @@ def dryrun() -> dict:
         if "ci95" in b:  # the Poisson guard is a point difference
             require_close(f"dry run {key} CI", max(abs(x - z) for x, z in zip(b["ci95"], rec["ci95"])), DRYRUN_TOL)
             n += 1
+        if "per_pair_diff" in b:  # review: the verdict needs every seed pair < 0, which the mean did not check
+            if len(b["per_pair_diff"]) != len(rec["per_pair_diff"]):
+                raise CheckFailed(f"dry run {key}: {len(b['per_pair_diff'])} seed pairs, recorded {len(rec['per_pair_diff'])}")
+            for i, (x, z) in enumerate(zip(b["per_pair_diff"], rec["per_pair_diff"])):
+                require_close(f"dry run {key} seed pair {i}", abs(x - z), DRYRUN_TOL)
+                n += 1
+    judged = {"Q2": "MoAE: iii - ii", "Q4": "Q4: weighted iii - plain iii"}
+    for q, key in judged.items():
+        if verdict(new["bootstrap"][key]) != verdict(sel["v2_bootstrap"][key]):
+            raise CheckFailed(f"dry run: the {q} verdict differs from the recorded V2 values")
+    holds = [hold_flags(x) for x in (new["bootstrap"], sel["v2_bootstrap"])]
+    if holds[0] != holds[1]:
+        raise CheckFailed(f"dry run: the Q4 hold conditions differ: {holds}")
     git = git_state()
     out = {"dryrun_passed": True, "values_reproduced": n, "freeze_sha256": sha256(FROZEN / "freeze_q2.json"),
+           "v2_q4_verdict_code_run": verdict(new["bootstrap"]["Q4: weighted iii - plain iii"]) | {"hold": holds[0]},
            "code_fingerprint": code_fingerprint(), "git": git,
            "v2_verdict_code_run": verdict(new["bootstrap"]["MoAE: iii - ii"]) | {"note": "V2 = selection data"}}
     (FROZEN / "dryrun_q2.json").write_text(json.dumps(out, indent=2))
@@ -335,9 +360,8 @@ def _test_q2(m: dict) -> dict:
     out = {"question": "Q2", "primary": b["MoAE: iii - ii"], "verdict": verdict(b["MoAE: iii - ii"]),
            "secondary": b, "rows": v["rows"]}
     if "Q4: weighted iii - plain iii" in b:
-        click, pois = b["Q4 guard: weighted iii - plain iii, all clicks"], b["Q4 guard: weighted iii - plain iii, G1 Poisson deviance"]
         out["q4"] = {"primary": b["Q4: weighted iii - plain iii"], "verdict": verdict(b["Q4: weighted iii - plain iii"]),
-                     "hold": {"all_click_logloss_worse": click["ci95"][0] > 0, "g1_poisson_worse": pois["diff"] > 0}}
+                     "hold": hold_flags(b)}
     return out
 
 

@@ -235,3 +235,29 @@ def test_the_settings_are_chosen_only_from_the_complete_grid(tmp_path, monkeypat
     with pytest.raises(F.CheckFailed, match="not complete"):
         F.choose(s)
     assert not (tmp_path / "config_choice.json").exists()
+
+
+def test_the_freeze_needs_all_nine_research_runs(tmp_path, monkeypatch):
+    path = write_case(tmp_path, monkeypatch)
+    F = add_test_and_records(tmp_path, monkeypatch, path)
+    choice = json.loads(path.read_text())
+    choice.pop(Q.WEIGHTED)  # review: Q2 froze six checkpoints with the Q4 description and the dry run passed
+    path.write_text(json.dumps(choice))
+    E.OUT.joinpath("config_choice.json").write_text(path.read_text())
+    Q.calibrate(path)
+    with pytest.raises(F.CheckFailed, match="needs MoAE, BASE and"):
+        F.freeze()
+
+
+def test_the_dry_run_reproduces_every_seed_pair(tmp_path, monkeypatch):
+    path = write_case(tmp_path, monkeypatch)
+    F = add_test_and_records(tmp_path, monkeypatch, path)
+    E.OUT.joinpath("config_choice.json").write_text(path.read_text())
+    Q.calibrate(path)
+    sel_path = E.OUT / "q2" / "selection.json"
+    sel = json.loads(sel_path.read_text())
+    sel["v2_bootstrap"]["Q4: weighted iii - plain iii"]["per_pair_diff"] = [123.0, 123.0, 123.0]  # review: passed
+    sel_path.write_text(json.dumps(sel))
+    F.freeze()
+    with pytest.raises(F.CheckFailed, match="seed pair"):
+        F.dryrun()

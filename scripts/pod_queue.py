@@ -40,11 +40,13 @@ def weighted(lr: float, lamda: float) -> list[dict]:
     """The chosen MoAE retrained on train-00..17 with the G1 clicks' main loss weighted 2x; only the train-17
     checkpoint is kept and no validation run is made (the control is the chosen run's own train-17 checkpoint)."""
     out = []
+    g1_sha = json.loads(Path("runs/e_study/groups.json").read_text())["sha256"]["G1"]  # fixed before any result
     for seed in (2026, 2027, 2028):
         j = job("MoAE", lr, lamda, seed)
         j["id"] = j["id"].replace("MoAE_", f"{WEIGHTED}_", 1)
         j["model"] = WEIGHTED
         j["train_args"] += ["--g1_weight", "2", "--weight_groups", "runs/e_study/group_lists.json",
+                            "--weight_groups_sha256", g1_sha,
                             "--train_files", *[f"train-{i:02d}.parquet" for i in range(18)], "--ckpt_after", "train-17.parquet"]
         j["validate"] = False
         out.append(j)

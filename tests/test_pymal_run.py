@@ -273,11 +273,16 @@ def g1_file(tree, tmp_path) -> Path:
     return f
 
 
-def weighted(tree, out: Path, groups: Path, w: str, files=TRAIN, stop=None) -> Path:
+def list_sha(groups: Path) -> str:
+    import hashlib
+    return hashlib.sha256("\n".join(sorted(json.loads(groups.read_text())["G1"])).encode()).hexdigest()
+
+
+def weighted(tree, out: Path, groups: Path, w: str, files=TRAIN, stop=None, sha=None) -> Path:
     _, mac = tree
     args = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(out), "--device", "cpu",
             "--num_workers", "0", *MOAE, "--train_files", *files, "--ckpt_after", files[-1], "--g1_weight", w,
-            "--weight_groups", str(groups)]
+            "--weight_groups", str(groups), "--weight_groups_sha256", sha or list_sha(groups)]
     return R.train(R.parser().parse_args(args + (["--stop_after", stop] if stop else [])))
 
 
@@ -331,3 +336,21 @@ def test_a_run_recorded_before_amendment_3_still_resumes(tree, tmp_path):
     prog.write_text(json.dumps(rec))
     R.train(R.parser().parse_args(base + ["--resume", str(tmp_path / "old")]))
     assert (tmp_path / "old" / "run.json").exists()
+
+
+def test_the_g1_list_must_be_the_fixed_one_at_start_and_on_resume(tree, tmp_path):
+    _, mac = tree
+    groups = g1_file(tree, tmp_path)
+    with pytest.raises(ValueError, match="not the fixed"):
+        weighted(tree, tmp_path / "wrong", groups, "2", sha="0" * 64)
+    out = weighted(tree, tmp_path / "w2", groups, "2", stop=TRAIN[0])
+    fixed = list_sha(groups)
+    toks = json.loads(groups.read_text())["G1"]
+    groups.write_text(json.dumps({"G1": toks[1:], "C": []}))  # another list under the same path (review)
+    base = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--device", "cpu", "--num_workers", "0"]
+    with pytest.raises(ValueError, match="not the fixed"):
+        R.train(R.parser().parse_args(base + ["--resume", str(out)]))
+    groups.write_text(json.dumps({"G1": toks, "C": []}))
+    assert list_sha(groups) == fixed
+    R.train(R.parser().parse_args(base + ["--resume", str(out)]))  # the same list: the run continues
+    assert json.loads((out / "run.json").read_text())["group_weighting"]["tokens_sha256"] == fixed

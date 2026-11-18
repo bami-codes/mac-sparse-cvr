@@ -48,7 +48,8 @@ PY
     wids=$(echo "$ids" | tr ' ' '\n' | grep '^MoAE_' | sed 's/^MoAE_/MoAE-g1w2_/' | tr '\n' ' ')
     { for id in $ids; do for k in 17 19; do echo "$id/model_after_train-$k.pt"; done; done
       for id in $wids; do echo "$id/model_after_train-17.pt"; echo "$id/run.json"; done; } \
-      | xargs -P 6 -I{} sh -c 'mkdir -p "runs/e_runs/$(dirname {})" && rsync -a -e "$0" "$1:/root/naver/runs/e_runs/{}" "runs/e_runs/{}"' "$SSH" "$addr"
+      | xargs -n 1 -P 6 sh -c 'mkdir -p "runs/e_runs/$(dirname "$2")" && rsync -a -e "$0" "$1:/root/naver/runs/e_runs/$2" "runs/e_runs/$2"' "$SSH" "$addr"
+    # each path is one positional argument ($2): macOS xargs -I{} could not assemble the long weighted-run paths (review)
     python3 - $ids $wids <<'PY'
 import hashlib, json, sys
 from pathlib import Path

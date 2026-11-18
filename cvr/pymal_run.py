@@ -48,8 +48,8 @@ TEST_FILE = "test.parquet"
 NAME = re.compile(r"train-\d{2}\.parquet|test\.parquet")
 TIMING_SKIP_STEPS = 50  # steps left out of the steady throughput (worker start-up, first allocations)
 TRAINING_SETTINGS = ("model", "lr", "lamda", "seed", "batch_size", "hidden_dim", "main_view", "aux_views", "pcgrad",
-                     "gcsgrad", "train_files", "ckpt_after", "g1_weight", "weight_groups")
-NEW_SETTINGS = ("g1_weight", "weight_groups")  # absent from the records of runs made before amendment 3
+                     "gcsgrad", "train_files", "ckpt_after", "g1_weight", "weight_groups", "weight_groups_sha256")
+NEW_SETTINGS = ("g1_weight", "weight_groups", "weight_groups_sha256")  # absent from records made before amendment 3
 
 
 def official():
@@ -153,6 +153,10 @@ def group_weights(mac: Path, s, vocabs) -> dict | None:
     import pyarrow as pa
     import pyarrow.compute as pc
     tokens = json.loads(Path(s.weight_groups).read_text())["G1"]
+    digest = hashlib.sha256("\n".join(sorted(tokens)).encode()).hexdigest()
+    if not s.weight_groups_sha256 or digest != s.weight_groups_sha256:
+        raise ValueError(f"the G1 list in {s.weight_groups} has SHA-256 {digest[:16]}, not the fixed "
+                         f"{str(s.weight_groups_sha256)[:16]} (docs/DESIGN.md §18.3)")
     missing = [t for t in tokens if t not in vocabs["ad_feat1"]]
     if missing:
         raise ValueError(f"{len(missing)} G1 tokens are not in the official ad_feat1 vocabulary")
@@ -164,7 +168,7 @@ def group_weights(mac: Path, s, vocabs) -> dict | None:
         g1 += int(pc.sum(pc.is_in(col, value_set=value_set)).as_py() or 0)
     share = g1 / rows
     mean_r = s.g1_weight * share + (1 - share)
-    return {"g1_weight": s.g1_weight, "groups": len(tokens), "tokens_sha256": hashlib.sha256("\n".join(sorted(tokens)).encode()).hexdigest(),
+    return {"g1_weight": s.g1_weight, "groups": len(tokens), "tokens_sha256": digest,
             "training_rows": rows, "g1_rows": g1, "g1_share": share, "w_g1": s.g1_weight / mean_r, "w_other": 1 / mean_r,
             "g1_weight_share": s.g1_weight * share / mean_r, "vocab_indices": sorted(vocabs["ad_feat1"][t] for t in tokens)}
 
@@ -241,6 +245,11 @@ def train(a) -> Path:
     weighting = group_weights(Path(a.mac), s, vocabs)
     gw = None if weighting is None else (torch.tensor(weighting["vocab_indices"], device=device),
                                          float(weighting["w_g1"]), float(weighting["w_other"]))
+    if a.resume:  # review: a resumed run read its group list again and could train on another list than recorded
+        now_w = None if weighting is None else {k: v for k, v in weighting.items() if k != "vocab_indices"}
+        if now_w != rec.get("group_weighting"):
+            raise ValueError(f"the group weighting read on resume differs from the run's record: {now_w} vs "
+                             f"{rec.get('group_weighting')}")
     start, steps = 0, 0
     if rec is None:
         rec = {"upstream_commit": UPSTREAM_COMMIT, "args": vars(s), "parameters": int(sum(p.numel() for p in all_p)),
@@ -481,6 +490,7 @@ def parser() -> argparse.ArgumentParser:
         p.add_argument("--ckpt_after", nargs="*", default=None, help="default: train-17, train-18, train-19")
         p.add_argument("--g1_weight", type=float, default=None, help="amendment 3: weight of the G1 clicks' main loss")
         p.add_argument("--weight_groups", default=None, help="group_lists.json holding the fixed G1 tokens")
+        p.add_argument("--weight_groups_sha256", default=None, help="the fixed G1 list's SHA-256 (groups.json)")
     return ap
 
 
