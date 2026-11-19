@@ -32,7 +32,7 @@ from .experiments import (
     Menu,
     empty_arm_by_definition,
 )
-from .llm import AuditLog, ClovaClient, ScriptedLLM
+from .llm import AuditLog, ClovaClient, LLMError, ScriptedLLM
 from .session import (
     PLANNER_SYSTEM,
     VERDICT_KO,
@@ -306,7 +306,20 @@ def schema_five(groups: list[str]) -> dict:
     return s
 
 
-def plan_round(llm, items: list[dict], session: int, history: str | None, think: bool, role: str) -> list[dict]:
+def plan_round(llm, items: list[dict], session: int, history: str | None, think: bool, role: str,
+               attempts: int = 3) -> list[dict]:
+    """One planner turn, retried on API or JSON errors (every attempt stays in the audit log)."""
+    for i in range(attempts):
+        try:
+            return _plan_round(llm, items, session, history, think, role)
+        except LLMError:
+            if i == attempts - 1:
+                raise
+            time.sleep(10 * (i + 1))
+    return []
+
+
+def _plan_round(llm, items: list[dict], session: int, history: str | None, think: bool, role: str) -> list[dict]:
     neg = session == NEGATIVE_SESSION
     groups = list(FEATURE_GROUPS) + ([NEGATIVE_GROUP] if neg else [])
     lists = {"group": groups, "feature": list(ASSOC_FEATURES), "segment": SEGMENTS}
@@ -327,6 +340,7 @@ def run(scripted: bool = False, out: Path = OUT) -> dict:
     known = {e["id"] for e in items}
     cache: dict = {}
     record = {"arms": {a: {} for a in ARMS}, "common_round_1": {}}
+    dest = out / ("run_scripted.json" if scripted else "run.json")
     audit = AuditLog(out / "audit.jsonl")
 
     def client(k: int):
@@ -349,7 +363,7 @@ def run(scripted: bool = False, out: Path = OUT) -> dict:
                     rows.append(execute([control], day, cache, tested, Lond(), known_k)[0] | {"control": True})
                 rounds.append(rows)
             record["arms"][arm][k] = rounds
-    (out / ("run_scripted.json" if scripted else "run.json")).write_text(json.dumps(record, ensure_ascii=False, indent=1, default=str))
+        dest.write_text(json.dumps(record, ensure_ascii=False, indent=1, default=str))  # after every session
     return record
 
 
