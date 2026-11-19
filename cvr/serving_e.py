@@ -36,15 +36,16 @@ class ServerE:
         self._setup(run["args"], Path(ckpt), vocabs, codes, cal, threads, {"run": rid})
 
     @classmethod
-    def from_parts(cls, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path,
+    def from_parts(cls, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path | None,
                    threads: int = 1, info: dict | None = None) -> "ServerE":
-        """Any official model: its training arguments, state dict, vocabularies, calibrator group codes and file."""
+        """Any official model: its training arguments, state dict, vocabularies, calibrator group codes and file
+        (calibrator None: a model without a calibrator fitted for it serves raw probabilities only)."""
         self = cls.__new__(cls)
-        self._setup(args, Path(ckpt), vocabs, codes, Path(calibrator), threads, info or {})
+        self._setup(args, Path(ckpt), vocabs, codes, Path(calibrator) if calibrator else None, threads, info or {})
         return self
 
-    def _setup(self, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path, threads: int,
-               info: dict) -> None:
+    def _setup(self, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path | None,
+               threads: int, info: dict) -> None:
         import torch
         torch.set_num_threads(threads)
         self.torch = torch
@@ -57,9 +58,10 @@ class ServerE:
         self.vocabs, self.codes = vocabs, codes
         self.pad = {c: v[PAD] for c, v in vocabs.items()}  # the missing-value index of every official vocabulary
         self.oov: dict[str, int] = {}
-        self.glob, self.gs = load_domain_calibrators(calibrator)
+        self.glob, self.gs = load_domain_calibrators(calibrator) if calibrator else (None, None)
         self.info = info | {"checkpoint": str(ckpt), "checkpoint_sha256": R.sha256(ckpt), "model": a.model,
-                            "calibrator": calibrator.name, "lambda": float(self.gs.lam), "threads": threads}
+                            "calibrator": calibrator.name if calibrator else None,
+                            "lambda": float(self.gs.lam) if self.gs else None, "threads": threads}
 
     @staticmethod
     def columns() -> list[str]:
@@ -111,6 +113,8 @@ class ServerE:
         return self.score(self.tensors(rows))
 
     def calibrate(self, p: np.ndarray, rows: list[dict]) -> np.ndarray:
+        if self.gs is None:
+            raise ValueError("this model has no calibrator fitted for it")
         g = np.array([self.codes.get(r["ad_feat1"], -1) for r in rows])  # -1: absent from the training statistics
         return self.gs.predict(p, g)
 

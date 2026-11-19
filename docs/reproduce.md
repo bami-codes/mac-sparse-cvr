@@ -104,7 +104,7 @@ PYTHONPATH=. uv run python scripts/aux_label_control.py runs/p2_train00_02/20261
 
 결과: [연구 A](results/calibration_data_study.md), [연구 B](results/aux_label_control.md).
 
-### 2지망 에이전트: 전환 단서 가설 생성·검증 (DESIGN §14)
+### 전환 단서 가설 생성·검증 에이전트 (DESIGN §14)
 
 HyperCLOVA X 키는 환경 변수 `CLOVASTUDIO_API_KEY` 또는 git이 무시하는 `.secrets/clovastudio_api_key`에서 읽는다. 키 없이 도는 경로는 `--scripted`다.
 
