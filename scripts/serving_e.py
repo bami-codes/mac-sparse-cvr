@@ -46,6 +46,12 @@ POOL, CANDIDATES = 20000, 100
 CLICK_WARMUP, CLICKS, CLICK_BLOCK = 200, 10000, 500
 REQ_WARMUP, REQUESTS, REQ_BLOCK = 200, 6000, 50
 SHARED_CHECK = 320
+SAVED_ON = "mac"  # the saved evaluation predictions were made on this Mac's CPU, in batches of 4,096
+# amendment after the Linux check failed (§18.12.1): on another machine, one row at a time is compared with the
+# cross-device tolerance of study E's device check (scripts/device_compare.py); the batch path, added on every machine,
+# keeps the 1e-6 tolerance. On the Linux server one MoAE row differed by 1.80e-6 from the saved value and by 1.86e-6
+# from the same server's own batch result (scripts/serving_device_diff.py): x86 rounds batch size 1 differently.
+CROSS_MACHINE_ROW_TOL = 1e-5
 SESSIONS_PER_MACHINE = 3
 DIR = Path("runs/e_study/serving_v3")
 CODE = ("cvr/latency_v3.py", "cvr/serving_e.py", "scripts/serving_e.py", "scripts/serving_sessions.sh")
@@ -146,19 +152,24 @@ def check(name: str) -> dict:
     reqs = requests_of(plan, rows)[:SHARED_CHECK]
     served_rows = [rows[int(i)] for i in plan["check"]]
     out = {"name": name, "machine": machine(), "code": code_version(), "models": {}}
+    row_tol = NN_SINGLE_VS_BATCH_TOL if name == SAVED_ON else CROSS_MACHINE_ROW_TOL
+    tols = {"max_abs_diff_raw": row_tol, "max_abs_diff_calibrated": row_tol,
+            "max_abs_diff_batch_raw": NN_SINGLE_VS_BATCH_TOL, "max_abs_diff_shared_vs_per_row": NN_SINGLE_VS_BATCH_TOL}
     for m, server in srv.items():
         saved = plan[f"p_{m}"]
         raw = np.array([server.raw([r])[0] for r in served_rows])
         cal = np.array([server.predict([r])[0] for r in served_rows])
+        batch = server.raw(served_rows)
         _, ref = Q.load_calibrated(meta["runs"][m], "iii", "main", saved, plan["check_group"])
         d_req = max(float(np.abs(server.predict([c | o for c in cs]) - server.predict_request(o, cs)).max())
                     for o, cs in reqs)
         res = {"max_abs_diff_raw": float(np.abs(raw - saved).max()), "max_abs_diff_calibrated": float(np.abs(cal - ref).max()),
+               "max_abs_diff_batch_raw": float(np.abs(batch - saved).max()),
+               "rows_raw_above_1e-6": int((np.abs(raw - saved) > NN_SINGLE_VS_BATCH_TOL).sum()),
                "max_abs_diff_shared_vs_per_row": d_req, "rows": int(raw.size), "requests": len(reqs),
-               "tolerance": NN_SINGLE_VS_BATCH_TOL, "oov": dict(server.oov)}
+               "tolerances": tols, "oov": dict(server.oov)}
         out["models"][m] = res
-        bad = [k for k in ("max_abs_diff_raw", "max_abs_diff_calibrated", "max_abs_diff_shared_vs_per_row")
-               if not (np.isfinite(res[k]) and res[k] <= NN_SINGLE_VS_BATCH_TOL)]
+        bad = [k for k, t in tols.items() if not (np.isfinite(res[k]) and res[k] <= t)]
         if bad:
             raise CheckFailed(f"{m} on {name}: {bad} {res}")
     (DIR / f"check_{name}.json").write_text(json.dumps(out, indent=2))
