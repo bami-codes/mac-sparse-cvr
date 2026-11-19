@@ -85,10 +85,11 @@ class ClovaClient:
         except json.JSONDecodeError as e:
             raise LLMError(f"structured output is not valid JSON: {e}") from e
 
-    def text(self, system: str, user: str, role: str, max_tokens: int = 4096) -> str:
+    def text(self, system: str, user: str, role: str, max_tokens: int = 4096, thinking: str = "none") -> str:
+        """Free text. thinking is HCX-007's reasoning effort: none, low, medium or high."""
         body = {"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "maxCompletionTokens": max_tokens, "temperature": self.temperature, "seed": self.seed,
-                "thinking": {"effort": "none"}}
+                "thinking": {"effort": thinking}}
         return self._post(body, role)
 
 
@@ -103,7 +104,7 @@ class ScriptedLLM:
         self.audit.write({"role": role, "model": "scripted", "request": {"system": system, "user": user}, "content": out})
         return out
 
-    def text(self, system: str, user: str, role: str, max_tokens: int = 4096) -> str:
+    def text(self, system: str, user: str, role: str, max_tokens: int = 4096, thinking: str = "none") -> str:
         out = self.t.pop(0)
         self.audit.write({"role": role, "model": "scripted", "request": {"system": system, "user": user}, "content": out})
         return out

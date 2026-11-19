@@ -101,6 +101,15 @@ def boot_p(reps: np.ndarray) -> float:
     return float(min(1.0, max(2 * min((reps <= 0).mean(), (reps >= 0).mean()), 1 / BOOT_REPS)))
 
 
+def wald_p(point: float, reps: np.ndarray) -> float:
+    """Two-sided normal-approximation p-value with the bootstrap standard error. Unlike boot_p it is not floored at
+    1 / BOOT_REPS, so it can pass a Benjamini-Hochberg threshold over a few hundred tests (0.05 / 263 = 0.00019)."""
+    se = float(reps.std(ddof=1))
+    if se == 0:
+        return 1.0 if point == 0 else 0.0
+    return float(2 * norm.sf(abs(point) / se))
+
+
 def insufficient(tool: str, reason: str, **kw) -> dict:
     return {"tool": tool, "status": "insufficient_data", "reason": reason, **kw}
 
@@ -240,7 +249,8 @@ class Menu:
         if np.ptp(reps) == 0 and point != 0:  # resampling cannot vary (e.g. one user): no interval, no p-value
             return insufficient(tool, "bootstrap replicates do not vary", **extra)
         return {"tool": tool, "status": "ok", **extra, "estimate": float(point),
-                "ci95": np.quantile(reps, [0.025, 0.975]).tolist(), "p_value": boot_p(reps)}
+                "ci95": np.quantile(reps, [0.025, 0.975]).tolist(), "p_value": boot_p(reps),
+                "se": float(reps.std(ddof=1)), "p_wald": wald_p(point, reps)}
 
     def _loss_delta(self, group: str, replicate: int = 0) -> np.ndarray:
         y = self._y

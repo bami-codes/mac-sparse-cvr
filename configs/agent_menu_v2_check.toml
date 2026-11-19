@@ -1,0 +1,27 @@
+# Agent v2 round menus (docs/DESIGN.md §19): the final run's menu models, scored on another day.
+# Every menu model shares the full model's number of rounds with deterministic settings, so ablation
+# differences come from the inputs only.
+name = "agent_menu_v2_check"
+seed = 2026
+fixed_rounds = true
+
+[data]
+root = "data/raw/mac/train"
+discovery = ["train-05.parquet", "train-06.parquet"]
+confirmation = ["train-07.parquet"]
+
+[groups]
+n_min = 500
+c_min = 20
+c_dense = 50
+
+[lgb]
+learning_rate = 0.05
+num_leaves = 63
+min_data_in_leaf = 200
+feature_fraction = 0.9
+bagging_fraction = 0.9
+bagging_freq = 1
+num_threads = 8
+cat_smooth = 50.0
+min_data_per_group = 200
