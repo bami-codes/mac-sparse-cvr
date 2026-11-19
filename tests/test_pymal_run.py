@@ -354,3 +354,49 @@ def test_the_g1_list_must_be_the_fixed_one_at_start_and_on_resume(tree, tmp_path
     assert list_sha(groups) == fixed
     R.train(R.parser().parse_args(base + ["--resume", str(out)]))  # the same list: the run continues
     assert json.loads((out / "run.json").read_text())["group_weighting"]["tokens_sha256"] == fixed
+
+
+# ------------------------------------------------------------------ study E serving (cvr/serving_e.py)
+def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, monkeypatch):
+    import pickle
+
+    from cvr import serving_e as S
+    from cvr import study_e as E
+    from cvr import study_e_eval as Q
+    from cvr.calibration import GlobalPlatt, fit_group_shrunk_exact
+    from cvr.domain_models import save_domain_calibrators
+    _, mac = tree
+    run = ours(tree, tmp_path / "run", TRAIN[:1], ["train-00.parquet"])
+    ckpt = run / "model_after_train-00.pt"
+    D, _ = R.official()
+    vocabs = D.get_vocabs(str(mac / "vocabs"))
+    # a calibrator for this synthetic run, saved where the study keeps them
+    monkeypatch.setattr(E, "OUT", tmp_path / "e_study")
+    rid = "MoAE_synthetic"
+    (tmp_path / "e_study" / "q2" / "calibrators").mkdir(parents=True)
+    table = pq.read_table(mac / "train" / "train-01.parquet")
+    toks = sorted(set(table.column("ad_feat1").to_pylist()))
+    codes = {t: i for i, t in enumerate(toks)}
+    with open(mac / "cached" / "train-01.pkl", "rb") as f:
+        ds = D.MALDataset(pickle.load(f))
+    model, _, _ = R.build(argparse.Namespace(**json.loads((run / "run.json").read_text())["args"]), vocabs, torch.device("cpu"))
+    model.load_state_dict(torch.load(ckpt))
+    model.eval()
+    with torch.no_grad():
+        p_batch = model(ds.static_user[:, 1:], ds.static_ad, ds.mm_arr, ds.seq_arr)["last"][:, 1].numpy().astype(np.float64)
+    y = np.asarray(ds.data["last"])
+    g = np.array([codes[t] for t in table.column("ad_feat1").to_pylist()])
+    glob = GlobalPlatt.fit(p_batch, y)
+    gs, _ = fit_group_shrunk_exact(p_batch, y, g, glob, 10.0)
+    save_domain_calibrators(glob, gs, Q.calibrator_path(rid, "iii", "main"))
+
+    server = S.ServerE(rid, ckpt, vocabs, codes, threads=1)
+    rows = table.select(S.ServerE.columns()).to_pylist()
+    idx = [0, 7, 99, 500, len(rows) - 1]
+    user, ad, mm, seq = server.tensors([rows[i] for i in idx])
+    assert torch.equal(user, ds.static_user[idx]) and torch.equal(ad, ds.static_ad[idx])  # the official mapping
+    assert torch.equal(seq, ds.seq_arr[idx]) and torch.equal(mm, ds.mm_arr[idx])          # and layout
+    one = np.array([server.raw([rows[i]])[0] for i in idx])  # one row at a time, as served
+    assert np.abs(one - p_batch[idx]).max() <= 1e-6
+    q = np.array([server.predict([rows[i]])[0] for i in idx])
+    assert np.abs(q - gs.predict(p_batch[idx], g[idx])).max() <= 1e-6
