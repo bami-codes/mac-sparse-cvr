@@ -265,20 +265,25 @@ def effect_text(r: dict) -> str:
     return f" LogLoss 차이 {e:+.1e} [95% {lo:+.1e}, {hi:+.1e}] (음수 = 그룹을 넣은 모델이 나음)"
 
 
-def history_text(rounds: list[list[dict]], with_results: bool) -> str:
-    """What the planner sees about earlier rounds, written by code."""
+def history_ids(rounds: list[list[dict]]) -> set[str]:
+    return {f"R{k}-{j}" for k, rows in enumerate(rounds, start=1) for j in range(1, len(rows) + 1)}
+
+
+def history_text(rounds: list[list[dict]], with_results: bool, ids: bool = False) -> str:
+    """What the planner sees about earlier rounds, written by code. With ids (v2.1) every line can be cited."""
     lines = []
     for k, rows in enumerate(rounds, start=1):
-        for r in rows:
+        for j, r in enumerate(rows, start=1):
+            tag = f"[R{k}-{j}]" if ids else f"R{k}"
             if r["verdict"] == "invalid":
                 if with_results:
-                    lines.append(f"- R{k} 무효: {'; '.join(r['issues'])}")
+                    lines.append(f"- {tag} 무효: {'; '.join(r['issues'])}")
                 continue
             if r["verdict"] == "repeat" or not with_results:
-                lines.append(f"- R{k} {r['test_question']}")
+                lines.append(f"- {tag} {r['test_question']}")
                 continue
             effect = effect_text(r)
-            lines.append(f"- R{k} [{VERDICT_KO.get(r['verdict'], r['verdict'])}] {r['test_question']}{effect}")
+            lines.append(f"- {tag} [{VERDICT_KO.get(r['verdict'], r['verdict'])}] {r['test_question']}{effect}")
     head = ("이전 라운드 결과 (코드가 그날 자료로 계산, 판정은 순서대로 온라인 FDR 적용):" if with_results
             else "이전 라운드에 이미 검정한 질문 (결과는 알려 주지 않음):")
     return head + "\n" + "\n".join(lines) + "\n같은 질문을 다시 제안하면 그 자리는 점수가 없다."
@@ -290,11 +295,51 @@ PLANNER_V2 = (PLANNER_SYSTEM.replace("3~8개", "정확히 5개").replace(_AB, ""
               .replace("검증 방법(test)은 네 가지", "검증 방법(test)은 세 가지") + """
 - 인과 주장(무언가를 바꾸면 전환이 늘어난다)은 관측 자료로 확인할 수 없으므로 이번에는 제안하지 않는다.
 - 이번 라운드의 가설은 다음 날 자료로 검정한다. 이미 검정한 질문을 다시 제안하지 않는다.""")
+PLANNER_V21 = PLANNER_V2 + """
+- 이전 라운드 항목을 근거로 쓸 때는 evidence에 그 항목의 id(예: "R1-2")를 쓴다."""
+REPAIR = """방금 낸 계획 중 일부 자리는 코드 검사에서 실행할 수 없다고 판정됐다. 사유를 읽고, 그 자리만 새 가설로 바꾼다.
+새 가설도 같은 규칙을 따른다. 특히 association에서 feature와 segment가 같은 조건을 가리키면 한쪽 집단이 정의상 비므로
+쓸 수 없다. 이미 검정한 질문과 같은 라운드 안의 다른 가설도 다시 내지 않는다."""
 THINK_EXTRA = """
 이번 답은 JSON이 아니라 글로 쓴다. 가설 5개마다 statement, claim_type, test, group 또는 feature, segment, segment_b,
 direction, evidence를 빠짐없이 적는다."""
 TRANSCRIBE = """너는 받은 계획 글을 주어진 JSON 스키마로 옮긴다. 가설의 내용, 개수, 순서를 바꾸지 않는다.
 글에 없는 값은 지어내지 않는다. 글이 가설을 5개보다 적게 담고 있으면 있는 것만 옮긴다."""
+
+
+def slot_problems(hyps: list[dict], tested: set[str], known: set[str]) -> dict[int, str]:
+    """Slots that would score nothing, found before anything runs: invalid, already tested, or a duplicate."""
+    out, seen = {}, set()
+    for i, raw in enumerate(hyps):
+        h = normalize(raw)
+        issues = validate(h, known) + (["인과 주장은 이번에 점수가 없다"] if h["claim_type"] == "causal" else [])
+        if issues:
+            out[i] = "; ".join(issues)
+            continue
+        key = canon(h)[0]
+        if key in tested:
+            out[i] = f"이미 검정한 질문이다: {test_question(h)}"
+        elif key in seen:
+            out[i] = f"같은 라운드 안의 다른 가설과 같은 질문이다: {test_question(h)}"
+        seen.add(key)
+    return out
+
+
+def repair(llm, user: str, hyps: list[dict], problems: dict[int, str], groups: list[str], role: str) -> list[dict]:
+    """One validator round trip: return the code's reasons, take replacements for those slots only."""
+    lines = "\n".join(f"- 자리 {i + 1}: {why}" for i, why in sorted(problems.items()))
+    msg = (f"{user}\n\n방금 낸 계획:\n{json.dumps({'hypotheses': hyps}, ensure_ascii=False)}\n\n실행할 수 없는 자리:\n{lines}"
+           f"\n\n이 {len(problems)}자리만 새 가설로 바꿔서 정확히 {len(problems)}개를 낸다.")
+    s = schema_five(groups)
+    s["properties"]["hypotheses"] |= {"minItems": len(problems), "maxItems": len(problems)}
+    try:
+        new = llm.structured(PLANNER_V21 + "\n" + REPAIR, msg, s, role=role).get("hypotheses", [])
+    except LLMError:
+        return hyps
+    out = list(hyps)
+    for i, h in zip(sorted(problems), new):
+        out[i] = h
+    return out
 
 
 def schema_five(groups: list[str]) -> dict:
@@ -306,12 +351,20 @@ def schema_five(groups: list[str]) -> dict:
     return s
 
 
+def round_context(items: list[dict], session: int, history: str | None) -> tuple[str, list[str], dict]:
+    neg = session == NEGATIVE_SESSION
+    groups = list(FEATURE_GROUPS) + ([NEGATIVE_GROUP] if neg else [])
+    lists = {"group": groups, "feature": list(ASSOC_FEATURES), "segment": SEGMENTS}
+    user = f"근거 자료:\n{evidence_text(items, neg)}\n\n사용 가능한 인자:\n{json.dumps(lists, ensure_ascii=False)}"
+    return (user + (f"\n\n{history}" if history else "")), groups, lists
+
+
 def plan_round(llm, items: list[dict], session: int, history: str | None, think: bool, role: str,
-               attempts: int = 3) -> list[dict]:
+               attempts: int = 3, system: str = PLANNER_V2) -> list[dict]:
     """One planner turn, retried on API or JSON errors (every attempt stays in the audit log)."""
     for i in range(attempts):
         try:
-            return _plan_round(llm, items, session, history, think, role)
+            return _plan_round(llm, items, session, history, think, role, system)
         except LLMError:
             if i == attempts - 1:
                 raise
@@ -319,36 +372,47 @@ def plan_round(llm, items: list[dict], session: int, history: str | None, think:
     return []
 
 
-def _plan_round(llm, items: list[dict], session: int, history: str | None, think: bool, role: str) -> list[dict]:
-    neg = session == NEGATIVE_SESSION
-    groups = list(FEATURE_GROUPS) + ([NEGATIVE_GROUP] if neg else [])
-    lists = {"group": groups, "feature": list(ASSOC_FEATURES), "segment": SEGMENTS}
-    user = f"근거 자료:\n{evidence_text(items, neg)}\n\n사용 가능한 인자:\n{json.dumps(lists, ensure_ascii=False)}"
-    if history:
-        user += f"\n\n{history}"
+def _plan_round(llm, items: list[dict], session: int, history: str | None, think: bool, role: str,
+                system: str) -> list[dict]:
+    user, groups, lists = round_context(items, session, history)
     if not think:
-        plan = llm.structured(PLANNER_V2, user, schema_five(groups), role=role)
+        plan = llm.structured(system, user, schema_five(groups), role=role)
     else:
-        draft = llm.text(PLANNER_V2 + THINK_EXTRA, user, role=f"{role}_think", max_tokens=8192, thinking="medium")
+        draft = llm.text(system + THINK_EXTRA, user, role=f"{role}_think", max_tokens=8192, thinking="medium")
         plan = llm.structured(TRANSCRIBE, f"{draft}\n\n사용 가능한 인자:\n{json.dumps(lists, ensure_ascii=False)}",
                               schema_five(groups), role=f"{role}_transcribe")
     return list(plan.get("hypotheses", []))[:SLOTS]
 
 
-def run(scripted: bool = False, out: Path = OUT) -> dict:
+def run(scripted: bool = False, out: Path = OUT, v21: bool = False) -> dict:
+    """v2 (§19) or, with v21, the same run with the repair step and citable feedback ids (§19.9)."""
     items = json.loads((out / "evidence.json").read_text())["items"]
     known = {e["id"] for e in items}
     cache: dict = {}
-    record = {"arms": {a: {} for a in ARMS}, "common_round_1": {}}
-    dest = out / ("run_scripted.json" if scripted else "run.json")
-    audit = AuditLog(out / "audit.jsonl")
+    record = {"version": "v2.1" if v21 else "v2", "arms": {a: {} for a in ARMS}, "common_round_1": {}, "repairs": []}
+    tag = "_v21" if v21 else ""
+    dest = out / (f"run{tag}_scripted.json" if scripted else f"run{tag}.json")
+    audit = AuditLog(out / f"audit{tag}.jsonl")
+    system = PLANNER_V21 if v21 else PLANNER_V2
+
+    def turn(llm, k, rounds, arm, tested, known_now, role, history, think):
+        hyps = plan_round(llm, items, k, history, think=think, role=role, system=system)
+        if v21:
+            probs = slot_problems(hyps, tested, known_now)
+            if probs:
+                user, groups, _ = round_context(items, k, history)
+                hyps = repair(llm, user, hyps, probs, groups, role=f"{role}_repair")
+                after = slot_problems(hyps, tested, known_now)
+                record["repairs"].append({"role": role, "before": len(probs), "after": len(after)})
+        return hyps
 
     def client(k: int):
-        return ScriptedLLM(audit, scripted_plans(k), [scripted_text(k)] * 8) if scripted else ClovaClient(audit, seed=k)
+        return ScriptedLLM(audit, scripted_plans(k), [scripted_text(k)] * 24) if scripted else ClovaClient(audit, seed=k)
 
     for k in range(1, SESSIONS + 1):
         llm = client(k)
-        r1 = plan_round(llm, items, k, None, think=False, role=f"s{k}_r1")
+        known_1 = known | ({FALSE_EVIDENCE["id"]} if k == NEGATIVE_SESSION else set())
+        r1 = turn(llm, k, [], None, set(), known_1, f"s{k}_r1", None, False)
         record["common_round_1"][k] = r1
         for arm in ARMS:
             neg = k == NEGATIVE_SESSION
@@ -356,9 +420,10 @@ def run(scripted: bool = False, out: Path = OUT) -> dict:
             tested, lond, rounds = set(), Lond(), []
             control = control_hypothesis({"hypotheses": [{"id": i} for i in range(len(r1))]}) if neg else None
             for day in range(1, ROUNDS + 1):
-                hyps = r1 if day == 1 else plan_round(llm, items, k, history_text(rounds, arm != "H-mem"),
-                                                     think=arm == "H-fb-think", role=f"s{k}_{arm}_r{day}")
-                rows = execute(hyps, day, cache, tested, lond, known_k)
+                known_now = known_k | (history_ids(rounds) if v21 else set())
+                hyps = r1 if day == 1 else turn(llm, k, rounds, arm, tested, known_now, f"s{k}_{arm}_r{day}",
+                                                history_text(rounds, arm != "H-mem", ids=v21), arm == "H-fb-think")
+                rows = execute(hyps, day, cache, tested, lond, known_now)
                 if control is not None and day == 1:  # outside the five slots and the score
                     rows.append(execute([control], day, cache, tested, Lond(), known_k)[0] | {"control": True})
                 rounds.append(rows)
@@ -429,7 +494,8 @@ def run_rules(out: Path = OUT) -> dict:
 # ---------------------------------------------------------------------------------------------------- scoring
 
 
-def score(out: Path = OUT, run_file: str = "run.json") -> dict:
+def score(out: Path = OUT, run_file: str = "run.json", audit_file: str = "audit.jsonl",
+          summary_file: str = "summary.json") -> dict:
     passing = {d: passing_set(json.loads((out / f"exhaustive_r{d}.json").read_text())["results"]) for d in MENUS}
     run_rec = json.loads((out / run_file).read_text())
     rules = json.loads((out / "rules.json").read_text())
@@ -461,12 +527,13 @@ def score(out: Path = OUT, run_file: str = "run.json") -> dict:
                        for k in arms["H-fb"]} for d in (2, 3)}
     controls = {arm: [r["verdict"] for rounds in s.values() for rows in rounds for r in rows if r.get("control")]
                 for arm, s in run_rec["arms"].items()}
-    usage = usage_summary(out / "audit.jsonl")
+    usage = usage_summary(out / audit_file)
     summary = {"passing_set_sizes": {DAYS[d]: len(p) for d, p in passing.items()}, "menu_tests": len(tests),
                "arms": arms, "baselines": base, "feedback_pairs_fb_minus_mem": pairs, "think_pairs_minus_fb": think,
                "feedback_helped_rounds": [r for r, v in pairs.items() if all(x > 0 for x in v.values())],
                "negative_control": controls, "usage": usage}
-    (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1))
+    summary["repairs"] = run_rec.get("repairs", [])
+    (out / summary_file).write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     return summary
 
 
@@ -487,7 +554,7 @@ def usage_summary(audit: Path) -> dict:
     rows = [json.loads(line) for line in audit.read_text().splitlines() if line.strip()]
     out: dict = {}
     for r in rows:
-        kind = "think" if r["role"].endswith("_think") else "transcribe" if r["role"].endswith("_transcribe") else "plan"
+        kind = next((s for s in ("think", "transcribe", "repair") if r["role"].endswith(f"_{s}")), "plan")
         u = r.get("usage") or {}
         o = out.setdefault(kind, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "thinking_tokens": 0,
                                   "seconds": 0.0})
@@ -508,7 +575,7 @@ def scripted_plans(k: int) -> list[dict]:
              "feature": f, "segment": s, "direction": "higher_cvr_with_feature"}
             for i, (f, s) in enumerate(itertools.product(ASSOC_FEATURES, SEGMENTS[: 3]), start=1)]
     plans = []
-    for j in range(8):
+    for j in range(24):
         chunk = base[(j * SLOTS + k) % len(base):][:SLOTS]
         plans.append({"hypotheses": (chunk + base)[:SLOTS]})
     return plans
@@ -522,6 +589,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["evidence", "exhaustive", "run", "rules", "score"])
     ap.add_argument("--scripted", action="store_true")
+    ap.add_argument("--v21", action="store_true", help="the repair step and citable feedback ids (§19.9)")
     a = ap.parse_args()
     if a.cmd == "evidence":
         print(json.dumps(evidence(), ensure_ascii=False, indent=1))
@@ -530,9 +598,11 @@ if __name__ == "__main__":
             r = exhaustive(d)
             print(DAYS[d], r["tests"], "tests", r["seconds"], "s", flush=True)
     elif a.cmd == "run":
-        run(scripted=a.scripted)
+        run(scripted=a.scripted, v21=a.v21)
     elif a.cmd == "rules":
         run_rules()
+    elif a.v21:
+        print(json.dumps(score(run_file="run_v21.json", audit_file="audit_v21.jsonl", summary_file="summary_v21.json"), indent=1))
     else:
         print(json.dumps(score(), indent=1))
         sys.exit(0)

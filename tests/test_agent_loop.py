@@ -160,3 +160,34 @@ def test_a_scripted_run_goes_through_and_keeps_the_rules(tmp_path, monkeypatch):
         assert all(len(r) == L.SLOTS for r in json.loads((out / "rules.json").read_text())[name])
     assert set(s["feedback_pairs_fb_minus_mem"]) == {"R2", "R3"}
     assert 0 <= s["baselines"]["random"]["expected_hits_per_round"][0] <= L.SLOTS
+
+
+def test_v21_repairs_bad_slots_and_lets_feedback_be_cited(tmp_path, monkeypatch):
+    from cvr.agent.session import validate
+    for d, seed in ((1, 21), (2, 22), (3, 23)):
+        folder = tmp_path / f"menu_{d}"
+        folder.mkdir()
+        synthetic_frame(seed, {"category_assoc"}).write_parquet(folder / "confirmation_predictions.parquet")
+        (folder / "precompute.json").write_text(json.dumps(META))
+    monkeypatch.setattr(L, "MENUS", {d: tmp_path / f"menu_{d}" for d in (1, 2, 3)})
+    monkeypatch.setattr(L, "SESSIONS", 2)
+    out = tmp_path / "out"
+    out.mkdir()
+    items = [{"id": f"E{i}", "title": f"t{i}", "text": "x", "numbers": []} for i in range(1, 7)]
+    (out / "evidence.json").write_text(json.dumps({"items": items}, ensure_ascii=False))
+    rec = L.run(scripted=True, out=out, v21=True)
+    assert rec["version"] == "v2.1" and rec["repairs"]  # the scripted plans repeat questions, so repairs happen
+    audit = [json.loads(x) for x in (out / "audit_v21.jsonl").read_text().splitlines()]
+    assert any(a["role"].endswith("_repair") for a in audit)
+    fb = next(a for a in audit if a["role"] == "s1_H-fb_r2")["request"]["user"]
+    assert "[R1-1]" in fb
+    # an id of an earlier round is accepted as evidence; an unknown one is not
+    h = L.normalize(L.hyp("ablation_effect", "all", group="context", evidence_ids=("R1-2",)))
+    assert not validate(h, {"E1"} | L.history_ids([[{}, {}]]))
+    assert validate(h, {"E1"})
+    # slot problems are found before anything runs
+    bad = [L.hyp("association", "high_visual_similarity", feature="high_visual_similarity",
+                 expected="higher_cvr_with_feature"),
+           L.hyp("ablation_effect", "all", group="context"), L.hyp("ablation_effect", "all", group="context")]
+    probs = L.slot_problems(bad, set(), {"E1"})
+    assert set(probs) == {0, 2} and "같은 라운드" in probs[2]
