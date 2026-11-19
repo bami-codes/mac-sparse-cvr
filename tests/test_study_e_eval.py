@@ -298,3 +298,36 @@ def test_the_click_weighted_difference_of_differences_equals_its_definition():
     m1, m2 = g < 10, g >= 10
     want = (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean()) - (M.bce(y[m2], a[m2]).mean() - M.bce(y[m2], b[m2]).mean())
     assert abs(r["did"] - want) < 1e-12 and abs(r["diff_set_1"] - (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean())) < 1e-12
+
+
+@pytest.mark.parametrize("case", ["q1_no_gauc", "q2_no_p_last", "q2_nan"])
+def test_a_malformed_test_prediction_is_found_before_the_claim(tmp_path, monkeypatch, case):
+    path = write_case(tmp_path, monkeypatch)
+    F = add_test_and_records(tmp_path, monkeypatch, path)
+    E.OUT.joinpath("config_choice.json").write_text(path.read_text())
+    Q.calibrate(path)
+    F.freeze()
+    F.dryrun()
+    done_predicting(F)
+    rid = Q.run_id("MoAE", 0.003, 0.3, 2026)
+    name = "q1" if case.startswith("q1") else "q2"
+    if name == "q1":
+        f = Q.prediction_file("q1", "model_after_train-19", Q.checkpoint_sha(rid, "train-19.parquet"), "test.parquet")
+        meta = json.loads(f.with_suffix(".json").read_text())
+        meta.pop("gauc")  # review: this raised KeyError after the claim
+        f.with_suffix(".json").write_text(json.dumps(meta))
+    else:
+        f = Q.prediction_file("research", Q.CKPT, Q.checkpoint_sha(rid), "test.parquet")
+        z = dict(np.load(f))
+        if case == "q2_no_p_last":
+            z.pop("p_last")
+        else:
+            z["p_last"] = z["p_last"].copy()
+            z["p_last"][5] = np.nan
+        np.savez(f, **z)
+        meta = json.loads(f.with_suffix(".json").read_text())
+        meta["sha256"] = hashlib.sha256(f.read_bytes()).hexdigest()  # the record matches; only the content is wrong
+        f.with_suffix(".json").write_text(json.dumps(meta))
+    with pytest.raises(F.CheckFailed):
+        F.test(name)
+    assert not (F.FROZEN / f"evaluation_{name}.lock").exists()

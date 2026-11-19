@@ -369,8 +369,17 @@ def check_test_predictions(name: str, m: dict) -> None:
         if meta.get("sha256") != sha256(f) or meta.get("checkpoint_sha256") != ck or meta.get("source_sha256") != m["official_test_sha256"]:
             raise CheckFailed(f"{rid}: the test predictions do not match their record, checkpoint or the official test")
         z = np.load(f)
-        if "y_last" not in z.files or not np.array_equal(z["y_last"].astype(np.int8), y):
+        if not {"p_last", "user", "y_last"} <= set(z.files):  # review: a missing field raised only after the claim
+            raise CheckFailed(f"{rid}: test predictions lack p_last, user or y_last")
+        p = z["p_last"]
+        if not (p.size == z["user"].size == z["y_last"].size == y.size):
+            raise CheckFailed(f"{rid}: {p.size} predictions, {z['user'].size} users, {z['y_last'].size} labels, {y.size} rows")
+        if not (np.isfinite(p).all() and (p >= 0).all() and (p <= 1).all()):
+            raise CheckFailed(f"{rid}: test probabilities outside [0, 1] or not finite")
+        if not np.array_equal(z["y_last"].astype(np.int8), y):
             raise CheckFailed(f"{rid}: test labels differ from the official test file read again")
+        if name == "q1" and not all(np.isfinite(meta.get(k, np.nan)) for k in ("auc", "gauc")):
+            raise CheckFailed(f"{rid}: the Q1 record lacks a finite AUC or GAUC")
 
 
 def test(name: str) -> dict:
