@@ -105,11 +105,41 @@ def group_metrics(y: np.ndarray, q: np.ndarray, g: np.ndarray, members: np.ndarr
             "groups": r["groups"], "rows": r["rows"]}
 
 
-def evaluate(y: np.ndarray, q: np.ndarray, g: np.ndarray, sets: dict[str, np.ndarray]) -> dict:
+def evaluate(y: np.ndarray, q: np.ndarray, g: np.ndarray, sets: dict[str, np.ndarray], users=None) -> dict:
+    """Group metrics on every set, and overall LogLoss, AUC, O/E and (with users) the click-weighted GAUC."""
     from sklearn.metrics import roc_auc_score
-    return {k: group_metrics(y, q, g, v) for k, v in sets.items()} | {
-        "overall": {"logloss": float(M.bce(y, q).mean()), "auc": float(roc_auc_score(y, q)),
-                    "O_over_E": float(y.sum() / q.sum())}}
+    overall = {"logloss": float(M.bce(y, q).mean()), "auc": float(roc_auc_score(y, q)), "O_over_E": float(y.sum() / q.sum())}
+    if users is not None:  # amendment 5: listed in §18.5 but missing from the selection run's rows
+        overall["gauc"] = M.gauc(y, q, users)["gauc"]
+    return {k: group_metrics(y, q, g, v) for k, v in sets.items()} | {"overall": overall}
+
+
+# amendment 5 (before the official test): values in the plan but not in the V2 selection record; the dry run records
+# their V2 values instead of reproducing them, and refuses any other difference between the two sets of keys
+ADDED_AFTER_SELECTION = {"Q3 click ii: (MoAE - BASE) on G1 minus on C", "Q3 click raw: (MoAE - BASE) on G1 minus on C"}
+
+
+def did_click_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, seed: int) -> dict:
+    """(click LogLoss_1(A) - click LogLoss_1(B)) - (the same on set 2): each set weights its clicks equally; one user
+    resample per replicate for both sets; seed pairs averaged (amendment 1's click-weighted Q3, added in amendment 5)."""
+    _, ui = np.unique(users, return_inverse=True)
+    U = ui.max() + 1
+    d = np.mean([M.bce(y, pa) - M.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
+    parts = []
+    for members in (set_1, set_2):
+        m = np.isin(g, members)
+        parts.append((np.bincount(ui[m], minlength=U).astype(float), np.bincount(ui[m], weights=d[m], minlength=U)))
+
+    def stat(w):
+        v = [float(w @ tot / (w @ n)) for n, tot in parts]
+        return v[0] - v[1], v
+
+    point, (d1, d2) = stat(np.ones(U))
+    rng = np.random.default_rng(seed)
+    reps_ = np.array([stat(np.bincount(rng.integers(U, size=U), minlength=U).astype(float))[0] for _ in range(reps)])
+    lo, hi = np.quantile(reps_, [0.025, 0.975])
+    return {"did": point, "diff_set_1": d1, "diff_set_2": d2, "ci95": [float(lo), float(hi)], "reps": reps,
+            "users": int(U), "seed_pairs": len(a)}
 
 
 def did_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, seed: int) -> dict:

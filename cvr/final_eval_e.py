@@ -225,7 +225,7 @@ def q2_values(name: str, manifest: dict) -> dict:
                 for rule in ("main", "aggregate"):
                     q["ii"], q[f"{meth}_{rule}"] = Q.load_calibrated(rid, meth, rule, pr["p"], g)
             cal[rid] = q
-    rows = {f"{rid}|{k}": Q.evaluate(y, v, g, sets) for rid, q in cal.items() for k, v in q.items()}
+    rows = {f"{rid}|{k}": Q.evaluate(y, v, g, sets, users) for rid, q in cal.items() for k, v in q.items()}
 
     def seeds(model, k):
         c = choice[model]
@@ -245,6 +245,8 @@ def q2_values(name: str, manifest: dict) -> dict:
         out[f"{model}: iii (aggregate rule) - ii"] = boot(model, "iii_aggregate", "ii")
     for k in ("ii", "raw"):
         out[f"Q3 {k}: (MoAE - BASE) on G1 minus on C"] = Q.did_bootstrap(
+            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT)
+        out[f"Q3 click {k}: (MoAE - BASE) on G1 minus on C"] = Q.did_click_bootstrap(
             y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT)
     if Q.WEIGHTED in choice:
         out |= Q.q4_comparisons(y, g, users, sets, seeds, "iii_main", "iii_main")
@@ -277,7 +279,13 @@ def dryrun() -> dict:
             for metric in ("macro_logloss", "click_logloss", "poisson_mean"):
                 require_close(f"dry run {key} {part} {metric}", abs(row[part][metric] - rec[part][metric]), DRYRUN_TOL)
                 n += 1
+    extra = set(new["bootstrap"]) - set(sel["v2_bootstrap"])
+    if extra != Q.ADDED_AFTER_SELECTION or set(sel["v2_bootstrap"]) - set(new["bootstrap"]):
+        raise CheckFailed(f"dry run: values differ from the selection record beyond amendment 5: {sorted(extra)}")
+    added = {k: new["bootstrap"][k] for k in sorted(extra)}  # recorded, not reproduced (amendment 5)
     for key, b in new["bootstrap"].items():
+        if key in extra:
+            continue
         rec = sel["v2_bootstrap"][key]
         for f in ("diff", "did"):
             if f in b:
@@ -302,6 +310,8 @@ def dryrun() -> dict:
     git = git_state()
     out = {"dryrun_passed": True, "values_reproduced": n, "freeze_sha256": sha256(FROZEN / "freeze_q2.json"),
            "v2_q4_verdict_code_run": verdict(new["bootstrap"]["Q4: weighted iii - plain iii"]) | {"hold": holds[0]},
+           "v2_values_added_after_selection": added,
+           "v2_overall_gauc": {k: r["overall"]["gauc"] for k, r in new["rows"].items()},
            "code_fingerprint": code_fingerprint(), "git": git,
            "v2_verdict_code_run": verdict(new["bootstrap"]["MoAE: iii - ii"]) | {"note": "V2 = selection data"}}
     (FROZEN / "dryrun_q2.json").write_text(json.dumps(out, indent=2))
@@ -337,7 +347,30 @@ def guard(name: str) -> tuple[dict, dict]:
             raise CheckFailed("the dry run was run on an uncommitted tree")
     if official_test_sha() != m["official_test_sha256"]:
         raise CheckFailed("the local official test file differs from the frozen one")
+    check_test_predictions(name, m)
     return m, git
+
+
+def check_test_predictions(name: str, m: dict) -> None:
+    """Review: a missing Q1 file was found only after the single evaluation was claimed, and Q2 read files without
+    the prediction step's completion record. Before the claim: the prediction step finished for this manifest, and
+    every frozen checkpoint has its test .npz and .json with matching file, checkpoint and source hashes and labels."""
+    status = FROZEN / f"freeze_{name}.official_test_status.json"
+    if not status.exists() or json.loads(status.read_text()).get("state") != "done":
+        raise CheckFailed(f"the test predictions for {name} are not complete ({status})")
+    folder, stem = ("q1", "model_after_train-19") if name == "q1" else ("research", "model_after_train-17")
+    _, y = Q.file_columns(Q.TEST, Q.token_codes())
+    for rid, ck in m["checkpoints"].items():
+        f = Q.prediction_file(folder, stem, ck, Q.TEST)
+        meta_f = f.with_suffix(".json")
+        if not (f.exists() and meta_f.exists()):
+            raise CheckFailed(f"{rid}: no test predictions at {f}")
+        meta = json.loads(meta_f.read_text())
+        if meta.get("sha256") != sha256(f) or meta.get("checkpoint_sha256") != ck or meta.get("source_sha256") != m["official_test_sha256"]:
+            raise CheckFailed(f"{rid}: the test predictions do not match their record, checkpoint or the official test")
+        z = np.load(f)
+        if "y_last" not in z.files or not np.array_equal(z["y_last"].astype(np.int8), y):
+            raise CheckFailed(f"{rid}: test labels differ from the official test file read again")
 
 
 def test(name: str) -> dict:

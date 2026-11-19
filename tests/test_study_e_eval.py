@@ -129,7 +129,7 @@ def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
             d = Q.prediction_file("research", Q.CKPT, ck17, "test.parquet").parent
             np.savez(d / "test.npz", p_last=p.astype(np.float32), y_last=y, user=user, row=np.arange(y.size))
             sha = hashlib.sha256((d / "test.npz").read_bytes()).hexdigest()
-            (d / "test.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": ck17}))
+            (d / "test.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": ck17, "source_sha256": test_sha}))
             if model == Q.WEIGHTED:  # Q1 reproduces the paper's two models only
                 continue
             ck19 = Q.checkpoint_sha(rid, "train-19.parquet")
@@ -138,9 +138,16 @@ def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
             q = np.clip(p * 0.9, 1e-6, 1 - 1e-6).astype(np.float32)
             np.savez(d1 / "test.npz", p_last=q, y_last=y, user=user, row=np.arange(y.size))
             (d1 / "test.json").write_text(json.dumps({
+                "sha256": hashlib.sha256((d1 / "test.npz").read_bytes()).hexdigest(),
                 "checkpoint_sha256": ck19, "source_sha256": test_sha,
                 "auc": float(roc_auc_score(y, q)), "gauc": M.gauc(y, q.astype(np.float64), user)["gauc"]}))
     return F
+
+
+def done_predicting(F):
+    """What cvr.pymal_run predict writes next to each manifest when its single claim has finished."""
+    for name in ("q1", "q2"):
+        (F.FROZEN / f"freeze_{name}.official_test_status.json").write_text(json.dumps({"state": "done"}))
 
 
 def test_choose_freeze_dryrun_and_one_test_per_question(tmp_path, monkeypatch):
@@ -156,6 +163,11 @@ def test_choose_freeze_dryrun_and_one_test_per_question(tmp_path, monkeypatch):
     assert not list((E.OUT / "frozen").glob("*.lock"))
     dry = F.dryrun()
     assert dry["dryrun_passed"] and dry["values_reproduced"] > 50
+    assert set(dry["v2_values_added_after_selection"]) == Q.ADDED_AFTER_SELECTION  # recorded, not reproduced
+    with pytest.raises(F.CheckFailed, match="not complete"):  # the prediction step has not finished
+        F.test("q2")
+    assert not list((E.OUT / "frozen").glob("evaluation_*.lock"))
+    done_predicting(F)
     r = F.test("q2")
     assert set(r["verdict"]["conditions"]) == {"diff<0", "ci_upper<0", "all_pairs<0"} and r["primary"]["seed_pairs"] == 3
     assert set(r["q4"]["hold"]) == {"all_click_logloss_worse", "g1_poisson_worse"}
@@ -261,3 +273,28 @@ def test_the_dry_run_reproduces_every_seed_pair(tmp_path, monkeypatch):
     F.freeze()
     with pytest.raises(F.CheckFailed, match="seed pair"):
         F.dryrun()
+
+
+def test_a_missing_test_prediction_is_found_before_the_claim(tmp_path, monkeypatch):
+    path = write_case(tmp_path, monkeypatch)
+    F = add_test_and_records(tmp_path, monkeypatch, path)
+    E.OUT.joinpath("config_choice.json").write_text(path.read_text())
+    Q.calibrate(path)
+    F.freeze()
+    F.dryrun()
+    done_predicting(F)
+    rid = Q.run_id("BASE", 0.003, 0.3, 2027)
+    Q.prediction_file("q1", "model_after_train-19", Q.checkpoint_sha(rid, "train-19.parquet"), "test.parquet").unlink()
+    with pytest.raises(F.CheckFailed, match="no test predictions"):  # review: this was found after the claim
+        F.test("q1")
+    assert not (F.FROZEN / "evaluation_q1.lock").exists()
+
+
+def test_the_click_weighted_difference_of_differences_equals_its_definition():
+    tok, base, y, user = frame(5000, 4)
+    g = np.array([TOKENS.index(t) for t in tok])
+    a, b = expit(base + 0.3), expit(base - 0.2)
+    r = Q.did_click_bootstrap(y, [a], [b], g, user, np.arange(10), np.arange(10, 30), reps=50, seed=0)
+    m1, m2 = g < 10, g >= 10
+    want = (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean()) - (M.bce(y[m2], a[m2]).mean() - M.bce(y[m2], b[m2]).mean())
+    assert abs(r["did"] - want) < 1e-12 and abs(r["diff_set_1"] - (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean())) < 1e-12
