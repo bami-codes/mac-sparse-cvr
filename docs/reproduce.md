@@ -122,6 +122,18 @@ uv run python scripts/agent_bootstrap_check.py --gate operating
 
 결과: [보고서](results/agent_final_report.md), [요약](results/agent_final_summary.json), [오류율 진단](results/agent_bootstrap_check.md), [운영 규칙](results/agent_bootstrap_check_operating.md).
 
+에이전트 v2 (DESIGN §19, 라운드마다 다음 날 자료로 검정, 5자리 예산):
+
+```bash
+uv run python -m cvr.agent.experiments precompute configs/agent_menu_v2_r2.toml   # train-10 메뉴 (r3: train-11)
+uv run python -m cvr.agent.loop evidence && uv run python -m cvr.agent.loop exhaustive && uv run python -m cvr.agent.loop rules
+uv run python -m cvr.agent.loop run            # --v21, --v22 / --scripted면 API 없이
+uv run python -m cvr.agent.loop score          # --v21, --v22
+uv run python -m cvr.agent.loop tables
+```
+
+결과: [에이전트 v2](results/agent_v2.md).
+
 ### 연구 C: 작은 광고 맥락 그룹과 도메인 구조 (DESIGN §16)
 
 실행 폴더 `runs/c_dev_train08_10/20261118T061335Z`, 개발 실행 3,295초, 최대 메모리 9.33GB.

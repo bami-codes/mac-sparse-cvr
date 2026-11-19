@@ -137,7 +137,7 @@ uv run pytest -q    # 186개, 약 1분, 원자료 불필요 (합성 MAC 자료)
 - **LightGBM 희소 그룹 보정** (공식 테스트): 그룹별 축소 보정 −0.000100, 확인됨. [결과](docs/results/final_test.md)
 - **보조 귀속 레이블(`mta`)과 그룹 전환율 입력** (`train-12`): −0.000145 [−0.000292, +0.000010], 확인되지 않음. [결과](docs/results/p2_final_test.md)
 - **작은 광고 맥락 그룹의 도메인 구조** (GBDT·신경망 7종, `train-13`·`14`): 공유 구조와 그룹별 절편의 차이가 확인되지 않았다. 클릭 단위 손실과 그룹 합계 오차가 서로 다른 방향으로 움직였다. [결과](docs/results/c_final_test.md)
-- **전환 단서 가설 생성·검증 에이전트** (HyperCLOVA X 플래너, 코드가 검정): 가설 22개(고유 검정 11개) 중 4개 확인. [보고서](docs/results/agent_final_report.md)
+- **전환 단서 가설 생성·검증 에이전트** (HyperCLOVA X 플래너, 코드가 검정): 매일 5번의 검정 기회에서 지난 결과를 읽은 HCX 플래너는 단순 규칙을 넘지 못했다(누적 적중 규칙 10 vs HCX 세션 평균 5.4–6.4). 유효하게 낸 새 제안은 57–81%가 적중했지만, 인터페이스 실수로 슬롯의 절반을 날렸다. [결과](docs/results/agent_v2.md), [첫 실행 보고서](docs/results/agent_final_report.md)
 
 ## 문서
 

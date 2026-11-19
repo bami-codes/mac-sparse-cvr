@@ -631,8 +631,10 @@ def usage_summary(audit: Path) -> dict:
     if not audit.exists():
         return {}
     rows = [json.loads(line) for line in audit.read_text().splitlines() if line.strip()]
-    out: dict = {}
+    out: dict = {"failed_calls": sum(1 for r in rows if r.get("http_status"))}
     for r in rows:
+        if r.get("http_status"):  # a failed attempt (rate limit, ...); retried, no tokens
+            continue
         kind = next((s for s in ("think", "transcribe", "repair") if r["role"].endswith(f"_{s}")), "plan")
         u = r.get("usage") or {}
         o = out.setdefault(kind, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "thinking_tokens": 0,
