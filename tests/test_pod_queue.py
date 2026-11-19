@@ -9,8 +9,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from synthetic_mac import make_file, make_world  # noqa: E402
-from test_pymal_run import write_vocabs  # noqa: E402
+from synthetic_mac import make_file, make_world, write_official_vocabs  # noqa: E402
 
 from cvr import pymal_run as R  # noqa: E402
 
@@ -25,7 +24,7 @@ def test_the_queue_trains_validates_and_records_a_diverged_run(tmp_path):
     for i, n in enumerate(names):
         make_file(world, mac / "train" / n, seed=i, rows=300)
     make_file(world, mac / "test" / "test.parquet", seed=99, rows=300)
-    write_vocabs(mac)
+    write_official_vocabs(mac)
     R.preprocess(mac, tmp_path / "data" / "pymal_cache", names)
     sys.path.insert(0, str(REPO / "scripts"))
     import pod_queue as Q

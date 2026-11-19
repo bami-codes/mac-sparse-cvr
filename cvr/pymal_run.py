@@ -48,8 +48,10 @@ TEST_FILE = "test.parquet"
 NAME = re.compile(r"train-\d{2}\.parquet|test\.parquet")
 TIMING_SKIP_STEPS = 50  # steps left out of the steady throughput (worker start-up, first allocations)
 TRAINING_SETTINGS = ("model", "lr", "lamda", "seed", "batch_size", "hidden_dim", "main_view", "aux_views", "pcgrad",
-                     "gcsgrad", "train_files", "ckpt_after", "g1_weight", "weight_groups", "weight_groups_sha256")
-NEW_SETTINGS = ("g1_weight", "weight_groups", "weight_groups_sha256")  # absent from records made before amendment 3
+                     "gcsgrad", "train_files", "ckpt_after", "g1_weight", "weight_groups", "weight_groups_sha256",
+                     "schedule_rows")
+NEW_SETTINGS = ("g1_weight", "weight_groups", "weight_groups_sha256", "schedule_rows")  # absent from older records
+OFFICIAL_SCHEDULE_ROWS = 4000000 * 21  # the official run.py's schedule length in rows (about MAC's 21 files)
 
 
 def official():
@@ -136,7 +138,8 @@ def build(a, vocabs, device):
     table = list(model.EmbeddingTable.parameters())
     other = [p for p in model.parameters() if p not in set(table)]
     optimizer = torch.optim.Adam([{"params": table, "lr": a.lr * 10}, {"params": other, "lr": a.lr}])
-    total_steps = 4000000 * 21 // a.batch_size
+    # the official length unless a run asks for another (the small example model: its own row count; study E: never)
+    total_steps = (getattr(a, "schedule_rows", None) or OFFICIAL_SCHEDULE_ROWS) // a.batch_size
     warmup_steps = int(total_steps * 0.05)
     warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.0001, end_factor=1.0, total_iters=warmup_steps)
     constant = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0, total_iters=total_steps - warmup_steps)
@@ -491,6 +494,8 @@ def parser() -> argparse.ArgumentParser:
         p.add_argument("--g1_weight", type=float, default=None, help="amendment 3: weight of the G1 clicks' main loss")
         p.add_argument("--weight_groups", default=None, help="group_lists.json holding the fixed G1 tokens")
         p.add_argument("--weight_groups_sha256", default=None, help="the fixed G1 list's SHA-256 (groups.json)")
+        p.add_argument("--schedule_rows", type=int, default=None,
+                       help="rows the warm-up and schedule are sized for (default: the official 4,000,000 x 21)")
     return ap
 
 

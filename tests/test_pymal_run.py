@@ -25,28 +25,13 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from synthetic_mac import PAD, make_file, make_world  # noqa: E402
+from synthetic_mac import PAD, make_file, make_world, write_official_vocabs  # noqa: E402
 
 from cvr import pymal_run as R  # noqa: E402
 
 TRAIN = ["train-00.parquet", "train-01.parquet", "train-02.parquet"]
 MOAE = ["--model", "MoAE", "--lr", "0.003", "--lamda", "0.3", "--aux_views", "first", "mta", "linear", "cartesian",
         "--batch_size", "256"]
-
-
-def write_vocabs(mac: Path) -> None:
-    """Official format {token: index}, every value of every file (the official vocabularies cover all of MAC)."""
-    D, _ = R.official()
-    tables = [pq.read_table(p) for p in sorted((mac / "train").glob("*.parquet")) + [mac / "test" / "test.parquet"]]
-    seq_of = {v: k for k, v in D.MAP_COLS.items()}
-    (mac / "vocabs").mkdir(parents=True, exist_ok=True)
-    for col in D.USER_COLS + D.AD_COLS:
-        values = {PAD}
-        for t in tables:
-            values |= set(t.column(col).to_pylist())
-            if col in seq_of:
-                values |= {x for seq in t.column(seq_of[col]).to_pylist() for x in seq}
-        (mac / "vocabs" / f"{col}.json").write_text(json.dumps({v: i for i, v in enumerate(sorted(values))}))
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +42,7 @@ def tree(tmp_path_factory):
     for i, name in enumerate(TRAIN):
         make_file(world, mac / "train" / name, seed=i, rows=1500)
     make_file(world, mac / "test" / "test.parquet", seed=99, rows=1500)
-    write_vocabs(mac)
+    write_official_vocabs(mac)
     R.preprocess(mac, mac / "cached", TRAIN + ["test.parquet"])
     yield root, mac
     torch.use_deterministic_algorithms(False)  # the official set_seed switches this on for the whole process

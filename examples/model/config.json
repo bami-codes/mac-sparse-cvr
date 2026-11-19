@@ -1,0 +1,44 @@
+{
+  "args": {
+    "model": "BASE",
+    "lr": 0.003,
+    "lamda": 0.1,
+    "seed": 2026,
+    "batch_size": 256,
+    "hidden_dim": 16,
+    "main_view": "last",
+    "aux_views": [],
+    "pcgrad": false,
+    "gcsgrad": false,
+    "train_files": [
+      "train-00.parquet",
+      "train-01.parquet",
+      "train-02.parquet"
+    ],
+    "ckpt_after": [
+      "train-02.parquet"
+    ],
+    "g1_weight": null,
+    "weight_groups": null,
+    "weight_groups_sha256": null,
+    "schedule_rows": 60000
+  },
+  "checkpoint": "model.pt",
+  "checkpoint_sha256": "f15976d595d8af97f2f75178fa416ba3fd5ae3e89a697e3a670d65f02f29b486",
+  "calibrator": "calibrator.npz",
+  "calibration": "iii",
+  "vocabs": "vocabs",
+  "source": {
+    "data": "synthetic (tests/synthetic_mac.py, seed 7)",
+    "trained_on": [
+      "train-00.parquet",
+      "train-01.parquet",
+      "train-02.parquet"
+    ],
+    "calibrator_fitted_on": "train-03.parquet",
+    "lambda": 100.0,
+    "auc_on_calibration_file": 0.6835,
+    "positive_rate": 0.0521,
+    "mean_prediction": 0.0585
+  }
+}

@@ -21,3 +21,4 @@ __pycache__/
 
 # API keys (never committed)
 .secrets/
+bundles/

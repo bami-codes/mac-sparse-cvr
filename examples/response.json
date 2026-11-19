@@ -1,0 +1,25 @@
+{
+  "model": "BASE",
+  "calibration": "group-shrunk Platt on the ad group (ad_feat1)",
+  "candidates": [
+    {
+      "ad_feat0": "bd06e0d08ba7",
+      "ad_feat1": "707e766d45eb",
+      "cvr": 0.03650028,
+      "cvr_uncalibrated": 0.03318967
+    },
+    {
+      "ad_feat0": "db402f022dcf",
+      "ad_feat1": "76af7efae0d0",
+      "cvr": 0.0133172,
+      "cvr_uncalibrated": 0.01770548
+    },
+    {
+      "ad_feat0": "ca752f48f687",
+      "ad_feat1": "76dc15e364ed",
+      "cvr": 0.02236388,
+      "cvr_uncalibrated": 0.02676487
+    }
+  ],
+  "values_not_in_vocabulary": {}
+}

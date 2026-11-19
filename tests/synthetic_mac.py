@@ -12,6 +12,7 @@ models have something to learn. Nothing here reproduces MAC numbers.
 """
 
 import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -96,3 +97,20 @@ def make_mac_tree(root: Path, rows: int = 20_000) -> dict[str, Path]:
     """train-08..14 under root (08-10 training, 11 V1, 12 V2, 13-14 holdout), one shared user/item world."""
     world = make_world()
     return {n: make_file(world, root / f"train-{n:02d}.parquet", seed=n, rows=rows) for n in range(8, 15)}
+
+
+def write_official_vocabs(mac: Path) -> None:
+    """Official vocabulary files ({token: index}, PAD included) over every file under mac/train and mac/test, as the
+    official vocabularies cover all of MAC."""
+    from cvr import pymal_run as R
+    D, _ = R.official()
+    tables = [pq.read_table(p) for p in sorted((mac / "train").glob("*.parquet")) + sorted((mac / "test").glob("*.parquet"))]
+    seq_of = {v: k for k, v in D.MAP_COLS.items()}
+    (mac / "vocabs").mkdir(parents=True, exist_ok=True)
+    for col in D.USER_COLS + D.AD_COLS:
+        values = {PAD}
+        for t in tables:
+            values |= set(t.column(col).to_pylist())
+            if col in seq_of:
+                values |= {x for seq in t.column(seq_of[col]).to_pylist() for x in seq}
+        (mac / "vocabs" / f"{col}.json").write_text(json.dumps({v: i for i, v in enumerate(sorted(values))}))

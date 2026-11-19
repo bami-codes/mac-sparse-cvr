@@ -30,12 +30,26 @@ from .schema import PAD
 class ServerE:
     def __init__(self, rid: str, ckpt: Path, vocabs: dict, codes: dict[str, int], threads: int = 1,
                  calibration: str = "iii"):
+        """A study E model: the run record next to the checkpoint and the frozen calibrator of that run."""
+        run = R.run_record(Path(ckpt))
+        cal = Q.calibrator_path(rid, calibration, "main")
+        self._setup(run["args"], Path(ckpt), vocabs, codes, cal, threads, {"run": rid})
+
+    @classmethod
+    def from_parts(cls, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path,
+                   threads: int = 1, info: dict | None = None) -> "ServerE":
+        """Any official model: its training arguments, state dict, vocabularies, calibrator group codes and file."""
+        self = cls.__new__(cls)
+        self._setup(args, Path(ckpt), vocabs, codes, Path(calibrator), threads, info or {})
+        return self
+
+    def _setup(self, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path, threads: int,
+               info: dict) -> None:
         import torch
         torch.set_num_threads(threads)
         self.torch = torch
         self.D, _ = R.official()
-        run = R.run_record(Path(ckpt))
-        a = argparse.Namespace(**run["args"])
+        a = argparse.Namespace(**args)
         self.model, _, _ = R.build(a, vocabs, torch.device("cpu"))
         self.model.load_state_dict(torch.load(ckpt, map_location="cpu"))
         self.model.eval()
@@ -43,10 +57,9 @@ class ServerE:
         self.vocabs, self.codes = vocabs, codes
         self.pad = {c: v[PAD] for c, v in vocabs.items()}  # the missing-value index of every official vocabulary
         self.oov: dict[str, int] = {}
-        self.glob, self.gs = load_domain_calibrators(Q.calibrator_path(rid, calibration, "main"))
-        self.info = {"run": rid, "checkpoint": str(ckpt), "checkpoint_sha256": R.sha256(Path(ckpt)), "model": a.model,
-                     "calibrator": Q.calibrator_path(rid, calibration, "main").name, "lambda": float(self.gs.lam),
-                     "threads": threads}
+        self.glob, self.gs = load_domain_calibrators(calibrator)
+        self.info = info | {"checkpoint": str(ckpt), "checkpoint_sha256": R.sha256(ckpt), "model": a.model,
+                            "calibrator": calibrator.name, "lambda": float(self.gs.lam), "threads": threads}
 
     @staticmethod
     def columns() -> list[str]:
