@@ -566,6 +566,53 @@ def usage_summary(audit: Path) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------------------------------- report
+
+
+def distinct_cues(rounds: list[list[dict]], passing: dict[int, dict[str, int]]) -> set[tuple[str, str]]:
+    """Distinct cues among the hits: (tool, feature) for associations, (tool, group) for model comparisons."""
+    out = set()
+    for day, rows in enumerate(rounds, start=1):
+        for r in rows:
+            if r.get("control") or r["verdict"] in ("invalid", "repeat") or not is_hit(r["hypothesis"], passing[day]):
+                continue
+            h = r["hypothesis"]
+            out.add((h["tool"], h["feature"] if h["tool"] == "association" else h["group"]))
+    return out
+
+
+def tables(out: Path = OUT, versions: tuple[str, ...] = ("", "_v21")) -> str:
+    """Markdown tables of docs/results/agent_v2.md, from the saved runs and summaries."""
+    passing = {d: passing_set(json.loads((out / f"exhaustive_r{d}.json").read_text())["results"]) for d in MENUS}
+    rules = json.loads((out / "rules.json").read_text())
+    lines = ["| 전략 | R1 | R2 | R3 | 누적 고유 적중 | 서로 다른 단서 | 무효 + 반복 (R1 / R2 / R3) |", "|---|---|---|---|---|---|---|"]
+    s0 = json.loads((out / "summary.json").read_text())
+    rnd = s0["baselines"]["random"]["expected_hits_per_round"]
+    lines.append(f"| 무작위 (기대값) | {rnd[0]:.2f} | {rnd[1]:.2f} | {rnd[2]:.2f} | – | – | – |")
+    for name, label in (("evidence_rule", "근거 규칙"), ("adaptive_rule", "적응 규칙")):
+        b = s0["baselines"][name]
+        h = [r["hits"] for r in b["rounds"]]
+        lines.append(f"| {label} | {h[0]} | {h[1]} | {h[2]} | {b['cumulative_unique_hits']} | "
+                     f"{len(distinct_cues(rules[name], passing))} | 0 / 0 / 0 |")
+    for v in versions:
+        f = out / f"summary{v}.json"
+        if not f.exists():
+            continue
+        s = json.loads(f.read_text())
+        run_rec = json.loads((out / f"run{v}.json").read_text())
+        for arm, sessions in s["arms"].items():
+            cells = [", ".join(str(x["rounds"][d]["hits"]) for x in sessions.values()) for d in range(ROUNDS)]
+            cum = [x["cumulative_unique_hits"] for x in sessions.values()]
+            cue = [len(distinct_cues(run_rec["arms"][arm][k], passing)) for k in sessions]
+            waste = [sum(x["rounds"][d]["invalid"] + x["rounds"][d]["repeat"] for x in sessions.values()) for d in range(ROUNDS)]
+            lines.append(f"| {arm}{' (v2.1)' if v else ''} | {cells[0]} | {cells[1]} | {cells[2]} | "
+                         f"{', '.join(map(str, cum))} (평균 {np.mean(cum):.1f}) | {', '.join(map(str, cue))} (평균 {np.mean(cue):.1f}) | "
+                         f"{waste[0]} / {waste[1]} / {waste[2]} (각 25자리) |")
+    lines += ["", "5자리 중 적중 수. HCX 칸은 세션 1–5. 그날 263개 중 기준 통과: "
+              + ", ".join(f"{k} {n}개" for k, n in s0["passing_set_sizes"].items()) + "."]
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------------------- scripted stand-ins
 
 
@@ -587,7 +634,7 @@ def scripted_text(k: int) -> str:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["evidence", "exhaustive", "run", "rules", "score"])
+    ap.add_argument("cmd", choices=["evidence", "exhaustive", "run", "rules", "score", "tables"])
     ap.add_argument("--scripted", action="store_true")
     ap.add_argument("--v21", action="store_true", help="the repair step and citable feedback ids (§19.9)")
     a = ap.parse_args()
@@ -601,6 +648,8 @@ if __name__ == "__main__":
         run(scripted=a.scripted, v21=a.v21)
     elif a.cmd == "rules":
         run_rules()
+    elif a.cmd == "tables":
+        print(tables())
     elif a.v21:
         print(json.dumps(score(run_file="run_v21.json", audit_file="audit_v21.jsonl", summary_file="summary_v21.json"), indent=1))
     else:
