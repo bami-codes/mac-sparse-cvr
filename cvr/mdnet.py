@@ -11,7 +11,7 @@ star        STAR (Sheng et al., CIKM 2021): partitioned normalization (PN) on th
             auxiliary 2-layer network on the domain embedding added to the logit       rows per step
 star_nopn   star FCN + auxiliary network, no normalization (secondary ablation)       mixed batches
 
-Domain-specific parameters are ROWS OF SPARSE EMBEDDINGS looked up by the domain code and updated by
+Domain-specific parameters are rows of sparse embeddings looked up by the domain code and updated by
 SparseAdam, which changes only the rows present in the batch (values and moments, i.e. lazy Adam). One dense
 tensor with Adam would keep moving domains absent from the batch through their old momentum (§16.4).
 
@@ -29,8 +29,8 @@ PN statistics (implementation choices, §16.4):
 - per-domain and global running mean / mean of squares, momentum max(0.1, 1/k) at the k-th update, so the first
   update replaces the initial value;
 - one training forward = one optimizer step, which may hold several domains (accumulated chunks). The global
-  statistics are READ ONCE at the start of the step, so every domain of the step refers to the same values, and
-  UPDATED ONCE at the end from the sum, sum of squares and count of all the step's rows (revision 3: updating
+  statistics are read once at the start of the step, so every domain of the step refers to the same values, and
+  updated once at the end from the sum, sum of squares and count of all the step's rows (revision 3: updating
   them while looping over the domains in code order made the result depend on the codes, which follow traffic
   rank, and averaged a 4,096-row and a 512-row domain with equal weight);
 - a training batch with fewer than PN_MIN_ROWS rows of a domain is normalized with the global statistics and
@@ -45,7 +45,7 @@ PN statistics (implementation choices, §16.4):
   could pass the 1% rule and switch the normalization (one counterexample gave -0.577 in training and +1.000 in
   evaluation for the same state and input).
 
-Run this module in a process that does NOT use LightGBM (see cvr/m3_worker.py for why).
+Run this module in a process that does not use LightGBM (see cvr/m3_worker.py for why).
 """
 
 import copy

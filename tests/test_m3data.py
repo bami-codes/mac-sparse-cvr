@@ -43,7 +43,7 @@ TRAIN = [
     {"user": "00000000000b", "item": "i2", "cat": "c1", "shop": "s2", "seq": [("i2", "c1", "s2")], "last": 1.0},
     {"user": "00000000000c", "item": "i1", "cat": "c2", "shop": "s1", "seq": []},  # empty history
 ]
-VALID = [  # "i9" / "c9" / "s9" appear ONLY here
+VALID = [  # "i9" / "c9" / "s9" appear only here
     {"user": "00000000000d", "item": "i9", "cat": "c1", "shop": "s9",
      "seq": [("i9", "c9", "s9"), ("i1", "c1", "s1")]},
 ]

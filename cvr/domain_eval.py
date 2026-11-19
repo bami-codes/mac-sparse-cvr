@@ -3,7 +3,7 @@
 - domain classes from the TRAINING rows only (§16.3): small (share < 1%, clicks >= 3,000), tiny (share < 1%,
   clicks < 3,000), large (share >= 1%), unseen (no training row);
 - the primary metric (macro LogLoss over small domains) and the secondary metrics of §16.5;
-- one seed-paired user bootstrap that resamples users ONCE per replicate for every statistic and seed pair;
+- one seed-paired user bootstrap that resamples users once per replicate for every statistic and seed pair;
 - the V2 selection rule with its tie rule (§16.6), the power check (§16.7) and the two-tier verdict (§16.6).
 """
 
@@ -177,7 +177,7 @@ class WeightedAUC:
 def paired_bootstrap(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], dom: np.ndarray, cls: np.ndarray,
                      users: np.ndarray, reps: int = 1000, seed: int = 0, with_auc: bool = True,
                      pair_seeds: list[int] | None = None) -> dict:
-    """A - B for four statistics, seed-paired (A seed k with B seed k), ONE user resample per replicate shared by
+    """A - B for four statistics, seed-paired (A seed k with B seed k), one user resample per replicate shared by
     every statistic and seed pair. Models are held fixed: only evaluation-user uncertainty is covered.
     - small_macro: macro LogLoss over small domains (primary); a domain enters a replicate if it has a resampled row
     - small_click: click-weighted LogLoss over small rows; large_click: the same over large rows
@@ -312,7 +312,7 @@ def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None) -> d
 def paired_bootstrap_groups(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], groups: np.ndarray,
                             users: np.ndarray, reps: int = 1000, seed: int = 0,
                             pair_seeds: list[int] | None = None) -> dict:
-    """A - B on rows that ALL belong to the evaluated groups, seed-paired, one user resample per replicate:
+    """A - B on rows that all belong to the evaluated groups, seed-paired, one user resample per replicate:
     - macro: group-equal mean of per-group mean LogLoss; click: row-equal mean LogLoss;
     - poisson: mean over groups of 2[O log(O/E) - (O - E)] with O, E the (resampled) positive and predicted sums.
     Poisson deviance is not linear in the rows, so each seed pair's difference is computed and then averaged.

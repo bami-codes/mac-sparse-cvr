@@ -1,11 +1,11 @@
-"""Second-study inputs built OUT-OF-FOLD by user (docs/DESIGN.md §13).
+"""Second-study inputs built out-of-fold by user (docs/DESIGN.md §13).
 
 - aux_mta: prediction of an auxiliary LightGBM trained on (mta > 0), a denser attribution label.
 - te_<key>: beta-binomial smoothed last-click CVR of the row's ad_feat1 / ad_feat2 group.
 - logn_<key>: log(1 + training clicks of the group) (counts only, no labels).
 
-Training rows get values from models / statistics fitted WITHOUT the row's user (K user folds);
-V1 / V2 / test rows get values from the model / statistics fitted on ALL training rows.
+Training rows get values from models / statistics fitted without the row's user (K user folds);
+V1 / V2 / test rows get values from the model / statistics fitted on all training rows.
 The auxiliary label itself is never an input.
 """
 
@@ -53,7 +53,7 @@ def fit_stacking(train: pl.DataFrame, lgb_params: dict, aux_seed: int, folds: in
     """Returns (train with out-of-fold extra columns, full-training models, info).
 
     aux_label / aux_col default to the second study's mta model. The control of docs/DESIGN.md §15.2 builds the
-    same out-of-fold input from the MAIN label ("y") under the column name "aux_last"."""
+    same out-of-fold input from the main label ("y") under the column name "aux_last"."""
     fold = user_fold(train, folds)
     info: dict = {"folds": folds, "aux_label": aux_label if use_aux else None, "aux_col": aux_col, "aux_seed": aux_seed,
                   "fold_rows": np.bincount(fold, minlength=folds).tolist()}

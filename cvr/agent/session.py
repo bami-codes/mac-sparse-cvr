@@ -13,13 +13,13 @@ What the code decides (never the LLM):
   verdict "needs_experiment");
 - statistics: tools return "insufficient_data" when an arm is too small or non-finite; such results never
   enter the multiple-testing step; a test is a tool call (tool name + every argument it runs with), each runs
-  once, and Benjamini-Hochberg (q = 0.05) covers ALL unique tested calls of the run (the family is fixed by
+  once, and Benjamini-Hochberg (q = 0.05) covers all unique tested calls of the run (the family is fixed by
   the frozen plans). Model comparisons are judged by the paired user bootstrap with the fitted models held
   fixed; noise-model sensitivity is shown next to them and never changes a verdict;
 - every number in the report: result sentences are rendered by code from the tool output;
 - what a verdict is about: a test question written by code from the tool call (`test_question`). The
-  planner's sentence and the reporter's text are shown as LLM text whose meaning is NOT verified.
-What the LLM writes: an interpretation and a next step per hypothesis, with NO digits (checked). A keyword
+  planner's sentence and the reporter's text are shown as LLM text whose meaning is not verified.
+What the LLM writes: an interpretation and a next step per hypothesis, with no digits (checked). A keyword
 scan flags causal wording on non-experimental results; it is a heuristic guard, not a verification of meaning.
 """
 

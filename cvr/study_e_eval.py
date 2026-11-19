@@ -139,7 +139,7 @@ def did_click_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, 
 
 
 def did_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, seed: int) -> dict:
-    """(macro_1(A) - macro_1(B)) - (macro_2(A) - macro_2(B)) with ONE user resample per replicate for both sets
+    """(macro_1(A) - macro_1(B)) - (macro_2(A) - macro_2(B)) with one user resample per replicate for both sets
     (the same scheme as cvr.metrics.paired_bootstrap_macro_diff); seed pairs averaged as in that function."""
     _, ui = np.unique(users, return_inverse=True)
     U = ui.max() + 1

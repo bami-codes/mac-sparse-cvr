@@ -10,7 +10,7 @@ import numpy as np
 RELOAD_TOL = 1e-9  # max |reloaded - in-memory| prediction difference
 PRED_TOL = 1e-9  # max |serving - evaluation path| calibrated prediction difference
 NUM_TOL = 1e-6  # max |serving - evaluation path| numeric feature difference
-# Study C networks (docs/DESIGN.md §16.8): a single-row forward and a batched forward of the SAME float32 weights
+# Study C networks (docs/DESIGN.md §16.8): a single-row forward and a batched forward of the same float32 weights
 # and features differ by float rounding (5.96e-8 observed), so this comparison gets its own tolerance.
 # Categorical codes and numeric features are compared exactly / with NUM_TOL beforehand, and reloads in the same
 # batch stay at RELOAD_TOL, so a real prediction error cannot hide in this tolerance.

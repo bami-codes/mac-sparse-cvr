@@ -1,7 +1,7 @@
 """Mechanism study B (docs/DESIGN.md §15.2): does the second study's auxiliary input help because of the other
 attribution label (mta), or because one more out-of-fold prediction is added as an input?
 
-Control: the SAME out-of-fold procedure with the MAIN label (last > 0) -> input "aux_last".
+Control: the same out-of-fold procedure with the main label (last > 0) -> input "aux_last".
 Development data only (train-00..02, V1 train-03, V2 train-04 of the second study's development run).
 
     PYTHONPATH=. uv run python scripts/aux_label_control.py runs/p2_train00_02/20261117T131443Z runs/aux_control \

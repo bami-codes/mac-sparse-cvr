@@ -358,7 +358,7 @@ def main(config_path: str) -> Path:
             reload_check[f"calib_{name}|{tag}"] = require_close(
                 f"reload calib_{name}|{tag}", float(np.abs(p_re - p_mem).max()), RELOAD_TOL)
 
-    # informational paired bootstrap on V2 (selection data, NOT a confirmatory test). It covers the SAME
+    # informational paired bootstrap on V2 (selection data, not a confirmatory test). It covers the same
     # seeds as the selection: every seed of the selected family, seed-paired, one user resample per replicate.
     # Models are held fixed, so only the evaluation-user sampling uncertainty is covered.
     bs = cfg["bootstrap"]

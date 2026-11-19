@@ -1,8 +1,8 @@
 """Study C: raw-row serving check against an independent reference, then single-thread latency per seed.
 
 For every family (G-int, G-shared, N-int, N-shared, N-head, N-star) and every seed of a development run:
-1) consistency (hard check, cvr/checks.serving_consistency): V2 rows are sampled from EVERY domain of the run's V2
-   file (so small domains are present). The served probability of each row, computed ONE ROW AT A TIME by
+1) consistency (hard check, cvr/checks.serving_consistency): V2 rows are sampled from every domain of the run's V2
+   file (so small domains are present). The served probability of each row, computed one row at a time by
    cvr/serving_c.py from the raw strings, is compared with a reference that does not use the serving code: the
    run's SAVED V2 base prediction of that row, with the (iii-d) calibrator of that family and seed loaded HERE from
    the run folder (its lambda checked against selection.json) and applied to the row's domain code from the
@@ -10,7 +10,7 @@ For every family (G-int, G-shared, N-int, N-shared, N-head, N-star) and every se
    calibrator pass with difference 0. Codes must match exactly, numeric features within
    NUM_TOL, probabilities within PRED_TOL (GBDT, float64) or NN_SINGLE_VS_BATCH_TOL (float32 networks);
 2) latency: raw row dict -> codes -> history features -> model -> calibration, in-process, single thread. The p99
-   used for the verdict replays the SAME uniform random V2 requests (fixed seed and order) on every model: batch=1
+   used for the verdict replays the same uniform random V2 requests (fixed seed and order) on every model: batch=1
    (50 warm-ups + 5,000 requests) and batch=100 (100 requests). The 1/5/15-minute load averages at the start and
    end of each family are recorded, because sub-millisecond p99 moved with other processes on this machine. The
    domain-balanced correctness sample is 31.5% small-domain rows against 8.1% in V2 traffic, so its p99 is kept
@@ -228,7 +228,7 @@ def main(run_arg: str) -> None:
     for fam in FAMILIES:
         tmp = run / f"latency_c_{fam}.json"
         attempts = []
-        for _ in range(MAX_ATTEMPTS):  # the FIRST accepted attempt is kept; acceptance does not look at p99
+        for _ in range(MAX_ATTEMPTS):  # the first accepted attempt is kept; acceptance does not look at p99
             subprocess.run([sys.executable, __file__, run_arg, "--family", fam, "--out", str(tmp)], check=True)
             f = json.loads(tmp.read_text())
             tmp.unlink()

@@ -9,7 +9,7 @@ from cvr.stacking import fit_stacking, user_fold
 def _frame():
     # user_key // 10_000 % 3 decides the fold: keys 0, 10_000, 20_000 -> folds 0, 1, 2
     users = np.repeat([0, 10_000, 20_000, 30_000, 40_000, 50_000], 50)
-    g1 = np.where(users == 0, 7, 2)  # group 7 exists ONLY for the fold-0 user
+    g1 = np.where(users == 0, 7, 2)  # group 7 exists only for the fold-0 user
     y = np.where(users == 0, 1, (np.arange(users.size) % 10 == 0)).astype(np.int8)  # group 7 always converts
     return pl.DataFrame({"user_key": users, "ad_feat1": g1.astype(np.int32), "ad_feat2": np.full(users.size, 3, np.int32),
                          "y": y, "label_mta": y})

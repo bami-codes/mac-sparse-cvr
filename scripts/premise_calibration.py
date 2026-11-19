@@ -1,6 +1,6 @@
 """E6.3 premise check: does a global model leave group-level probability error in sparse groups?
 
-Rough check inside ONE training file (users split 70/30 by hash). This is not the
+Rough check inside one training file (users split 70/30 by hash). This is not the
 evaluation protocol of the study (see docs/DESIGN.md section 4); it only tests whether
 the study's premise holds before building the full pipeline.
 
@@ -57,7 +57,7 @@ def build_features(df: pl.DataFrame) -> pl.DataFrame:
 def group_calibration(g: pl.DataFrame) -> dict:
     g = g.filter(pl.col("V") > 0).with_columns(((pl.col("O") - pl.col("E")) / pl.col("V").sqrt()).alias("z"))
     big = g.filter(pl.col("E") >= 5)
-    # EXPLORATORY ONLY, NOT size-adjusted: tau^2 = (sum (O-E)^2 - sum V) / sum E^2.
+    # exploratory only, not size-adjusted: tau^2 = (sum (O-E)^2 - sum V) / sum E^2.
     # V uses predicted p, so when true rates differ from p (or clicks are correlated within
     # users) the leftover noise inflates tau much more for small groups. A simulation with the
     # same true relative bias (0.15) gave 0.57 for 50-click groups vs 0.16 for 5,000-click

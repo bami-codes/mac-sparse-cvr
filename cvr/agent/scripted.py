@@ -1,6 +1,6 @@
 """Scripted planner / reporter for running the agent without an API key (tests, dry runs).
 
-This is a test double with fixed answers, NOT a validation with a real LLM. The plans mix valid
+This is a test double with fixed answers, not a validation with a real LLM. The plans mix valid
 hypotheses with ones the code must catch: a causal claim given an observational tool (rerouted to
 ab_test_design), a tool that does not fit the claim type, an unknown evidence id (E999), and in the
 negative-control session the planted user_score claim. The reporter writes digit-free text.

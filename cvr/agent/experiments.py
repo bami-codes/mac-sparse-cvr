@@ -65,7 +65,7 @@ ASSOC_FEATURES = {  # binary feature -> expression on the confirmation frame
     "empty_history": pl.col("hist_empty") == 1,
 }
 # What a segment fixes, as (condition, value), and the condition each association feature tests. Used to reject
-# association requests whose comparison is impossible BY DEFINITION (one arm is empty whatever the data), which
+# association requests whose comparison is impossible by definition (one arm is empty whatever the data), which
 # the final run reported as "insufficient data" (feature = segment, or empty_history inside has_history).
 SEGMENT_FIXES = {"no_history": ("empty_history", True), "has_history": ("empty_history", False),
                  "same_category_in_history": ("same_category_in_history", True),

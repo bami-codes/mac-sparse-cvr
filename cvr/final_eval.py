@@ -1,4 +1,4 @@
-"""Freeze a development run, dry-run the evaluation on V2, then evaluate the test file ONCE.
+"""Freeze a development run, dry-run the evaluation on V2, then evaluate the test file once.
 
     uv run python -m cvr.final_eval freeze  runs/<name>/<stamp>
     uv run python -m cvr.final_eval dryrun  runs/<name>/<stamp>                 # V2 of the run

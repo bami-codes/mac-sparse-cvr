@@ -5,7 +5,7 @@ a backtest on files that were all opened before (pre-registered in §17 before a
 
 Setting C (primary): study C's small context groups, G-int (and G-shared) seeds; V1 train-11, V2 train-12, evaluation
 train-13 + train-14. Setting 1 (secondary): the first study's G1 groups, M2 seeds; V1 train-18, V2 train-19,
-evaluation the official test file. Base models are NOT retrained; their predictions on the evaluation files are
+evaluation the official test file. Base models are not retrained; their predictions on the evaluation files are
 recomputed from the saved models and must reproduce the recorded (ii) / (iii-d) metrics (hard check) before
 anything new is computed.
 """

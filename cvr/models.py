@@ -110,7 +110,7 @@ class GBDT:
             early_stopping_rounds: int, inputs: list[str] | None = None, label: str = "y") -> "GBDT":
         """Two stages so M2 sees the same training rows as M1:
         1) early stopping on ~10% of TRAINING users (second key digit == 0) picks the rounds;
-        2) the model is refit on ALL training rows with that number of rounds. V1/V2 are never used.
+        2) the model is refit on all training rows with that number of rounds. V1/V2 are never used.
         `label` is "y" for every CVR model; the auxiliary model of cvr/stacking.py uses "label_mta".
         """
         import lightgbm as lgb

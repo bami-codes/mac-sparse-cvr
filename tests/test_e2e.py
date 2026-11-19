@@ -8,7 +8,7 @@ ignored there), because the evaluation code checks a clean tree in the working d
 repository, so the code under test is this checkout's.
 
 Study C: development run -> diagnostics (independent re-selection, STAR statistics) -> latency with the serving
-check -> expected holdout sizes and hashes -> freeze -> V2 dry run -> refusals that must NOT use the single run
+check -> expected holdout sizes and hashes -> freeze -> V2 dry run -> refusals that must not use the single run
 (no git repository, uncommitted file, wrong holdout file) -> the single test -> refusal of a second test and of a changed frozen file.
 First study: pipeline (GBDT, logistic regression, M3 networks) -> freeze -> dry run -> test outside git refused ->
 test -> second test refused.

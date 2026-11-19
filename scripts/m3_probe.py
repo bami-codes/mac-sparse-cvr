@@ -1,4 +1,4 @@
-"""M3 feasibility probe on ONE row group of one training file (not a study result).
+"""M3 feasibility probe on one row group of one training file (not a study result).
 
 Measures id-vocabulary size and coverage for several min_count values, array memory per row,
 training time per step on CPU (sparse id embeddings) and MPS (dense), and a rough holdout

@@ -81,7 +81,7 @@ def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
         "pooled_O_over_E": float(y.sum() / p.sum()),
         "median_abs_ratio_dev": float((with_pos["O"] / with_pos["E"] - 1).abs().median()) if with_pos.height else None,
         # group aggregate prediction error sum|E - O| / sum O over the groups (docs/DESIGN.md §13).
-        # It is NOT a measure of bidding loss or misallocated spend; non-zero even for a perfect model.
+        # It is not a measure of bidding loss or misallocated spend; non-zero even for a perfect model.
         "abs_conv_error_share": float((pg["E"] - pg["O"]).abs().sum() / pg["O"].sum()) if pg["O"].sum() > 0 else None,
         "zero_positive_groups": zero.height,
         "zero_positive_mean_E_minus_O": float((zero["E"] - zero["O"]).mean()) if zero.height else None,
@@ -94,7 +94,7 @@ def paired_bootstrap_macro_diff(y: np.ndarray, p_a: np.ndarray | list[np.ndarray
     """Macro LogLoss(A) - macro LogLoss(B) with a 95% interval from resampling USERS.
 
     p_a / p_b may be lists of seed-matched predictions (A seed k is paired with B seed k).
-    Every replicate draws ONE set of resampled users, used for both models and all seed pairs;
+    Every replicate draws one set of resampled users, used for both models and all seed pairs;
     the replicate's statistic is the mean over seed pairs of the paired difference.
     A group enters a replicate's macro mean only if it has at least one resampled click.
     """

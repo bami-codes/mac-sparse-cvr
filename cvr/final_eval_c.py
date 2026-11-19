@@ -1,4 +1,4 @@
-"""Study C: freeze a development run, dry-run the evaluation on V2, then evaluate train-13 + train-14 ONCE.
+"""Study C: freeze a development run, dry-run the evaluation on V2, then evaluate train-13 + train-14 once.
 
     uv run python -m cvr.final_eval_c expect runs/c_dev_train08_10/<stamp>   # official holdout size / SHA-256 only
     uv run python -m cvr.final_eval_c freeze runs/c_dev_train08_10/<stamp>
@@ -15,9 +15,9 @@ dryrun  runs the test code on V2 and requires the saved predictions, every recor
         bootstrap to be reproduced within 1e-9 (hard check).
 expect  records the official size and SHA-256 of train-13 / train-14 from the Hugging Face API (metadata only, no
         data is downloaded), so the test can refuse any other file under a holdout name.
-test    BEFORE claiming the single run: every frozen hash, a dry run recorded for this freeze, this evaluation code
+test    before claiming the single run: every frozen hash, a dry run recorded for this freeze, this evaluation code
         and a clean tree, the frozen holdout names, and each file's size and official SHA-256 (a failure here can
-        be retried). Then ONE process claims the run with an exclusive lock file; from then on any failure is
+        be retried). Then one process claims the run with an exclusive lock file; from then on any failure is
         recorded and the run counts as used. Both files are evaluated together (a user seen on both days is one
         bootstrap cluster) plus each file's direction; nothing is selected or tuned.
 
@@ -147,7 +147,7 @@ def check_latency_provenance(report: dict, run: Path, sel: dict) -> None:
 
 
 def frozen_p99(lat: dict) -> tuple[dict, dict]:
-    """Per family and seed, the p99 (ms) of the uniform-traffic replay, taken from the DETAILED per-seed record.
+    """Per family and seed, the p99 (ms) of the uniform-traffic replay, taken from the detailed per-seed record.
     Refused unless the record uses the pre-registered protocol (version 2, 5,000 timed requests per seed), passed
     the serving check (codes, numeric features, probabilities) and meets the acceptance rule recomputed from its
     recorded environment. One seed, a negative value, a NaN summary, a numeric-feature error and the excluded
@@ -298,7 +298,7 @@ def score(run: Path, df: pl.DataFrame, work: Path) -> dict[str, np.ndarray]:
 
 
 def guard_test(run: Path, manifest: dict, files: list[Path], git: dict) -> dict[str, str]:
-    """Every check that can fail WITHOUT using the single run. Returns the verified SHA-256 of each file."""
+    """Every check that can fail without using the single run. Returns the verified SHA-256 of each file."""
     lock, out_dir = run / "final" / "test.lock", run / "final" / "test"
     if lock.exists() or out_dir.exists():
         raise CheckFailed(f"{lock} or {out_dir} exists: the holdout files are evaluated only once")
@@ -473,7 +473,7 @@ def summary_table(rows: dict, lam: dict, seeds: list[int], p99: dict) -> list[di
 
 def dryrun_checks(run: Path, manifest: dict, preds: dict, rows: dict, result: dict) -> dict:
     """The test code must reproduce the development run on V2: predictions, metrics, the primary bootstrap with
-    every seed pair matched BY SEED, the verdict derived from them, the secondary bootstraps and the leave-one-out.
+    every seed pair matched by seed, the verdict derived from them, the secondary bootstraps and the leave-one-out.
     Pooled values alone are not enough: flipping all three seed differences would leave them unchanged."""
     res = json.loads((run / "results.json").read_text())
     checked = 0

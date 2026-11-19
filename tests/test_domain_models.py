@@ -47,7 +47,7 @@ def test_early_stopping_labels_never_reach_any_offset():
     _, fit_a, es_a = early_stopping_offsets(df)
     _, fit_b, es_b = early_stopping_offsets(flipped)
     assert np.array_equal(fit_a, fit_b) and np.array_equal(es_a, es_b)
-    # the wrong order (out-of-fold over ALL training rows, then drop the early-stopping rows) does leak them
+    # the wrong order (out-of-fold over all training rows, then drop the early-stopping rows) does leak them
     naive_a, naive_b = oof_domain_offset(df)[~es], oof_domain_offset(flipped)[~es]
     assert not np.array_equal(naive_a, naive_b)
 

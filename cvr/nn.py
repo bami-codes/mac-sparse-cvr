@@ -12,7 +12,7 @@ Inputs (identical for both variants, so the variants differ only in pooling):
 pooling="attn":  softmax over valid steps of a target-conditioned score MLP([q, k, q-k, q*k])
 pooling="mean":  uniform weights over valid steps (the special case of equal attention scores)
 
-Run this module in a process that does NOT use LightGBM: on this machine PyTorch and LightGBM
+Run this module in a process that does not use LightGBM: on this machine PyTorch and LightGBM
 ship separate OpenMP runtimes, and using both in one process segfaults or hangs
 (see cvr/m3_worker.py). Input arrays are built in cvr/m3data.py, which does not import torch.
 """

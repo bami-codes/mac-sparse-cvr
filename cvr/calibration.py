@@ -195,7 +195,7 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
                 break
             x, f = x_new, f_new
         iters = max(iters, it + 1)
-        g, _ = grad_hess(zg, yg, x)  # convergence is judged at the RETURNED point
+        g, _ = grad_hess(zg, yg, x)  # convergence is judged at the returned point
         pg, _ = projected(x, g)
         worst = max(worst, float(np.abs(pg).max()))
         at_bound += int(x[0] <= lo + 1e-15)

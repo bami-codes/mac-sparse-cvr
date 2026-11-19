@@ -331,7 +331,7 @@ def test_single_row_and_batched_predictions_agree_within_the_float32_tolerance(v
 
 # ---------------------------------------------------------------- counterexample: chunk order
 def _two_domain_step(code_a, code_b, seed=0):
-    """Domain A (4,096 rows, numeric mean -1) and domain B (512 rows, numeric mean +1) in ONE training step."""
+    """Domain A (4,096 rows, numeric mean -1) and domain B (512 rows, numeric mean +1) in one training step."""
     rng = np.random.default_rng(seed)
     na, nb = 4096, 512
     dom = np.r_[np.full(na, code_a), np.full(nb, code_b)]
@@ -358,7 +358,7 @@ def test_star_step_does_not_depend_on_which_code_each_domain_has():
     batches = {"a2b3": _two_domain_step(2, 3), "a3b2": _two_domain_step(3, 2)}
     first = {k: torch.sigmoid(nets[k](*batches[k][:2])).detach() for k in nets}  # training forward = one step
     assert float((first["a2b3"] - first["a3b2"]).abs().max()) < 1e-6  # was 0.0848 before the fix
-    for k in nets:  # the global mean after the first step is the mean of ALL the step's rows
+    for k in nets:  # the global mean after the first step is the mean of all the step's rows
         pooled = batches[k][1].double().mean(0)
         j = slice(net_num_start(nets[k]), None)
         assert torch.allclose(nets[k].pn.glob_mean[j].double(), pooled, atol=1e-5)  # was 0 instead of -0.7778

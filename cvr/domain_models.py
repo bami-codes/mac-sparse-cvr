@@ -1,14 +1,14 @@
 """Study C GBDT family (docs/DESIGN.md §16.4).
 
 G-shared: the M2 GBDT (cvr/models.GBDT) on CAT_INPUTS + NUM_INPUTS, so the domain is a categorical input.
-G-int:    a GBDT WITHOUT the domain input, boosted from a per-domain logit offset (LightGBM init_score):
+G-int:    a GBDT without the domain input, boosted from a per-domain logit offset (LightGBM init_score):
           prediction = sigmoid(tree raw score + offset), the offset added exactly once.
 
 Offsets are logit(beta-binomial smoothed domain rate). Fitting order, chosen so no row's offset is computed from its own label:
 1. split off the early-stopping users (the same ~10% rule as GBDT.fit);
 2. on the remaining fitting side only, user 3-fold out-of-fold offsets for the fitting rows;
 3. early-stopping rows get the offset fitted on the whole fitting side;
-4. once the rounds are fixed, refit on ALL training rows with user 3-fold out-of-fold offsets over all rows.
+4. once the rounds are fixed, refit on all training rows with user 3-fold out-of-fold offsets over all rows.
 V1 / V2 / test / serving rows get the offset fitted on all training rows.
 
 The offset logic below needs no LightGBM (tests run in the same process as PyTorch; OpenMP, see m3_worker).
@@ -35,7 +35,7 @@ OFFSET_FOLDS = 3
 
 
 def oof_domain_offset(df: pl.DataFrame, folds: int = OFFSET_FOLDS) -> np.ndarray:
-    """Per-row logit domain rate fitted WITHOUT the row's user (user folds of cvr/stacking.user_fold)."""
+    """Per-row logit domain rate fitted without the row's user (user folds of cvr/stacking.user_fold)."""
     fold = user_fold(df, folds)
     out = np.empty(df.height)
     for f in range(folds):
