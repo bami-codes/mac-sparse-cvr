@@ -24,7 +24,7 @@ def test_close_predictions_pass():
 def test_nan_in_any_column_fails():
     g, c = pair()
     c["p_mta"] = c["p_mta"].copy()
-    c["p_mta"][3] = np.nan  # review: this used to pass because max() skips NaN
+    c["p_mta"][3] = np.nan  # max() skips NaN, so this must be caught explicitly
     assert not C.compare(g, c)["passed"]
 
 

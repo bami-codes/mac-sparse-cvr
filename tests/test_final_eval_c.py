@@ -80,10 +80,10 @@ def test_the_dry_run_must_belong_to_this_freeze_and_this_code(setup):
     run, files = setup
     with pytest.raises(CheckFailed, match="dry run must pass"):
         F.evaluate(run, files, "test")
-    for over, msg in (({"freeze_sha256": "0" * 64}, "different freeze"),  # review: passed before
+    for over, msg in (({"freeze_sha256": "0" * 64}, "different freeze"),
                       ({"code_fingerprint": "0" * 64}, "different evaluation code"),
                       ({"evaluation_git": {"commit": "x", "dirty_files": [" M cvr/x.py"]}}, "uncommitted tree"),
-                      ({"files_sha256": {"train-12.parquet": "cd" * 32}}, "V2 files"),  # review: passed before
+                      ({"files_sha256": {"train-12.parquet": "cd" * 32}}, "V2 files"),
                       ({"files_sha256": {}}, "V2 files")):
         _dry(run, **over)
         with pytest.raises(CheckFailed, match=msg):
@@ -96,10 +96,10 @@ def test_input_problems_are_refused_before_the_single_run_is_claimed(setup, tmp_
     _dry(run)
     with pytest.raises(CheckFailed, match="differ from the frozen holdout"):
         F.evaluate(run, [files[0], tmp_path / "data" / "train-12.parquet"], "test")
-    with pytest.raises(CheckFailed, match="does not exist"):  # review: a missing file used the single run
+    with pytest.raises(CheckFailed, match="does not exist"):  # must not use up the single run
         F.evaluate(run, [files[0], tmp_path / "missing" / "train-14.parquet"], "test")
     renamed = _holdout(tmp_path / "dev", {"train-13.parquet": b"development data", "train-14.parquet": OFFICIAL["train-14.parquet"]})
-    with pytest.raises(CheckFailed, match="bytes|SHA-256"):  # review: development data under a holdout name passed
+    with pytest.raises(CheckFailed, match="bytes|SHA-256"):  # development data under a holdout name
         F.evaluate(run, renamed, "test")
     same_size = _holdout(tmp_path / "dev2", {"train-13.parquet": b"official day 1X", "train-14.parquet": OFFICIAL["train-14.parquet"]})
     with pytest.raises(CheckFailed, match="SHA-256"):
@@ -123,7 +123,7 @@ def test_outside_a_git_repository_the_test_is_refused(setup, monkeypatch):
 def test_only_one_process_claims_the_run(setup):
     run, _ = setup
     F.claim_test(run)
-    with pytest.raises(CheckFailed, match="another process"):  # review: two concurrent calls both started
+    with pytest.raises(CheckFailed, match="another process"):  # two concurrent calls must not both start
         F.claim_test(run)
 
 
@@ -160,13 +160,13 @@ def _lat_family(fam, seeds=(2026, 2027, 2028), p99=(0.1, 0.2, 0.3), summary=None
 def test_frozen_p99_comes_from_an_accepted_detailed_record():
     ok = {f: _lat_family(f) for f in F.LATENCY_FAMILIES}
     assert F.frozen_p99(ok)[0]["G-shared"] == {2026: 0.1, 2027: 0.2, 2028: 0.3}
-    bad = [ok | {"G-shared": _lat_family("G-shared", seeds=(2026,), p99=(0.1,))},  # review: one seed was frozen
-           ok | {"N-head": _lat_family("N-head", p99=(0.1, -0.2, 0.3))},  # review: a negative latency
+    bad = [ok | {"G-shared": _lat_family("G-shared", seeds=(2026,), p99=(0.1,))},  # a single seed
+           ok | {"N-head": _lat_family("N-head", p99=(0.1, -0.2, 0.3))},  # a negative latency
            ok | {"N-int": _lat_family("N-int", p99=(0.1, float("nan"), 0.3))},
            ok | {"G-int": _lat_family("G-int", summary={"2026": 0.1, "2027": 0.2, "2028": 0.05})},
-           ok | {"G-int": _lat_family("G-int", summary={"2026": 0.1, "2027": float("nan"), "2028": 0.3})},  # review
-           ok | {"G-shared": _lat_family("G-shared", num_diff=1.0)},  # review: a numeric-feature error of 1.0
-           ok | {"G-shared": _lat_family("G-shared", requests=1000, version=1)},  # review: the excluded measurement
+           ok | {"G-int": _lat_family("G-int", summary={"2026": 0.1, "2027": float("nan"), "2028": 0.3})},  # a NaN summary
+           ok | {"G-shared": _lat_family("G-shared", num_diff=1.0)},  # a numeric-feature error of 1.0
+           ok | {"G-shared": _lat_family("G-shared", requests=1000, version=1)},  # the excluded earlier measurement
            ok | {"G-shared": _lat_family("G-shared", others=["/x/.venv/bin/python -m pytest"], accepted=True)},
            ok | {"G-shared": _lat_family("G-shared", other_cpu=450.0)},
            ok | {"G-shared": _lat_family("G-shared", accepted=False)}]
@@ -180,7 +180,7 @@ def test_dry_run_secondary_names_and_leave_one_out_must_match():
     assert names == {"N-star - N-shared": "N-star - N-shared", "best NN - best GBDT": "N-head - G-shared"}
     rec = {"full": -1e-5, "min": -2e-5, "max": 1e-5, "sign_flips": 1, "by_removed_domain": {"13": -2e-5, "14": 1e-5}}
     assert F.same_loo({**rec, "by_removed_domain": {13: -2e-5, 14: 1e-5}}, rec) == 5
-    with pytest.raises(CheckFailed, match="domains"):  # review: an emptied per-domain table passed
+    with pytest.raises(CheckFailed, match="domains"):  # an emptied per-domain table
         F.same_loo({**rec, "by_removed_domain": {}}, rec)
     with pytest.raises(CheckFailed, match="domain 14"):
         F.same_loo({**rec, "by_removed_domain": {13: -2e-5, 14: 3e-5}}, rec)
@@ -212,11 +212,11 @@ def test_latency_report_must_come_from_this_run_and_its_calibrators(tmp_path):
     run, sel, rep = _provenance_run(tmp_path)
     F.check_latency_provenance(rep, run, sel)
     other = copy.deepcopy(rep)
-    other["run"] = str(tmp_path / "smoke")  # review: a smoke report was frozen for the development run
+    other["run"] = str(tmp_path / "smoke")  # a smoke run's report under the development run
     with pytest.raises(CheckFailed, match="latency report is for"):
         F.check_latency_provenance(other, run, sel)
     lam = copy.deepcopy(rep)
-    lam["families"]["G-shared"]["seeds"]["2026"]["server"]["lambda"] = 100.0  # review: lambda 100 vs 1
+    lam["families"]["G-shared"]["seeds"]["2026"]["server"]["lambda"] = 100.0  # the served lambda differs from the chosen one (100 vs 1)
     with pytest.raises(CheckFailed, match="measured on"):
         F.check_latency_provenance(lam, run, sel)
     cal = copy.deepcopy(rep)
@@ -271,5 +271,5 @@ def test_a_failed_process_table_is_a_failed_measurement(monkeypatch):
     import scripts.latency_c as L
     monkeypatch.setattr(L.sys, "platform", "darwin")  # the rule is macOS-only; off macOS it is refused before ps runs
     monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="x"))
-    with pytest.raises(RuntimeError, match="process table unavailable"):  # review: it read as 0% CPU
+    with pytest.raises(RuntimeError, match="process table unavailable"):  # an empty table must not read as 0% CPU
         L.environment()

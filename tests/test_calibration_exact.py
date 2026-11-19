@@ -83,9 +83,8 @@ def test_exact_calibrator_predicts_with_the_same_formula():
 
 
 def test_global_slope_below_the_bound_still_gives_a_feasible_converged_fit():
-    """Review of revision 4: with a global slope of 0.000289 (< MIN_SLOPE) the zero start was infeasible; a group
-    kept that slope and still reported converged, and moving one row to another group divided by zero in the line
-    search and looped."""
+    """A global slope of 0.000289 (< MIN_SLOPE) makes the zero start infeasible. The solver must still return a
+    feasible fit, not keep that slope and report convergence, and must not divide by zero in the line search."""
     p, y, g = _data()
     base = GlobalPlatt(0.000288539, -4.0)
     for groups in (g, np.r_[g[:-1], 3]):  # the second: one row reassigned

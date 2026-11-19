@@ -43,7 +43,7 @@ def write_case(tmp: Path, monkeypatch, shuffle_v2: bool = False) -> Path:
         pl.DataFrame({"ad_feat1": tok, "last": y.astype(float)}).write_parquet(data / name)
         files[name] = (tok, base, y, user)
     choice = {}
-    # each model over-predicts the G1 groups by `shift` logits; the weighted MoAE (amendment 3) less than the plain one
+    # each model over-predicts the G1 groups by `shift` logits; the weighted MoAE less than the plain one
     for model, shift in (("MoAE", 0.6), ("BASE", 0.9), (Q.WEIGHTED, 0.3)):
         choice[model] = {"lr": 0.003, "lamda": 0.3}
         for s in Q.SEEDS:
@@ -77,7 +77,7 @@ def test_calibration_choice_bootstrap_and_q3(tmp_path, monkeypatch):
         assert rec["lambda_chosen"][model]["iii"]["main"] == min(means, key=means.get)
         # the known bias is corrected: group calibration beats the global mapping on G1 here
         assert rec["v2_bootstrap"][f"{model}: iii - ii"]["diff"] < 0
-        for r in rids:  # one file per run (a dot in the run id used to make them overwrite each other)
+        for r in rids:  # one file per run, even with dots in the run id
             assert Q.calibrator_path(r, "iii", "main").exists()
         q_ii, q_iii = Q.load_calibrated(rids[1], "iii", "main", np.full(4, 0.05), np.array([0, 1, 15, -1]))
         assert np.all((q_iii > 0) & (q_iii < 1)) and q_ii[0] == q_ii[3]
@@ -230,7 +230,7 @@ def test_the_settings_are_chosen_only_from_the_complete_grid(tmp_path, monkeypat
     from cvr import final_eval_e as F
     monkeypatch.setattr(E, "OUT", tmp_path)
     rows = grid_rows()
-    if case == "missing":  # review: one MoAE and one BASE row were enough to choose
+    if case == "missing":  # one MoAE and one BASE row must not be enough to choose
         rows = rows[:-1]
     elif case == "duplicate":
         rows = rows + [rows[0]]
@@ -253,7 +253,7 @@ def test_the_freeze_needs_all_nine_research_runs(tmp_path, monkeypatch):
     path = write_case(tmp_path, monkeypatch)
     F = add_test_and_records(tmp_path, monkeypatch, path)
     choice = json.loads(path.read_text())
-    choice.pop(Q.WEIGHTED)  # review: Q2 froze six checkpoints with the Q4 description and the dry run passed
+    choice.pop(Q.WEIGHTED)  # a freeze without the weighted runs
     path.write_text(json.dumps(choice))
     E.OUT.joinpath("config_choice.json").write_text(path.read_text())
     Q.calibrate(path)
@@ -268,7 +268,7 @@ def test_the_dry_run_reproduces_every_seed_pair(tmp_path, monkeypatch):
     Q.calibrate(path)
     sel_path = E.OUT / "q2" / "selection.json"
     sel = json.loads(sel_path.read_text())
-    sel["v2_bootstrap"]["Q4: weighted iii - plain iii"]["per_pair_diff"] = [123.0, 123.0, 123.0]  # review: passed
+    sel["v2_bootstrap"]["Q4: weighted iii - plain iii"]["per_pair_diff"] = [123.0, 123.0, 123.0]  # the mean alone would pass
     sel_path.write_text(json.dumps(sel))
     F.freeze()
     with pytest.raises(F.CheckFailed, match="seed pair"):
@@ -285,7 +285,7 @@ def test_a_missing_test_prediction_is_found_before_the_claim(tmp_path, monkeypat
     done_predicting(F)
     rid = Q.run_id("BASE", 0.003, 0.3, 2027)
     Q.prediction_file("q1", "model_after_train-19", Q.checkpoint_sha(rid, "train-19.parquet"), "test.parquet").unlink()
-    with pytest.raises(F.CheckFailed, match="no test predictions"):  # review: this was found after the claim
+    with pytest.raises(F.CheckFailed, match="no test predictions"):  # caught before the claim
         F.test("q1")
     assert not (F.FROZEN / "evaluation_q1.lock").exists()
 
@@ -314,7 +314,7 @@ def test_a_malformed_test_prediction_is_found_before_the_claim(tmp_path, monkeyp
     if name == "q1":
         f = Q.prediction_file("q1", "model_after_train-19", Q.checkpoint_sha(rid, "train-19.parquet"), "test.parquet")
         meta = json.loads(f.with_suffix(".json").read_text())
-        meta.pop("gauc")  # review: this raised KeyError after the claim
+        meta.pop("gauc")  # caught before the claim, not as a KeyError after it
         f.with_suffix(".json").write_text(json.dumps(meta))
     else:
         f = Q.prediction_file("research", Q.CKPT, Q.checkpoint_sha(rid), "test.parquet")

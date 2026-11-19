@@ -147,7 +147,7 @@ def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_lis
     out = tmp_path / "pred"
     with pytest.raises(ValueError, match="freeze manifest"):
         R.predict(predict_args(mac, out, [c0], "test.parquet"))
-    with pytest.raises(ValueError, match="bare official names"):  # review: ./test.parquet was scored without one
+    with pytest.raises(ValueError, match="bare official names"):  # ./test.parquet must not bypass the manifest
         R.predict(predict_args(mac, out, [c0], "./test.parquet"))
     test_sha = R.sha256(mac / "test" / "test.parquet")
     manifest = tmp_path / "freeze_q2.json"
@@ -155,7 +155,7 @@ def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_lis
     with pytest.raises(ValueError, match="not listed"):
         R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))
     manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha}))
-    with pytest.raises(ValueError, match="exactly the 2 frozen checkpoints"):  # review: a subset claimed the run
+    with pytest.raises(ValueError, match="exactly the 2 frozen checkpoints"):  # a subset must not claim the run
         R.predict(predict_args(mac, out, [c0], "--official_test", str(manifest), "test.parquet"))
     with pytest.raises(ValueError, match="exactly the 2 frozen checkpoints"):  # the same checkpoint twice
         R.predict(predict_args(mac, out, [c0, c0], "--official_test", str(manifest), "test.parquet"))
@@ -166,7 +166,7 @@ def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_lis
     manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha}))
     R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))  # both seeds at once
     assert json.loads((tmp_path / "freeze_q2.official_test_status.json").read_text())["state"] == "done"
-    with pytest.raises(ValueError, match="already used"):  # review: the same manifest scored the test twice
+    with pytest.raises(ValueError, match="already used"):  # one evaluation per manifest
         R.predict(predict_args(mac, tmp_path / "pred2", [c0, c1], "--official_test", str(manifest), "test.parquet"))
 
 
@@ -176,7 +176,7 @@ def test_predictions_of_two_checkpoints_never_replace_each_other(tree, tmp_path)
     c0, c1 = run / "model_after_train-00.pt", run / "model_after_train-01.pt"
     out = tmp_path / "pred"
     rec = R.predict(predict_args(mac, out, [c0], "train-02.parquet"))
-    rec |= R.predict(predict_args(mac, out, [c1], "train-02.parquet"))  # review: this used to replace the first file
+    rec |= R.predict(predict_args(mac, out, [c1], "train-02.parquet"))  # must not replace the first file
     files = sorted(out.rglob("train-02.npz"))
     assert len(files) == 2
     for c in (c0, c1):
@@ -247,7 +247,7 @@ def test_a_diverging_run_stops_and_is_recorded(tree, tmp_path):
     assert not (out / "resume.pt").exists()
 
 
-# ------------------------------------------------------------------ amendment 3: group-weighted main loss
+# ------------------------------------------------------------------ group-weighted main loss
 def g1_file(tree, tmp_path) -> Path:
     """A G1 list of five ad_feat1 tokens that occur in the synthetic training files."""
     _, mac = tree
@@ -331,7 +331,7 @@ def test_the_g1_list_must_be_the_fixed_one_at_start_and_on_resume(tree, tmp_path
     out = weighted(tree, tmp_path / "w2", groups, "2", stop=TRAIN[0])
     fixed = list_sha(groups)
     toks = json.loads(groups.read_text())["G1"]
-    groups.write_text(json.dumps({"G1": toks[1:], "C": []}))  # another list under the same path (review)
+    groups.write_text(json.dumps({"G1": toks[1:], "C": []}))  # another list under the same path
     base = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--device", "cpu", "--num_workers", "0"]
     with pytest.raises(ValueError, match="not the fixed"):
         R.train(R.parser().parse_args(base + ["--resume", str(out)]))
@@ -388,7 +388,7 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     q = np.array([server.predict([rows[i]])[0] for i in idx])
     assert np.abs(q - gs.predict(p_batch[idx], g[idx])).max() <= 1e-6
 
-    # new inputs (review): a new user, a value absent from the official vocabulary, a group unseen in training
+    # new inputs: a new user, a value absent from the official vocabulary, a group unseen in training
     r = dict(rows[idx[1]])
     base_q = server.predict([r])[0]
     assert server.predict([r | {"user_id": "never-seen-user"}])[0] == base_q  # user_id is not a model input

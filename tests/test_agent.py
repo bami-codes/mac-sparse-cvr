@@ -1,8 +1,8 @@
 """Hypothesis agent on synthetic data with a scripted LLM test double (no API key, no LightGBM).
 
-Each test mirrors a failure found in review: a zero-row arm produced NaN yet "confirmed"; an unknown
-evidence id was still confirmed; report numbers were checked by "exists somewhere" (sign flips and invented
-numbers passed); per-session multiple testing was the only family.
+Each test pins down a failure the agent must not have: an empty arm that yields NaN yet "confirmed", a confirmed
+verdict for an unknown evidence id, report numbers that are merely "present somewhere" (so sign flips and invented
+numbers slip through), and multiple-testing control per session instead of per run.
 """
 
 import json
@@ -88,7 +88,7 @@ def test_numbers_come_from_code_and_llm_text_is_checked(tmp_path):
     assert summary["items_missing_from_report"] == 0  # the checks above saw real text (test double bug, fixed)
     reports = json.loads((out / "reports.json").read_text())
     assert all(it["interpretation"] for rep in reports for it in rep["items"])
-    # what the review injected into a report: a sign flip / invented number and a causal claim
+    # a report with a sign flip or an invented number, and a causal claim
     bad = check_text("광고 이미지를 바꾸면 전환율이 15% 상승한다는 인과 효과가 입증됐다", "not_confirmed")
     assert bad["digits"] > 0 and {"인과", "입증"} <= set(bad["causal_words"])
     assert check_text("효과 추정치는 +0.012345였다", "confirmed")["digits"] > 0
@@ -154,8 +154,8 @@ def test_per_test_plan_items_normalize_and_validate():
 
 
 def test_noise_models_never_change_a_verdict(tmp_path):
-    # review of 23ac4b3: a normal-reference null built from 4-5 noise models rejected 8-9% of the time at
-    # nominal 5% (synthetic null). Noise models are now descriptive: moving them changes only the sensitivity.
+    # A null built from 4-5 noise models rejected 8-9% of the time at a nominal 5% on synthetic data, so noise
+    # models are descriptive only: changing them may move the sensitivity, never the verdict.
     folder = _menu(tmp_path / "menu")
     before = Menu(folder).ablation_effect("visual_similarity", "all")
     df = pl.read_parquet(folder / "confirmation_predictions.parquet")
@@ -173,7 +173,7 @@ class _Reporter:
 
 
 def test_requests_that_differ_in_any_argument_are_different_tests(tmp_path):
-    # review of 23ac4b3: A/B requests for a 1% and a 10% effect shared one key; both reported the 1% sample size
+    # two A/B requests (a 1% and a 10% effect) must not share a key and report the same sample size
     from cvr.agent.session import call_key, normalize
 
     base = {"claim_type": "causal", "test": "ab_test_design", "segment": "all", "evidence": ["E3"], "statement": "s"}
@@ -193,8 +193,8 @@ def test_requests_that_differ_in_any_argument_are_different_tests(tmp_path):
 
 
 def test_verdict_answers_the_code_question_not_the_planner_sentence(tmp_path):
-    # review of c421398: a statement saying the OPPOSITE of what the tool tests was reported "confirmed" with
-    # 100% rule compliance. The verdict now attaches to a code-written question; LLM text is shown as unverified.
+    # A planner sentence can say the opposite of what the tool tests and still pass every structural rule, so the
+    # verdict belongs to the question the code wrote, and the LLM's text is shown as unverified.
     from cvr.agent.session import normalize
 
     h = normalize({"id": 1, "statement": "구매 이력 특성을 포함한 모델은 제외한 모델보다 확증 자료의 LogLoss가 높다.",
@@ -213,8 +213,8 @@ def test_verdict_answers_the_code_question_not_the_planner_sentence(tmp_path):
 
 
 def test_user_bootstrap_needs_more_than_one_user(tmp_path):
-    # review of c421398: 60,000 clicks from ONE user passed the row/positive gate and gave a zero-width
-    # interval with p = 0.002
+    # 60,000 clicks from one user pass a row/positive gate, yet a user bootstrap over one user gives a zero-width
+    # interval (p = 0.002)
     df = pl.read_parquet(_menu(tmp_path / "menu") / "confirmation_predictions.parquet")
     meta = {"config": {"data": {"confirmation": ["synthetic"]}}}
     one = Menu.from_frame(df.with_columns(pl.lit(0).alias("user_key")), meta)

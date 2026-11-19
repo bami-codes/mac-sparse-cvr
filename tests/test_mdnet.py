@@ -116,7 +116,7 @@ def test_unseen_domains_all_get_the_shared_prediction_after_training(variant):
         with torch.no_grad():
             expected = torch.sigmoid(_shared_path(net, cat, num)).numpy().astype(np.float64)
         assert np.allclose(preds[d], expected, rtol=0, atol=1e-7), d
-    # review counterexample: UNKNOWN and MISSING rows differed by up to 0.12 through the shared input embedding
+    # UNKNOWN and MISSING rows must not differ through the shared input embedding (they did, by up to 0.12)
     assert np.array_equal(preds[UNKNOWN], preds[MISSING]) and np.array_equal(preds[UNKNOWN], preds[6])
     with torch.no_grad():  # the unseen codes' own parameter rows are still at their initial (identity) values
         for d in UNSEEN:
@@ -246,7 +246,7 @@ def test_pn_min_rows_is_below_the_small_group_threshold():
     assert PN_MIN_ROWS <= 3000
 
 
-# ---------------------------------------------------------------- review counterexamples (§16 revision 2)
+# ---------------------------------------------------------------- counterexamples to the normalization (§16)
 def _data_constant_features(seed=0):
     """Domain 2: 5,000 rows where numeric input 2 is ALWAYS 0; domain 3: 3,000 rows where it is 0/1.
     Numeric input 3 is 0 on every training row. The label does not depend on either input."""
@@ -282,9 +282,9 @@ def test_pn_dimension_constant_in_a_domain_falls_back_to_the_global_statistics()
         g_mu, g_var = net.pn.global_stats()
     j = net.emb[0].embedding_dim * len(net.in_cols) + 2
     assert torch.allclose(zn[:, j], (x[:, j] - g_mu[j]) / torch.sqrt(g_var[j] + PN_EPS))
-    assert float(zn[:, j].abs().max()) < 10  # review: 736 before the fix
+    assert float(zn[:, j].abs().max()) < 10  # was 736 before the fix
     p = m.predict(flipped)
-    assert (p > 1e-4).all() and (p < 1 - 1e-4).all()  # review: 0.0586 -> 0.0 before the fix
+    assert (p > 1e-4).all() and (p < 1 - 1e-4).all()  # was 0.0586 -> 0.0 before the fix
 
 
 @pytest.mark.parametrize("variant", ["int", "shared", "head", "star"])
@@ -293,12 +293,12 @@ def test_numeric_column_constant_in_training_is_neutral_at_inference(variant):
     assert m.num_keep[3] == 0 and m.num_keep[:3].all()
     sub = a.take(np.arange(64))
     changed = MDArrays(sub.cat.copy(), sub.num.copy())
-    changed.num[:, 3] = 1.0  # review: standardized to 1,000,000 before the fix
+    changed.num[:, 3] = 1.0  # was standardized to 1,000,000 before the fix
     assert np.array_equal(m.predict(changed), m.predict(sub))
 
 
 def test_star_optimizer_steps_hold_at_least_one_batch_of_rows():
-    sizes = {2: 4096, 3: 8191, 4: 5}  # review: these became three single updates of 4,096 / 8,191 / 5 rows
+    sizes = {2: 4096, 3: 8191, 4: 5}  # must not become three single updates of 4,096 / 8,191 / 5 rows
     dom = np.concatenate([np.full(n, d) for d, n in sizes.items()])
     dom_rows = [np.flatnonzero(dom == d) for d in sizes]
     for seed in range(20):
@@ -329,7 +329,7 @@ def test_single_row_and_batched_predictions_agree_within_the_float32_tolerance(v
     assert np.abs(single - batched).max() <= NN_SINGLE_VS_BATCH_TOL
 
 
-# ---------------------------------------------------------------- review counterexample (§16 revision 3)
+# ---------------------------------------------------------------- counterexample: chunk order
 def _two_domain_step(code_a, code_b, seed=0):
     """Domain A (4,096 rows, numeric mean -1) and domain B (512 rows, numeric mean +1) in ONE training step."""
     rng = np.random.default_rng(seed)
@@ -357,11 +357,11 @@ def test_star_step_does_not_depend_on_which_code_each_domain_has():
     nets = {"a2b3": copy.deepcopy(base), "a3b2": copy.deepcopy(base)}
     batches = {"a2b3": _two_domain_step(2, 3), "a3b2": _two_domain_step(3, 2)}
     first = {k: torch.sigmoid(nets[k](*batches[k][:2])).detach() for k in nets}  # training forward = one step
-    assert float((first["a2b3"] - first["a3b2"]).abs().max()) < 1e-6  # review: 0.0848 before the fix
+    assert float((first["a2b3"] - first["a3b2"]).abs().max()) < 1e-6  # was 0.0848 before the fix
     for k in nets:  # the global mean after the first step is the mean of ALL the step's rows
         pooled = batches[k][1].double().mean(0)
         j = slice(net_num_start(nets[k]), None)
-        assert torch.allclose(nets[k].pn.glob_mean[j].double(), pooled, atol=1e-5)  # review: 0 instead of -0.7778
+        assert torch.allclose(nets[k].pn.glob_mean[j].double(), pooled, atol=1e-5)  # was 0 instead of -0.7778
     nets = {"a2b3": copy.deepcopy(base), "a3b2": copy.deepcopy(base)}
     loss_fn = nn.BCEWithLogitsLoss()
     for k in nets:
@@ -369,7 +369,7 @@ def test_star_step_does_not_depend_on_which_code_each_domain_has():
         nets[k].eval()
     with torch.no_grad():
         after = {k: torch.sigmoid(nets[k](*batches[k][:2])) for k in nets}
-    assert float((after["a2b3"] - after["a3b2"]).abs().max()) < 1e-6  # review: 1.94e-4 before the fix
+    assert float((after["a2b3"] - after["a3b2"]).abs().max()) < 1e-6  # was 1.94e-4 before the fix
 
 
 def net_num_start(net):
@@ -385,7 +385,7 @@ def test_reload_check_rows_keep_every_prediction_batch_identical():
     assert same_batch_rows(50_000, 60_000) == 49_152  # a prefix must end on a batch boundary
 
 
-# ---------------------------------------------------------------- review counterexample (§16 revision 4)
+# ---------------------------------------------------------------- counterexample: training vs evaluation rule
 def test_domain_id_embedding_dimensions_always_use_the_global_statistics():
     import copy
     m = _fit("star", epochs=2)[1]
@@ -413,4 +413,4 @@ def test_domain_id_embedding_dimensions_always_use_the_global_statistics():
     assert torch.equal(mu_tr[ids], g_mu[ids]) and torch.equal(var_tr[ids], g_var[ids])
     z_eval = (x[:, ids] - mu_eval[ids]) / torch.sqrt(var_eval[ids] + PN_EPS)
     z_tr = (x[:, ids] - mu_tr[ids]) / torch.sqrt(var_tr[ids] + PN_EPS)
-    assert torch.equal(z_eval, z_tr)  # review: -0.577 (training) vs +1.000 (evaluation) before the rule
+    assert torch.equal(z_eval, z_tr)  # was -0.577 (training) vs +1.000 (evaluation) before the rule

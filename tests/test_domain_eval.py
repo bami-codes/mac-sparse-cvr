@@ -145,7 +145,7 @@ def test_verdict_refuses_missing_seed_evidence():
     ok = _boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5)
     one = _boot(-0.0002, -0.00005, [-1e-4], 5e-5, seeds=(2026,))
     none = _boot(-0.0002, -0.00005, [], 5e-5, seeds=())
-    for b in (one, none):  # review: both gave adoption_candidate before
+    for b in (one, none):  # neither may be an adoption candidate
         with pytest.raises(ValueError, match="seed pairs"):
             D.verdict(b, l_int=0.05, p99_by_seed=P99)
     with pytest.raises(ValueError, match="p99 measured"):
@@ -172,7 +172,7 @@ def test_development_config_guard():
     D.check_development_sources(_files())
     bad = [_files(v2=["train-13.parquet"]), _files(train=["train-14.parquet"]), _files(v1=["train-12.parquet"]),
            _files(test="test.parquet"), _files(v2=["../test/test.parquet"])]
-    for d in bad:  # review: the first three passed before (only a `test` key was refused)
+    for d in bad:  # every one must be refused, not only a `test` key
         with pytest.raises(ValueError):
             D.check_development_sources(d)
     smoke = {"mode": "smoke", "smoke_file": "train-08.parquet", "smoke_train_buckets": [0, 60],
@@ -186,11 +186,11 @@ def test_development_config_guard():
 
 def test_verdict_uses_the_preregistered_seeds_and_finite_latencies():
     one = _boot(-0.0002, -0.00005, [-1e-4], 5e-5, seeds=(2026,))
-    with pytest.raises(ValueError, match="seed pairs"):  # review: a [2026]-only run gave adoption_candidate
+    with pytest.raises(ValueError, match="seed pairs"):  # a single seed is not enough
         D.verdict(one, l_int=0.05, p99_by_seed={2026: 0.2})
     ok = _boot(-0.0002, -0.00005, [-1e-4, -2e-4, -3e-4], 5e-5)
     for bad in ({2026: 0.3, 2027: float("nan"), 2028: 0.4}, {2026: 0.3, 2027: 0.0, 2028: 0.4},
-                {2026: 0.3, 2027: float("inf"), 2028: 0.4}):  # review: NaN gave adoption_candidate in one order
+                {2026: 0.3, 2027: float("inf"), 2028: 0.4}):  # a non-finite value must fail in any order
         with pytest.raises(ValueError, match="finite and positive"):
             D.verdict(ok, l_int=0.05, p99_by_seed=bad)
 
@@ -198,7 +198,7 @@ def test_verdict_uses_the_preregistered_seeds_and_finite_latencies():
 def test_development_config_guard_compares_resolved_paths(tmp_path):
     base = {"mode": "files", "root": str(tmp_path / "train"), "train": ["train-08.parquet"]}
     for v1, v2 in (("train-11.parquet", "./train-11.parquet"), ("train-11.parquet", "../train/train-11.parquet")):
-        with pytest.raises(ValueError, match="listed for both"):  # review: "./train-11.parquet" passed before
+        with pytest.raises(ValueError, match="listed for both"):  # "./train-11.parquet" is the same file
             D.check_development_sources(base | {"v1": [v1], "v2": [v2]})
     with pytest.raises(ValueError, match="holdout"):
         D.check_development_sources(base | {"v1": ["train-11.parquet"], "v2": ["./sub/../train-13.parquet"]})
@@ -209,7 +209,7 @@ def test_development_config_guard_ignores_case(tmp_path):
     root.mkdir()
     (root / "train-11.parquet").write_bytes(b"")
     base = {"mode": "files", "root": str(root), "train": ["train-08.parquet"]}
-    with pytest.raises(ValueError, match="listed for both"):  # review: passed as two files on this Mac
+    with pytest.raises(ValueError, match="listed for both"):  # the same file under another spelling
         D.check_development_sources(base | {"v1": ["train-11.parquet"], "v2": ["TRAIN-11.PARQUET"]})
     with pytest.raises(ValueError, match="holdout"):
         D.check_development_sources(base | {"v1": ["train-11.parquet"], "v2": ["TRAIN-13.PARQUET"]})

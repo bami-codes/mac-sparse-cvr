@@ -21,7 +21,7 @@ def test_all_fifteen_checkpoints_are_copied_and_verified(tmp_path):
         d.mkdir(parents=True)
     (bin_ / "rsync").write_text(SHIM)
     (bin_ / "rsync").chmod(0o755)
-    choice = {"MoAE": {"lr": 0.00035, "lamda": 0.4}, "BASE": {"lr": 0.0035, "lamda": 0.3}}  # long ids (review)
+    choice = {"MoAE": {"lr": 0.00035, "lamda": 0.4}, "BASE": {"lr": 0.0035, "lamda": 0.3}}  # long run ids
     (work / "runs" / "e_study" / "config_choice.json").write_text(json.dumps(choice))
     ids = [f"{m}_lr{c['lr']:g}_lam{c['lamda']:g}_s{s}" for m, c in choice.items() for s in (2026, 2027, 2028)]
     ids += [f"MoAE-g1w2_lr0.00035_lam0.4_s{s}" for s in (2026, 2027, 2028)]
