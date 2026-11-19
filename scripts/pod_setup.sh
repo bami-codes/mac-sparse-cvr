@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Study E main pod (docs/DESIGN.md §18.10, amendment 2): environment, all official files, official preprocessing.
+# Set up the study E GPU pod: environment, every official data file, the official preprocessing.
 #   bash scripts/pod_setup.sh        # then: python scripts/pod_queue.py run runs/e_runs/jobs_grid.json --gpus 4
 set -euo pipefail
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -12,7 +12,7 @@ mkdir -p runs/e_runs
 python3 scripts/fetch_mac.py vocabs
 { for i in $(seq -w 0 19); do echo "train/train-$i.parquet"; done; echo test/test.parquet; } \
   | xargs -P 4 -I{} python3 scripts/fetch_mac.py {}
-# official preprocessing: six files at a time (about 23 GB of memory each in the pilot)
+# official preprocessing: six files at a time (about 23 GB of memory each)
 { for i in $(seq -w 0 19); do echo "train-$i.parquet"; done; echo test.parquet; } \
   | xargs -P 6 -I{} uv run python -m cvr.pymal_run preprocess {}
 ls data/pymal_cache/*.pkl | wc -l

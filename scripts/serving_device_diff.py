@@ -1,13 +1,10 @@
-"""Study E serving: where the Linux server's probabilities differ from the Mac's (docs/DESIGN.md §18.12.1).
+"""Tell apart differences between machines from differences inside one machine, on the serving check rows.
 
     PYTHONPATH=. uv run python scripts/serving_device_diff.py dump NAME       # on each machine
     PYTHONPATH=. uv run python scripts/serving_device_diff.py compare mac linux
 
-The Linux consistency check failed its tolerance of 1e-6 for MoAE (raw 1.80e-6) while BASE passed, the shared and
-per-candidate encodings agreed exactly and no value fell outside the vocabularies. dump serves the 2,999 check rows
-one row at a time and as one batch, raw and calibrated (iii); compare puts the differences between the machines next to
-the differences inside each machine (one row vs a batch, and vs the saved evaluation predictions made in batches of
-4,096 on the Mac).
+dump serves the 2,999 check rows one at a time and as a single batch. compare lines up machine vs machine next to
+one row vs a batch on the same machine, and both vs the saved evaluation predictions (Mac, batches of 4,096).
 """
 
 import json

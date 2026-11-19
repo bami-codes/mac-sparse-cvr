@@ -3,8 +3,8 @@
     python scripts/pod_left.py runs/e_runs/jobs_grid.json
 
 'left' counts the jobs that are neither done nor diverged, using pod_queue's own state rules. The queue is looked
-up with a pattern that cannot match this process or the shell that started it (a plain 'pod_queue.py run' in the
-ssh command line used to match itself, so a stopped queue looked alive).
+up with a pattern that cannot match this process or the shell that started it: a plain 'pod_queue.py run' matches
+the ssh command line itself, and a stopped queue then looks alive.
 """
 
 import json

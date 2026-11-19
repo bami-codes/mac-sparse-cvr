@@ -1,25 +1,21 @@
-"""Study E serving: consistency and latency of BASE and MoAE (train-17, seed 2026), docs/DESIGN.md §18.12.1 (v3).
+"""Check and time the served BASE and MoAE models (train-17, seed 2026). Protocol: docs/DESIGN.md §18.12.1.
 
     PYTHONPATH=. uv run python scripts/serving_e.py prepare        # once, on the Mac: the rows, plan and saved values
     PYTHONPATH=. uv run python scripts/serving_e.py check NAME     # consistency on this machine
     PYTHONPATH=. uv run python scripts/serving_e.py session NAME   # one latency session, NAME = <machine>_<n>
     PYTHONPATH=. uv run python scripts/serving_e.py summary        # the sessions of every machine
 
-prepare reads V2 once and writes runs/e_study/serving_v3/{rows.parquet, plan.npz, meta.json}: the raw rows of the
-consistency check (2,000 uniform and 1,000 sparse-group rows), of the click traffic, of the candidate pool and of the
-request owners, with the saved evaluation predictions of the check rows. Every later step reads only these files, the
-two checkpoints and their run records, the vocabularies and the frozen calibrators, so the same rows are measured on
-any machine.
+prepare samples V2 once and writes runs/e_study/serving_v3/: the raw rows for the consistency check (2,000 random and
+1,000 sparse-group rows), the click traffic, a pool of candidates and the request owners, plus the saved evaluation
+predictions of the check rows. Later steps read only these files, the two checkpoints, the vocabularies and the
+calibrators, so every machine measures the same rows.
 
-check: each check row served alone must give the saved raw prediction and the frozen calibrator applied to it within
-1e-6, and the shared request encoding must equal one row per candidate on 320 requests.
+check: every check row served on its own must match its saved prediction, raw and calibrated, and the shared request
+encoding must match per-candidate encoding on 320 requests.
 
-session: latency protocol v3 (cvr/latency_v3.py). One thread at latency priority; 10,000 clicks and 6,000 requests
-of 100 candidates per model after warm-up; models in ABBA blocks, the two request paths alternating inside each block;
-a load gate before each block on macOS; per request the wall time by stage, the thread CPU time, involuntary context
-switches and GC runs. A synthetic request takes 100 candidates from a pool of 20,000 V2 rows (their ad and context
-features and precomputed similarity sequences) and the features and purchase history of another V2 row; computing the
-similarities, network, parsing and feature-store lookups are not timed.
+session: per model, 10,000 clicks and 6,000 requests of 100 candidates after warm-up, one thread at latency
+priority (cvr/latency_v3.py). A request pairs one V2 row's user features and purchase history with 100 candidates
+from a pool of 20,000 V2 rows. Network, parsing, feature-store lookups and computing the similarities are not timed.
 """
 
 import json
@@ -47,10 +43,9 @@ CLICK_WARMUP, CLICKS, CLICK_BLOCK = 200, 10000, 500
 REQ_WARMUP, REQUESTS, REQ_BLOCK = 200, 6000, 50
 SHARED_CHECK = 320
 SAVED_ON = "mac"  # the saved evaluation predictions were made on this Mac's CPU, in batches of 4,096
-# amendment after the Linux check failed (§18.12.1): on another machine, one row at a time is compared with the
-# cross-device tolerance of study E's device check (scripts/device_compare.py); the batch path, added on every machine,
-# keeps the 1e-6 tolerance. On the Linux server one MoAE row differed by 1.80e-6 from the saved value and by 1.86e-6
-# from the same server's own batch result (scripts/serving_device_diff.py): x86 rounds batch size 1 differently.
+# On another CPU, single rows get the cross-device tolerance of scripts/device_compare.py: x86 rounds batch size 1
+# differently, and one MoAE row in 2,999 moved by 1.8e-6 against the same server's own batch result. The batch path
+# keeps 1e-6 on every machine.
 CROSS_MACHINE_ROW_TOL = 1e-5
 SESSIONS_PER_MACHINE = 3
 DIR = Path("runs/e_study/serving_v3")

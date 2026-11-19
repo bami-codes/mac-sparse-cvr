@@ -1,4 +1,4 @@
-"""Study E job queue on a multi-GPU pod (docs/DESIGN.md §18.10, amendment 2): one training run per GPU at a time.
+"""Job queue for study E on a multi-GPU pod: one training run per GPU at a time.
 
     python scripts/pod_queue.py grid  > runs/e_runs/jobs_grid.json          # the paper's search space, seed 2026
     python scripts/pod_queue.py seeds --moae "<lr> <lamda>" --base "<lr>" > runs/e_runs/jobs_seeds.json
@@ -33,7 +33,7 @@ def job(model: str, lr: float, lamda: float, seed: int) -> dict:
     return {"id": jid, "model": model, "lr": lr, "lamda": lamda, "seed": seed, "train_args": args}
 
 
-WEIGHTED = "MoAE-g1w2"  # amendment 3 (Q4)
+WEIGHTED = "MoAE-g1w2"  # Q4: G1 clicks weighted 2x in the main loss
 
 
 def weighted(lr: float, lamda: float) -> list[dict]:
@@ -142,7 +142,7 @@ def main(argv: list[str]) -> None:
     p = sub.add_parser("seeds")
     p.add_argument("--moae", required=True, help="'<lr> <lamda>' chosen on train-19")
     p.add_argument("--base", required=True, help="'<lr>' chosen on train-19")
-    p.add_argument("--with-weighted", action="store_true", help="add amendment 3's three weighted MoAE runs")
+    p.add_argument("--with-weighted", action="store_true", help="add the three weighted MoAE runs (Q4)")
     for name in ("run", "summary"):
         p = sub.add_parser(name)
         p.add_argument("jobs", type=Path)

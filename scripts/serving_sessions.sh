@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Latency protocol v3 on one machine (docs/DESIGN.md §18.12.1): the consistency check, then sessions 20 minutes apart
+# Latency sessions on one machine (protocol: docs/DESIGN.md §18.12.1): the consistency check, then sessions 20 minutes apart
 # until three are valid, at most six attempts per machine in all, then the summary. Nothing else of this repository may
 # run meanwhile. A restart continues after the sessions already recorded (none is measured again or overwritten), and
 # the script fails unless the machine ends with three valid sessions.

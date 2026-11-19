@@ -3,7 +3,7 @@
     python scripts/device_compare.py <gpu .npz> <cpu .npz> <out .json>
 
 Passes only when the rows (users, labels) are the same and every probability column differs by at most TOL, with
-every difference finite: a NaN in one column used to pass because max() skips NaN comparisons (review).
+every difference finite. max() skips NaN, so without that check a NaN column would pass.
 """
 
 import json

@@ -13,7 +13,7 @@ SSH="ssh -i $HOME/.ssh/runpod_naver_ed25519 -p $port -o UserKnownHostsFile=$HOME
 mkdir -p runs/e_runs
 case "$1" in
   records)
-    # '**/val/**/train-19.json' means the same in GNU rsync and macOS openrsync ('val/**.json' did not: review);
+    # '**/val/**/train-19.json' matches the same files in GNU rsync and macOS openrsync ('val/**.json' does not);
     # the copy is then checked against the pod's own list of validation records
     rsync -a -e "$SSH" --include='*/' --include='run.json' --include='progress.json' --include='loss_*.npy' \
       --include='*.log' --include='**/val/**/train-19.json' --include='jobs_*.json' --exclude='*' --prune-empty-dirs \
@@ -49,7 +49,7 @@ PY
     { for id in $ids; do for k in 17 19; do echo "$id/model_after_train-$k.pt"; done; done
       for id in $wids; do echo "$id/model_after_train-17.pt"; echo "$id/run.json"; done; } \
       | xargs -n 1 -P 6 sh -c 'mkdir -p "runs/e_runs/$(dirname "$2")" && rsync -a -e "$0" "$1:/root/naver/runs/e_runs/$2" "runs/e_runs/$2"' "$SSH" "$addr"
-    # each path is one positional argument ($2): macOS xargs -I{} could not assemble the long weighted-run paths (review)
+    # each path goes in as a positional argument ($2): macOS xargs -I{} cannot build the long weighted-run paths
     python3 - $ids $wids <<'PY'
 import hashlib, json, sys
 from pathlib import Path
