@@ -342,6 +342,80 @@ def repair(llm, user: str, hyps: list[dict], problems: dict[int, str], groups: l
     return out
 
 
+# v2.2: the planner picks from a numbered list of tests that are possible and not yet run in the session
+DIRECTIONS = ["higher_cvr_with_feature", "lower_cvr_with_feature", "group_helps", "helps_more_in_segment",
+              "helps_more_in_segment_b"]
+PLANNER_V22 = PLANNER_V21 + """
+- 검정은 아래 '검정 후보' 목록에서 번호(candidate)로 고른다. 목록에 없는 검정은 고를 수 없다.
+- direction은 도구에 맞게 쓴다: association은 higher_cvr_with_feature 또는 lower_cvr_with_feature, ablation_effect는
+  group_helps, interaction은 helps_more_in_segment 또는 helps_more_in_segment_b."""
+TRANSCRIBE_V22 = TRANSCRIBE + "\n후보 번호(candidate)와 direction을 글에 적힌 그대로 옮긴다."
+
+
+def candidate_menu(session: int) -> dict[str, dict]:
+    """Fixed ids for the menu's 263 tests (C001-C263), plus the planted claim's group in the negative-control
+    session (N001-N009: not in the menu, so never a hit)."""
+    out = {f"C{i:03d}": h for i, h in enumerate(menu_tests(), start=1)}
+    if session == NEGATIVE_SESSION:
+        out |= {f"N{i:03d}": hyp("ablation_effect", s, group=NEGATIVE_GROUP) for i, s in enumerate(SEGMENTS, start=1)}
+    return out
+
+
+def candidate_line(cid: str, h: dict) -> str:
+    if h["tool"] == "association":
+        return f"{cid} association feature={h['feature']} segment={h['segment']}"
+    if h["tool"] == "ablation_effect":
+        return f"{cid} ablation_effect group={h['group']} segment={h['segment']}"
+    return f"{cid} interaction group={h['group']} segment={h['segment']} segment_b={h['segment_b']}"
+
+
+def from_candidate(item: dict, menu: dict[str, dict]) -> dict:
+    """A picked candidate as a hypothesis. A direction that does not fit the tool is kept as it is, so validation
+    marks the hypothesis invalid."""
+    h = dict(menu[item["candidate"]])
+    d = item.get("direction")
+    if h["tool"] == "interaction" and d == "helps_more_in_segment_b":
+        h["segment"], h["segment_b"], d = h["segment_b"], h["segment"], "group_helps_more_in_segment"
+    elif h["tool"] == "interaction" and d == "helps_more_in_segment":
+        d = "group_helps_more_in_segment"
+    return h | {"expected": d, "statement": item.get("statement", ""), "evidence": item.get("evidence") or [],
+                "candidate": item["candidate"]}
+
+
+def schema_v22(remaining: list[str]) -> dict:
+    item = {"type": "object", "required": ["candidate", "direction", "statement", "evidence"], "properties": {
+        "candidate": {"type": "string", "enum": remaining}, "direction": {"type": "string", "enum": DIRECTIONS},
+        "statement": {"type": "string"}, "evidence": {"type": "array", "minItems": 1, "items": {"type": "string"}}}}
+    return {"type": "object", "required": ["hypotheses"], "properties": {"hypotheses": {
+        "type": "array", "minItems": SLOTS, "maxItems": SLOTS, "items": item}}}
+
+
+def plan_round_v22(llm, items: list[dict], session: int, history: str | None, think: bool, role: str,
+                   tested: set[str], attempts: int = 3) -> list[dict]:
+    """One planner turn over the numbered list of untested candidates; returns hypotheses."""
+    menu = candidate_menu(session)
+    remaining = [cid for cid, h in menu.items() if canon(h)[0] not in tested]
+    listing = "\n".join(candidate_line(cid, menu[cid]) for cid in remaining)
+    neg = session == NEGATIVE_SESSION
+    user = (f"근거 자료:\n{evidence_text(items, neg)}\n\n검정 후보 (아직 검정하지 않은 것만):\n{listing}"
+            + (f"\n\n{history}" if history else ""))
+    for i in range(attempts):
+        try:
+            if think:
+                draft = llm.text(PLANNER_V22 + THINK_EXTRA, user, role=f"{role}_think", max_tokens=8192, thinking="medium")
+                plan = llm.structured(TRANSCRIBE_V22, f"{draft}\n\n검정 후보 번호는 다음 중 하나다:\n{listing}",
+                                      schema_v22(remaining), role=f"{role}_transcribe")
+            else:
+                plan = llm.structured(PLANNER_V22, user, schema_v22(remaining), role=role)
+            picks = [x for x in plan.get("hypotheses", []) if x.get("candidate") in menu][:SLOTS]
+            return [from_candidate(x, menu) for x in picks]
+        except LLMError:
+            if i == attempts - 1:
+                raise
+            time.sleep(10 * (i + 1))
+    return []
+
+
 def schema_five(groups: list[str]) -> dict:
     """The final run's per-test schema with exactly five items and no experiment-design variant."""
     s = plan_schema(groups)
@@ -384,18 +458,22 @@ def _plan_round(llm, items: list[dict], session: int, history: str | None, think
     return list(plan.get("hypotheses", []))[:SLOTS]
 
 
-def run(scripted: bool = False, out: Path = OUT, v21: bool = False) -> dict:
-    """v2 (§19) or, with v21, the same run with the repair step and citable feedback ids (§19.9)."""
+def run(scripted: bool = False, out: Path = OUT, v21: bool = False, v22: bool = False) -> dict:
+    """v2 (§19); with v21 the repair step and citable feedback ids (§19.9); with v22 picks from a numbered list of
+    untested candidates, with citable ids and no repair (§19.10)."""
     items = json.loads((out / "evidence.json").read_text())["items"]
     known = {e["id"] for e in items}
     cache: dict = {}
-    record = {"version": "v2.1" if v21 else "v2", "arms": {a: {} for a in ARMS}, "common_round_1": {}, "repairs": []}
-    tag = "_v21" if v21 else ""
+    record = {"version": "v2.2" if v22 else "v2.1" if v21 else "v2", "arms": {a: {} for a in ARMS},
+              "common_round_1": {}, "repairs": []}
+    tag = "_v22" if v22 else "_v21" if v21 else ""
     dest = out / (f"run{tag}_scripted.json" if scripted else f"run{tag}.json")
     audit = AuditLog(out / f"audit{tag}.jsonl")
     system = PLANNER_V21 if v21 else PLANNER_V2
 
     def turn(llm, k, rounds, arm, tested, known_now, role, history, think):
+        if v22:
+            return plan_round_v22(llm, items, k, history, think, role, tested)
         hyps = plan_round(llm, items, k, history, think=think, role=role, system=system)
         if v21:
             probs = slot_problems(hyps, tested, known_now)
@@ -407,7 +485,8 @@ def run(scripted: bool = False, out: Path = OUT, v21: bool = False) -> dict:
         return hyps
 
     def client(k: int):
-        return ScriptedLLM(audit, scripted_plans(k), [scripted_text(k)] * 24) if scripted else ClovaClient(audit, seed=k)
+        plans = scripted_plans_v22(k) if v22 else scripted_plans(k)
+        return ScriptedLLM(audit, plans, [scripted_text(k)] * 24) if scripted else ClovaClient(audit, seed=k)
 
     for k in range(1, SESSIONS + 1):
         llm = client(k)
@@ -420,9 +499,9 @@ def run(scripted: bool = False, out: Path = OUT, v21: bool = False) -> dict:
             tested, lond, rounds = set(), Lond(), []
             control = control_hypothesis({"hypotheses": [{"id": i} for i in range(len(r1))]}) if neg else None
             for day in range(1, ROUNDS + 1):
-                known_now = known_k | (history_ids(rounds) if v21 else set())
+                known_now = known_k | (history_ids(rounds) if (v21 or v22) else set())
                 hyps = r1 if day == 1 else turn(llm, k, rounds, arm, tested, known_now, f"s{k}_{arm}_r{day}",
-                                                history_text(rounds, arm != "H-mem", ids=v21), arm == "H-fb-think")
+                                                history_text(rounds, arm != "H-mem", ids=v21 or v22), arm == "H-fb-think")
                 rows = execute(hyps, day, cache, tested, lond, known_now)
                 if control is not None and day == 1:  # outside the five slots and the score
                     rows.append(execute([control], day, cache, tested, Lond(), known_k)[0] | {"control": True})
@@ -581,7 +660,7 @@ def distinct_cues(rounds: list[list[dict]], passing: dict[int, dict[str, int]]) 
     return out
 
 
-def tables(out: Path = OUT, versions: tuple[str, ...] = ("", "_v21")) -> str:
+def tables(out: Path = OUT, versions: tuple[str, ...] = ("", "_v21", "_v22")) -> str:
     """Markdown tables of docs/results/agent_v2.md, from the saved runs and summaries."""
     passing = {d: passing_set(json.loads((out / f"exhaustive_r{d}.json").read_text())["results"]) for d in MENUS}
     rules = json.loads((out / "rules.json").read_text())
@@ -605,7 +684,8 @@ def tables(out: Path = OUT, versions: tuple[str, ...] = ("", "_v21")) -> str:
             cum = [x["cumulative_unique_hits"] for x in sessions.values()]
             cue = [len(distinct_cues(run_rec["arms"][arm][k], passing)) for k in sessions]
             waste = [sum(x["rounds"][d]["invalid"] + x["rounds"][d]["repeat"] for x in sessions.values()) for d in range(ROUNDS)]
-            lines.append(f"| {arm}{' (v2.1)' if v else ''} | {cells[0]} | {cells[1]} | {cells[2]} | "
+            label = {"": "", "_v21": " (v2.1)", "_v22": " (v2.2)"}[v]
+            lines.append(f"| {arm}{label} | {cells[0]} | {cells[1]} | {cells[2]} | "
                          f"{', '.join(map(str, cum))} (평균 {np.mean(cum):.1f}) | {', '.join(map(str, cue))} (평균 {np.mean(cue):.1f}) | "
                          f"{waste[0]} / {waste[1]} / {waste[2]} (각 25자리) |")
     lines += ["", "5자리 중 적중 수. HCX 칸은 세션 1–5. 그날 263개 중 기준 통과: "
@@ -628,6 +708,18 @@ def scripted_plans(k: int) -> list[dict]:
     return plans
 
 
+def scripted_plans_v22(k: int) -> list[dict]:
+    """Fixed picks for tests: a stretch of the numbered menu per call, so later calls also pick fresh ids."""
+    menu = list(candidate_menu(0).items())
+    out = []
+    for j in range(24):
+        picks = menu[(k * 7 + j * SLOTS) % len(menu):][:SLOTS]
+        out.append({"hypotheses": [{"candidate": cid, "direction": "higher_cvr_with_feature" if h["tool"] == "association"
+                                    else "group_helps" if h["tool"] == "ablation_effect" else "helps_more_in_segment",
+                                    "statement": "", "evidence": ["E1"]} for cid, h in picks]})
+    return out
+
+
 def scripted_text(k: int) -> str:
     return f"scripted draft for session {k}"
 
@@ -637,6 +729,7 @@ if __name__ == "__main__":
     ap.add_argument("cmd", choices=["evidence", "exhaustive", "run", "rules", "score", "tables"])
     ap.add_argument("--scripted", action="store_true")
     ap.add_argument("--v21", action="store_true", help="the repair step and citable feedback ids (§19.9)")
+    ap.add_argument("--v22", action="store_true", help="picks from a numbered list of untested candidates (§19.10)")
     a = ap.parse_args()
     if a.cmd == "evidence":
         print(json.dumps(evidence(), ensure_ascii=False, indent=1))
@@ -645,13 +738,14 @@ if __name__ == "__main__":
             r = exhaustive(d)
             print(DAYS[d], r["tests"], "tests", r["seconds"], "s", flush=True)
     elif a.cmd == "run":
-        run(scripted=a.scripted, v21=a.v21)
+        run(scripted=a.scripted, v21=a.v21, v22=a.v22)
     elif a.cmd == "rules":
         run_rules()
     elif a.cmd == "tables":
         print(tables())
-    elif a.v21:
-        print(json.dumps(score(run_file="run_v21.json", audit_file="audit_v21.jsonl", summary_file="summary_v21.json"), indent=1))
+    elif a.v21 or a.v22:
+        t = "_v22" if a.v22 else "_v21"
+        print(json.dumps(score(run_file=f"run{t}.json", audit_file=f"audit{t}.jsonl", summary_file=f"summary{t}.json"), indent=1))
     else:
         print(json.dumps(score(), indent=1))
         sys.exit(0)

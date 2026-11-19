@@ -191,3 +191,57 @@ def test_v21_repairs_bad_slots_and_lets_feedback_be_cited(tmp_path, monkeypatch)
            L.hyp("ablation_effect", "all", group="context"), L.hyp("ablation_effect", "all", group="context")]
     probs = L.slot_problems(bad, set(), {"E1"})
     assert set(probs) == {0, 2} and "같은 라운드" in probs[2]
+
+
+class PickFirst:
+    """A planner stand-in that keeps the schema it was given and picks the first allowed candidates."""
+
+    def __init__(self, direction_for=None):
+        self.schemas, self.direction_for = [], direction_for or {}
+
+    def structured(self, system, user, schema, role, max_tokens=4096):
+        self.schemas.append(schema)
+        allowed = schema["properties"]["hypotheses"]["items"]["properties"]["candidate"]["enum"]
+        return {"hypotheses": [{"candidate": c, "direction": self.direction_for.get(c, "group_helps"), "statement": "",
+                                "evidence": ["E1"]} for c in allowed[:L.SLOTS]]}
+
+
+def test_v22_offers_only_untested_possible_candidates_and_maps_directions():
+    items = [{"id": "E1", "title": "t", "text": "x", "numbers": []}]
+    menu = L.candidate_menu(1)
+    assert len(menu) == len(L.menu_tests()) == 263
+    assert all(L.empty_arm_by_definition(h["feature"], h["segment"]) is None for h in menu.values() if h["tool"] == "association")
+    tested = {L.canon(menu["C001"])[0], L.canon(menu["C002"])[0]}
+    llm = PickFirst()
+    hyps = L.plan_round_v22(llm, items, 1, None, False, "t", tested)
+    allowed = llm.schemas[0]["properties"]["hypotheses"]["items"]["properties"]["candidate"]["enum"]
+    assert "C001" not in allowed and "C002" not in allowed and len(allowed) == 261
+    assert [h["candidate"] for h in hyps] == allowed[:5]
+    # an interaction picked as helping more in segment_b becomes the reversed test
+    cid = next(c for c, h in menu.items() if h["tool"] == "interaction")
+    h = L.from_candidate({"candidate": cid, "direction": "helps_more_in_segment_b", "evidence": ["E1"]}, menu)
+    assert (h["segment"], h["segment_b"]) == (menu[cid]["segment_b"], menu[cid]["segment"])
+    assert h["expected"] == "group_helps_more_in_segment" and L.canon(h)[1] == -1
+    # a direction that does not fit the tool stays visible as an invalid hypothesis
+    from cvr.agent.session import validate
+    bad = L.from_candidate({"candidate": "C001", "direction": "higher_cvr_with_feature", "evidence": ["E1"]}, menu)
+    assert validate(L.normalize(bad), {"E1"})
+    assert "N001" in L.candidate_menu(L.NEGATIVE_SESSION) and "N001" not in menu
+
+
+def test_v22_scripted_run_goes_through(tmp_path, monkeypatch):
+    for d, seed in ((1, 31), (2, 32), (3, 33)):
+        folder = tmp_path / f"menu_{d}"
+        folder.mkdir()
+        synthetic_frame(seed, {"category_assoc"}).write_parquet(folder / "confirmation_predictions.parquet")
+        (folder / "precompute.json").write_text(json.dumps(META))
+    monkeypatch.setattr(L, "MENUS", {d: tmp_path / f"menu_{d}" for d in (1, 2, 3)})
+    monkeypatch.setattr(L, "SESSIONS", 2)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "evidence.json").write_text(json.dumps({"items": [{"id": f"E{i}", "title": "t", "text": "x", "numbers": []}
+                                                             for i in range(1, 7)]}))
+    rec = L.run(scripted=True, out=out, v22=True)
+    assert rec["version"] == "v2.2"
+    rows = [r for arm in rec["arms"].values() for rounds in arm.values() for rr in rounds for r in rr]
+    assert not [r for r in rows if r["verdict"] == "invalid" and "impossible by definition" in "; ".join(r["issues"])]
