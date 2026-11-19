@@ -276,6 +276,47 @@ def summary() -> dict:
     return out
 
 
+def render(machine: str) -> str:
+    """The latency tables of docs/results/e_serving.md for one machine, from summary.json (nothing copied by hand)."""
+    r = json.loads((DIR / "summary.json").read_text())[machine]
+    if not r.get("complete"):
+        raise CheckFailed(f"{machine}: {len(r['used'])} valid sessions, three are needed")
+    st, names = r["stability"], r["used"]
+    paths = {"click": "클릭 한 건", "request per_row": "요청 (후보 100개), 후보마다 인코딩",
+             "request shared": "요청 (후보 100개), 사용자 공유 인코딩"}
+
+    def span(v: dict) -> str:
+        return f"{v['median']:.2f} ({min(v['sessions']):.2f}–{max(v['sessions']):.2f})"
+
+    out = ["| 모델 | 경로 | p50 | p99 |", "|---|---|---|---|"]
+    for model in L.MODELS:
+        for k, label in paths.items():
+            out.append(f"| {model} | {label} | {span(st[f'{model} {k} p50'])} | {span(st[f'{model} {k} p99'])} |")
+    worst = max(v["max_over_min"] for k, v in st.items() if "/" not in k)
+    out += ["", f"세 세션의 중앙값(범위), ms. 모든 값이 세 세션 사이에서 {worst:.2f}배 안이다.", "",
+            "| 모델 | 공유 ÷ 후보마다, p50 | 공유 ÷ 후보마다, p99 |", "|---|---|---|"]
+    for model in L.MODELS:
+        cells = []
+        for q in ("p50", "p99"):
+            k = f"{model} shared/per_row {q}"
+            lo = min(r["per_session"][n][k]["ci95"][0] for n in names)
+            hi = max(r["per_session"][n][k]["ci95"][1] for n in names)
+            cells.append(f"{st[k]['median']:.2f} (세 세션의 95% 구간 {lo:.2f}–{hi:.2f})")
+        out.append(f"| {model} | {cells[0]} | {cells[1]} |")
+    out += ["", "| 모델 | 경로 | 인코딩 | 모델 계산 | 보정 |", "|---|---|---|---|---|"]
+    for model in L.MODELS:
+        for k, label in paths.items():
+            ds = [r["per_session"][n][f"{model} {k}"] for n in names]
+            cells = [f"{np.median([d['stages_p50'][x] for d in ds]):.2f} / {np.median([d['stages_p99'][x] for d in ds]):.2f}"
+                     for x in ("encode", "model", "calibrate")]
+            out.append(f"| {model} | {label} | {' | '.join(cells)} |")
+    switched = [r["per_session"][n][f"{m} {k}"]["share_context_switched"] for n in names for m in L.MODELS for k in paths]
+    note = (f"단계별 p50 / p99, ms (세 세션의 중앙값). 측정 중 문맥 전환이 일어난 요청은 경로마다 "
+            f"{min(switched):.1%}–{max(switched):.1%}였다.")
+    out += ["", note]
+    return "\n".join(out)
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1:]
     if cmd == ["prepare"]:
@@ -284,6 +325,8 @@ if __name__ == "__main__":
         print(json.dumps(check(cmd[1]), indent=1))
     elif len(cmd) == 2 and cmd[0] == "session":
         print(json.dumps(session(cmd[1]), indent=1))
+    elif len(cmd) == 2 and cmd[0] == "render":
+        print(render(cmd[1]))
     elif cmd == ["summary"]:
         print(json.dumps({m: v.get("stability", v["sessions"]) for m, v in summary().items()}, indent=1))
     else:

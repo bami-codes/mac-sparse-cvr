@@ -6,7 +6,7 @@
 
 - Python 3.11, 의존성은 `uv.lock`으로 고정한다. `uv sync`로 설치한다.
 - 연구 E의 학습을 뺀 결과는 모두 Apple M4(10코어), 단일 기계에서 만들었다. 개발 실행 하나의 최대 메모리는 9–15GB였다(1차 실험 14.55GB). 메모리 16GB 이하에서는 개발 실행이 돌지 않을 수 있다.
-- 연구 E의 학습(체크포인트 15개)은 RunPod의 Linux 포드(A40 4장)에서 했다. 예측, 보정, 평가는 맥 CPU에서 했다. 장치 차이는 V2에서 따로 확인했다(§5 연구 E). 서빙 지연은 맥과 Linux CPU 포드(AMD EPYC 4565P)에서 쟀다.
+- 연구 E의 학습(체크포인트 15개)은 RunPod의 Linux 포드(A40 4장)에서 했다. 예측, 보정, 평가는 맥 CPU에서 했다. 장치 차이는 V2에서 따로 확인했다(§5 연구 E). 서빙 지연은 Linux CPU 서버(AMD EPYC 4565P)에서 쟀다.
 - 원자료는 파일 하나가 2.6–3.3GB이고, 학습 파일 20개와 공식 테스트를 모두 받으면 약 58GB다.
 - PyTorch와 LightGBM은 이 환경에서 한 프로세스에 함께 불러오면 OpenMP 충돌이 난다. 그래서 신경망은 모두 별도 작업 프로세스(`cvr/m3_worker.py`, `cvr/study_c_worker.py`, `cvr/final_eval_m3.py`, `cvr/final_eval_c_nn.py`)에서 돌고, 실행기가 이를 자동으로 띄운다.
 
@@ -185,7 +185,7 @@ PYTHONPATH=. uv run python scripts/q2_per_group.py
 
 - 학습 실행 기록은 `runs/e_runs/<실행 id>/run.json`에 있다. 인자, 학습 파일의 SHA-256, 손실, 체크포인트 SHA-256이 들어 있다. 예측 파일은 체크포인트 해시로 찾는다(`<체크포인트>_<SHA-256 앞 12자>/<파일>.npz`). 그래서 다른 체크포인트의 예측을 잘못 읽을 수 없다.
 - GPU와 맥 CPU의 예측 차이: 같은 체크포인트, 같은 V2 행에서 `p_last` 최대 7.86e-7, 보조 출력 포함 최대 4.47e-6이었다(`scripts/device_compare.py`, 허용 오차 1e-5).
-- 포드 비용은 $28.21이었다(파일럿 포함, `runs/runpod/ledger.json`).
+- 포드 비용은 학습 $28.21(파일럿 포함), 서빙 측정 $1.01이다(`runs/runpod/ledger.json`).
 
 결과: [공식 테스트](results/e_final_test.md).
 
@@ -194,8 +194,8 @@ PYTHONPATH=. uv run python scripts/q2_per_group.py
 ```bash
 uv run pytest -q tests/test_pymal_run.py -k serving               # 원자료 없이: 공식 텐서와 같은지, 신규 입력, 공유 인코딩
 PYTHONPATH=. uv run python scripts/serving_e.py prepare            # 측정 행과 저장 예측을 한 번 고정 (V2 필요)
-bash scripts/serving_sessions.sh mac                               # 일치 검사, 20분 간격 세션 3개, 요약
-bash scripts/serving_sessions.sh linux                             # Linux 서버에서 (prepare의 파일과 체크포인트 2개를 복사)
+bash scripts/serving_sessions.sh linux                             # 측정할 서버에서: 일치 검사, 20분 간격 세션 3개, 요약
+PYTHONPATH=. uv run python scripts/serving_e.py render linux       # 결과 표
 ```
 
 - 측정 규약(v3)은 DESIGN §18.12.1에 측정 전에 고정했다. 측정 중에는 이 저장소의 다른 작업을 돌리지 않는다.
