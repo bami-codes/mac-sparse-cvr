@@ -377,6 +377,8 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     table = pq.read_table(mac / "train" / "train-01.parquet")
     toks = sorted(set(table.column("ad_feat1").to_pylist()))
     codes = {t: i for i, t in enumerate(toks)}
+    unseen = toks[3]
+    codes.pop(unseen)  # this group stands for one absent from the training statistics: its rows are group -1
     with open(mac / "cached" / "train-01.pkl", "rb") as f:
         ds = D.MALDataset(pickle.load(f))
     model, _, _ = R.build(argparse.Namespace(**json.loads((run / "run.json").read_text())["args"]), vocabs, torch.device("cpu"))
@@ -385,7 +387,7 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     with torch.no_grad():
         p_batch = model(ds.static_user[:, 1:], ds.static_ad, ds.mm_arr, ds.seq_arr)["last"][:, 1].numpy().astype(np.float64)
     y = np.asarray(ds.data["last"])
-    g = np.array([codes[t] for t in table.column("ad_feat1").to_pylist()])
+    g = np.array([codes.get(t, -1) for t in table.column("ad_feat1").to_pylist()])
     glob = GlobalPlatt.fit(p_batch, y)
     gs, _ = fit_group_shrunk_exact(p_batch, y, g, glob, 10.0)
     save_domain_calibrators(glob, gs, Q.calibrator_path(rid, "iii", "main"))
@@ -394,9 +396,30 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     rows = table.select(S.ServerE.columns()).to_pylist()
     idx = [0, 7, 99, 500, len(rows) - 1]
     user, ad, mm, seq = server.tensors([rows[i] for i in idx])
-    assert torch.equal(user, ds.static_user[idx]) and torch.equal(ad, ds.static_ad[idx])  # the official mapping
+    assert torch.equal(user[:, 1:], ds.static_user[idx, 1:]) and torch.equal(ad, ds.static_ad[idx])  # official mapping
     assert torch.equal(seq, ds.seq_arr[idx]) and torch.equal(mm, ds.mm_arr[idx])          # and layout
     one = np.array([server.raw([rows[i]])[0] for i in idx])  # one row at a time, as served
     assert np.abs(one - p_batch[idx]).max() <= 1e-6
     q = np.array([server.predict([rows[i]])[0] for i in idx])
     assert np.abs(q - gs.predict(p_batch[idx], g[idx])).max() <= 1e-6
+
+    # new inputs (review): a new user, a value absent from the official vocabulary, a group unseen in training
+    r = dict(rows[idx[1]])
+    base_q = server.predict([r])[0]
+    assert server.predict([r | {"user_id": "never-seen-user"}])[0] == base_q  # user_id is not a model input
+    new_ad = r | {"ad_feat0": "never-seen-item"}
+    assert server.predict([new_ad])[0] == server.predict([r | {"ad_feat0": PAD}])[0]  # the missing value
+    assert server.oov == {"ad_feat0": 1}
+    p1 = server.raw([r])
+    u_row = r | {"ad_feat1": unseen}
+    assert np.allclose(server.calibrate(server.raw([u_row]), [u_row]), gs.predict(server.raw([u_row]), np.array([-1])))
+    assert -1 in gs.group_ids  # the pooled unseen group has its own fitted coefficients, not the global mapping
+    never = r | {"ad_feat1": "never-seen-group"}  # also absent from the vocabulary: PAD for the model, -1 for calibration
+    assert server.calibrate(p1, [never])[0] == gs.predict(p1, np.array([-1]))[0]
+
+    # one request: the user's features and history encoded once give the same probabilities as one row per candidate
+    cands = [rows[i] for i in range(40, 140)]
+    owner = rows[7]
+    per_row = server.predict([c | {k: owner[k] for k in D.USER_COLS + D.SEQ_COLS} for c in cands])
+    shared = server.predict_request(owner, cands)
+    assert np.array_equal(per_row, shared)

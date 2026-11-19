@@ -11,7 +11,11 @@
    ad and context features and the two precomputed similarity sequences of 100 real V2 rows and gives all of them
    one user's features and purchase history; the similarity values are read as given (MAC precomputes them), so
    computing them, network, parsing and feature-store lookups are not timed. The time covers the raw values ->
-   vocabulary codes -> tensors -> model -> calibration.
+   vocabulary codes -> tensors -> model -> calibration, and each request is also timed by stage (encoding: lookups
+   and tensors; model; calibration) so the parts are measured, not inferred from a difference.
+   A request is served two ways: one row per candidate (the user's features and history looked up again for every
+   candidate, as the evaluation reads rows) and shared (ServerE.predict_request: the user encoded once). Before the
+   timing, every request's two results must agree within 1e-6.
 3. Rounds: this Mac's other processes (an editor using three to four cores) moved single-run p99 by up to 4x, so the
    two models are measured alternately in 10 rounds (1,000 clicks and 100 requests each, different requests per round)
    and the median p50/p99 over rounds is reported with its range. Study C's acceptance rule is recorded per round
@@ -55,7 +59,33 @@ def pct(ms) -> dict:
             "requests": int(a.size)}
 
 
-def timed(server, rows_traffic: list[dict], requests: list[list[dict]]) -> dict:
+def staged(server, encode, cands: list[dict]) -> tuple[float, float, float, float]:
+    """One request through the server's own steps, timed by stage: (total, encoding, model, calibration) in ms."""
+    t0 = time.perf_counter()
+    x = encode()
+    t1 = time.perf_counter()
+    p = server.score(x)
+    t2 = time.perf_counter()
+    server.calibrate(p, cands)
+    t3 = time.perf_counter()
+    return 1000 * (t3 - t0), 1000 * (t1 - t0), 1000 * (t2 - t1), 1000 * (t3 - t2)
+
+
+def request_timing(server, requests: list[tuple[dict, list[dict]]], shared: bool) -> dict:
+    out = {k: [] for k in ("total", "encode", "model", "calibrate")}
+    for k, (owner, cands) in enumerate(requests):
+        if shared:
+            t = staged(server, lambda o=owner, cs=cands: server.request_tensors(o, cs), cands)
+        else:  # the merge of the user's fields into each candidate row stays outside the timing
+            rows = [c | owner for c in cands]
+            t = staged(server, lambda rs=rows: server.tensors(rs), cands)
+        if k >= REQ_WARMUP:
+            for name, v in zip(out, t):
+                out[name].append(v)
+    return {name: pct(v) for name, v in out.items()}
+
+
+def timed(server, rows_traffic: list[dict], requests: list[tuple[dict, list[dict]]]) -> dict:
     env_start = environment()
     for r in rows_traffic[:WARMUP]:
         server.predict([r])
@@ -64,21 +94,10 @@ def timed(server, rows_traffic: list[dict], requests: list[list[dict]]) -> dict:
         t = time.perf_counter()
         server.predict([r])
         ms.append(1000 * (time.perf_counter() - t))
-    for req in requests[:REQ_WARMUP]:
-        server.predict(req)
-    ms_req, ms_model = [], []
-    for req in requests[REQ_WARMUP:]:
-        t = time.perf_counter()
-        server.predict(req)
-        ms_req.append(1000 * (time.perf_counter() - t))
-    user, ad, mm, seq = server.tensors(requests[-1])
-    for _ in range(REQ_N):  # the model alone, on the tensors of one request
-        t = time.perf_counter()
-        with server.torch.no_grad():
-            server.model(user[:, 1:], ad, mm, seq)
-        ms_model.append(1000 * (time.perf_counter() - t))
+    per_row = request_timing(server, requests, shared=False)
+    shared = request_timing(server, requests, shared=True)
     env_end = environment()
-    return {"one_click": pct(ms), "request_100": pct(ms_req), "request_100_model_only": pct(ms_model),
+    return {"one_click": pct(ms), "request_100_per_row": per_row, "request_100_shared": shared,
             "environment_start": env_start, "environment_end": env_end, "accepted": accepted(env_start, env_end)}
 
 
@@ -108,10 +127,8 @@ def main() -> dict:
     srt = np.sort(owners)
     by = dict(zip(srt.tolist(), read_rows(v2, srt, cols)))
     user_part = D.USER_COLS + D.SEQ_COLS
-    requests = []
-    for k, o in enumerate(owners):
-        u = {c: by[int(o)][c] for c in user_part}
-        requests.append([r | u for r in rows_cand[k * CANDIDATES:(k + 1) * CANDIDATES]])
+    requests = [({c: by[int(o)][c] for c in user_part}, rows_cand[k * CANDIDATES:(k + 1) * CANDIDATES])
+                for k, o in enumerate(owners)]
     print(f"rows read in {time.time() - t0:.0f}s", flush=True)
     vocabs = D.get_vocabs("data/raw/mac/vocabs")
     _, y2 = Q.file_columns(Q.V2, codes)
@@ -130,9 +147,15 @@ def main() -> dict:
         d_raw, d_cal = float(np.abs(raw - saved[check_idx]).max()), float(np.abs(served - ref).max())
         if not (np.isfinite([d_raw, d_cal]).all() and d_raw <= NN_SINGLE_VS_BATCH_TOL and d_cal <= NN_SINGLE_VS_BATCH_TOL):
             raise CheckFailed(f"{model}: served vs saved raw {d_raw}, calibrated {d_cal} (tolerance {NN_SINGLE_VS_BATCH_TOL})")
+        d_req = max(float(np.abs(server.predict([c | o for c in cs]) - server.predict_request(o, cs)).max())
+                    for o, cs in requests)
+        if not (np.isfinite(d_req) and d_req <= NN_SINGLE_VS_BATCH_TOL):
+            raise CheckFailed(f"{model}: shared request encoding vs one row per candidate {d_req}")
+        server.oov.clear()  # the count of values absent from the vocabularies, over the timed traffic only
         servers[model] = server
-        out["models"][model] = {"server": server.info, "consistency": {"max_abs_diff_raw": d_raw, "max_abs_diff_calibrated": d_cal,
-                                                                      "tolerance": NN_SINGLE_VS_BATCH_TOL}, "rounds": []}
+        out["models"][model] = {"server": server.info, "consistency": {
+            "max_abs_diff_raw": d_raw, "max_abs_diff_calibrated": d_cal, "max_abs_diff_shared_vs_per_row": d_req,
+            "requests_compared": len(requests), "tolerance": NN_SINGLE_VS_BATCH_TOL}, "rounds": []}
         print(model, json.dumps(out["models"][model]["consistency"]), flush=True)
     for k in range(ROUNDS):  # BASE, MoAE in one round and MoAE, BASE in the next, on different requests each round
         order = ("BASE", "MoAE") if k % 2 == 0 else ("MoAE", "BASE")
@@ -141,16 +164,25 @@ def main() -> dict:
         for model in order:
             r = timed(servers[model], rows_traffic[:WARMUP] + clicks, requests[:REQ_WARMUP] + reqs)
             out["models"][model]["rounds"].append({"round": k} | r)
-        print(f"round {k}", {m: (round(out["models"][m]["rounds"][-1]["one_click"]["p99_ms"], 3),
-                                 round(out["models"][m]["rounds"][-1]["request_100"]["p99_ms"], 2),
-                                 out["models"][m]["rounds"][-1]["accepted"]) for m in servers}, flush=True)
-    for model in servers:
+        last = {m: out["models"][m]["rounds"][-1] for m in servers}
+        print(f"round {k}", {m: (round(r["one_click"]["p99_ms"], 3), round(r["request_100_per_row"]["total"]["p99_ms"], 2),
+                                 round(r["request_100_shared"]["total"]["p99_ms"], 2), r["accepted"])
+                             for m, r in last.items()}, flush=True)
+
+    def over_rounds(vals: list[float]) -> dict:
+        return {"median": float(np.median(vals)), "min": float(min(vals)), "max": float(max(vals)),
+                "rounds_above_3ms": int(sum(v > 3 for v in vals))}
+
+    for model, server in servers.items():
         rs = out["models"][model]["rounds"]
-        out["models"][model]["summary"] = {
-            f"{part}_{stat}": {"median": float(np.median([r[part][stat] for r in rs])),
-                               "min": float(min(r[part][stat] for r in rs)), "max": float(max(r[part][stat] for r in rs))}
-            for part in ("one_click", "request_100", "request_100_model_only") for stat in ("p50_ms", "p99_ms")}
-        out["models"][model]["summary"]["accepted_rounds"] = sum(r["accepted"] for r in rs)
+        s = {f"one_click_{st}": over_rounds([r["one_click"][st] for r in rs]) for st in ("p50_ms", "p99_ms")}
+        for path in ("request_100_per_row", "request_100_shared"):
+            for stage in ("total", "encode", "model", "calibrate"):
+                for st in ("p50_ms", "p99_ms"):
+                    s[f"{path}_{stage}_{st}"] = over_rounds([r[path][stage][st] for r in rs])
+        s["accepted_rounds"] = sum(r["accepted"] for r in rs)
+        s["oov_over_timed_traffic"] = dict(server.oov)
+        out["models"][model]["summary"] = s
     OUT.write_text(json.dumps(out, indent=2))
     return out
 
