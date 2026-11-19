@@ -255,6 +255,16 @@ def execute(hyps: list[dict], day: int, cache: dict, tested: set[str], lond: Lon
     return rows
 
 
+def effect_text(r: dict) -> str:
+    res = r.get("result") or {}
+    if res.get("status") != "ok":
+        return ""
+    e, (lo, hi) = res["estimate"], res["ci95"]
+    if r["hypothesis"]["tool"] == "association":
+        return f" 전환율 차이 {100 * e:+.2f}%p [95% {100 * lo:+.2f}, {100 * hi:+.2f}]"
+    return f" LogLoss 차이 {e:+.1e} [95% {lo:+.1e}, {hi:+.1e}] (음수 = 그룹을 넣은 모델이 나음)"
+
+
 def history_text(rounds: list[list[dict]], with_results: bool) -> str:
     """What the planner sees about earlier rounds, written by code."""
     lines = []
@@ -267,18 +277,19 @@ def history_text(rounds: list[list[dict]], with_results: bool) -> str:
             if r["verdict"] == "repeat" or not with_results:
                 lines.append(f"- R{k} {r['test_question']}")
                 continue
-            res = r.get("result") or {}
-            effect = (f" 효과 {res['estimate']:+.6f} [95% {res['ci95'][0]:+.6f}, {res['ci95'][1]:+.6f}]"
-                      if res.get("status") == "ok" else "")
+            effect = effect_text(r)
             lines.append(f"- R{k} [{VERDICT_KO.get(r['verdict'], r['verdict'])}] {r['test_question']}{effect}")
     head = ("이전 라운드 결과 (코드가 그날 자료로 계산, 판정은 순서대로 온라인 FDR 적용):" if with_results
             else "이전 라운드에 이미 검정한 질문 (결과는 알려 주지 않음):")
     return head + "\n" + "\n".join(lines) + "\n같은 질문을 다시 제안하면 그 자리는 점수가 없다."
 
 
-PLANNER_V2 = PLANNER_SYSTEM.replace("3~8개", "정확히 5개") + """
-- 이번에는 관측 자료로 검정할 수 있는 가설만 점수가 있다. ab_test_design은 쓰지 않는다.
-- 이번 라운드의 가설은 다음 날 자료로 검정한다. 이미 검정한 질문을 다시 제안하지 않는다."""
+_AB = "- ab_test_design (claim_type=causal): 무언가를 바꾸면 전환이 늘어나는지는 관측 데이터로 확인할 수 없으므로, 필요한 실험 규모만 계산한다.\n"
+assert _AB in PLANNER_SYSTEM and "검증 방법(test)은 네 가지" in PLANNER_SYSTEM
+PLANNER_V2 = (PLANNER_SYSTEM.replace("3~8개", "정확히 5개").replace(_AB, "")
+              .replace("검증 방법(test)은 네 가지", "검증 방법(test)은 세 가지") + """
+- 인과 주장(무언가를 바꾸면 전환이 늘어난다)은 관측 자료로 확인할 수 없으므로 이번에는 제안하지 않는다.
+- 이번 라운드의 가설은 다음 날 자료로 검정한다. 이미 검정한 질문을 다시 제안하지 않는다.""")
 THINK_EXTRA = """
 이번 답은 JSON이 아니라 글로 쓴다. 가설 5개마다 statement, claim_type, test, group 또는 feature, segment, segment_b,
 direction, evidence를 빠짐없이 적는다."""
@@ -464,10 +475,12 @@ def usage_summary(audit: Path) -> dict:
     for r in rows:
         kind = "think" if r["role"].endswith("_think") else "transcribe" if r["role"].endswith("_transcribe") else "plan"
         u = r.get("usage") or {}
-        o = out.setdefault(kind, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "seconds": 0.0})
+        o = out.setdefault(kind, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "thinking_tokens": 0,
+                                  "seconds": 0.0})
         o["calls"] += 1
         o["prompt_tokens"] += int(u.get("promptTokens") or 0)
-        o["completion_tokens"] += int(u.get("completionTokens") or 0)
+        o["completion_tokens"] += int(u.get("completionTokens") or 0)  # includes the thinking tokens
+        o["thinking_tokens"] += int((u.get("completionTokensDetails") or {}).get("thinkingTokens") or 0)
         o["seconds"] += float(r.get("seconds") or 0)
     return out
 

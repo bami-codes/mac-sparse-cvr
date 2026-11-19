@@ -153,7 +153,8 @@ def test_a_scripted_run_goes_through_and_keeps_the_rules(tmp_path, monkeypatch):
     audit = [json.loads(x) for x in (out / "audit.jsonl").read_text().splitlines()]
     mem = next(a for a in audit if a["role"] == "s1_H-mem_r2")["request"]["user"]
     fb = next(a for a in audit if a["role"] == "s1_H-fb_r2")["request"]["user"]
-    assert "효과" not in mem and "효과" in fb  # results are shown to H-fb only
+    shown = ("전환율 차이", "LogLoss 차이")
+    assert not any(s in mem for s in shown) and any(s in fb for s in shown)  # results are shown to H-fb only
     assert any(a["role"] == "s1_H-fb-think_r2_think" for a in audit)  # two-step calls for the reasoning arm
     for name in ("evidence_rule", "adaptive_rule"):
         assert all(len(r) == L.SLOTS for r in json.loads((out / "rules.json").read_text())[name])
