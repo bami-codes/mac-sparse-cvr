@@ -1,12 +1,12 @@
-"""Post-hoc calibration, all fitted on V1 only.
+"""Post-hoc calibration of predicted probabilities, fitted on a held-out day.
 
 (ii)  GlobalPlatt:       logit(p') = a * logit(p) + b
 (iii) GroupShrunkPlatt:  logit(p') = (a + da_g) * logit(p) + (b + db_g), with an L2 penalty
                          lam * sum(da_g^2 + db_g^2) pulling every group toward (ii)'s (a, b)
 (iv)  FreqAware:         logit(p') = w1 * logit(p) + w2 * log(1 + training clicks of g) + w0
 
-scikit-learn is imported only inside fit(), so serving / PyTorch processes that only predict
-do not load another OpenMP runtime.
+scikit-learn is imported inside fit() only. Processes that just predict, such as the PyTorch server, then avoid
+loading a second OpenMP runtime.
 """
 
 from dataclasses import dataclass
@@ -47,10 +47,10 @@ class GroupShrunkPlatt:
     a: float
     b: float
     lam: float
-    group_ids: np.ndarray  # sorted group codes that received offsets
+    group_ids: np.ndarray  # sorted codes of the groups that got their own offsets
     da: np.ndarray
     db: np.ndarray
-    n_nonpositive_slopes: int  # should always be 0 given the bounds; kept as a check
+    n_nonpositive_slopes: int  # 0 by construction; kept as a sanity check
     converged: bool
 
     @classmethod
@@ -121,17 +121,18 @@ def load_calibrators(path: Path) -> tuple[GlobalPlatt, GroupShrunkPlatt, FreqAwa
     return glob, gs, fa, pl.read_parquet(path.with_suffix(".group_clicks.parquet"))
 
 
-# ---------------------------------------------------------------- exact (iii) solver (study C, docs/DESIGN.md §16)
+# ------------------------------------------------------------------------------------------------ exact (iii) solver
 def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, base: GlobalPlatt, lam: float,
                            tol: float = 1e-9, max_iter: int = 100) -> tuple[GroupShrunkPlatt, dict]:
-    """The SAME objective as GroupShrunkPlatt.fit, solved group by group.
+    """Same objective as GroupShrunkPlatt.fit, solved exactly, one group at a time.
 
-    With the global (a, b) and lam fixed, the objective separates into one convex 2-parameter problem per group:
+    With the global (a, b) and lam fixed, the objective splits into one convex two-parameter problem per group:
         sum_i softplus(s_i) - y_i s_i + lam (da^2 + db^2),   s_i = (a + da) z_i + (b + db),   a + da >= MIN_SLOPE.
-    Each is solved by Newton's method with a backtracking line search kept inside the slope bound; at the bound
-    the intercept is solved alone. Stops when the projected gradient (sum scale) is below `tol`.
-    Review of §16: the joint L-BFGS-B fit reported converged=True while its small-domain macro LogLoss moved by up to
-    3.9e-6 when solved more precisely, more than the candidate tie tolerance (1e-6)."""
+    Each one gets Newton steps with a backtracking line search that stays inside the slope bound. Stops when the
+    projected gradient (sum scale) is below `tol`.
+
+    Why not the joint L-BFGS-B fit: it reported convergence, yet a tighter solve still moved the small-group LogLoss
+    by up to 3.9e-6. On study C's selection data about 35% of the improvement it showed was optimizer error."""
     z = logit(p)
     gid, gi = np.unique(groups, return_inverse=True)
     order = np.argsort(gi, kind="stable")
@@ -158,8 +159,7 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
     for k in range(gid.size):
         rows = order[bounds[k]:bounds[k + 1]]
         zg, yg = z[rows], y[rows].astype(float)
-        # feasible start: a zero slope offset already violates the bound when the global slope is below MIN_SLOPE
-        # (review of revision 4: the old start returned a slope of 0.000289 as "converged")
+        # start inside the bound: if the global slope is below MIN_SLOPE, a zero offset is already infeasible
         x = np.array([max(0.0, lo), 0.0])
         f = obj(zg, yg, x)
         for it in range(max_iter):
@@ -208,7 +208,7 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
 
 def fit_group_intercept_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, base: GlobalPlatt, lam: float,
                               tol: float = 1e-9, max_iter: int = 100) -> tuple[GroupShrunkPlatt, dict]:
-    """(iii-0) of docs/DESIGN.md §17: only the group INTERCEPT moves,
+    """(iii-0): only the group intercept moves,
         logit p' = a·logit p + (b + db_g),   penalty lam·db_g^2   (the slope stays the global a).
     One convex 1-parameter problem per group, solved by Newton's method with a backtracking line search; stops
     when |gradient| (sum scale) < tol at the returned point. Returned as a GroupShrunkPlatt with da = 0."""

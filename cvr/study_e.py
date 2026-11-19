@@ -1,8 +1,6 @@
-"""Study E (docs/DESIGN.md §18): group lists from the training files, then calibration and evaluation on the
-official models' predictions.
+"""Fix study E's ad group lists from the training files alone, before any model result exists.
 
-    uv run python -m cvr.study_e groups      # §18.3: G1, the comparison set C and the small context groups from
-                                             # train-00..17 only, fixed with their SHA-256 before any model result
+    uv run python -m cvr.study_e groups      # G1, the comparison set C and small context groups, with their SHA-256
 
 Groups are kept as the raw MAC token (hashed string), so they do not depend on any vocabulary. The PAD token is the
 missing value and belongs to no group list. A click is positive when last > 0 (the official label).
@@ -19,7 +17,7 @@ import pyarrow.parquet as pq
 from .schema import PAD
 
 DATA = Path("data/raw/mac/train")
-TRAIN = [f"train-{i:02d}.parquet" for i in range(18)]  # 00..17: the research models' training files (§18.2)
+TRAIN = [f"train-{i:02d}.parquet" for i in range(18)]  # what the research models were trained on
 OUT = Path("runs/e_study")
 BASE_ROWS_G1, BASE_ROWS_C = 10_883_174, 10_499_793  # training rows of the first study and of study C
 G1_BASE = {"n_min": 500, "c_min": 20, "c_dense": 50}

@@ -1,24 +1,21 @@
-"""CVR predictor: one user's request in, a calibrated conversion probability per ad candidate out.
+"""Score one user's ad candidates and return a calibrated CVR for each.
 
-    uv run python -m cvr.predictor examples/request.json                    # the example model (synthetic data)
+    uv run python -m cvr.predictor examples/request.json
     uv run python -m cvr.predictor request.json --bundle bundles/BASE_train17 --vocabs data/raw/mac/vocabs
-    uv run python -m cvr.predictor - --jsonl < requests.jsonl               # load once, one request per line
-    uv run python -m cvr.predictor export BASE_lr0.003_lam0.3_s2026 bundles/BASE_train17   # a study E model
-    uv run python -m cvr.predictor export BASE_lr0.003_lam0.3_s2026 bundles/BASE_train19 --after train-19.parquet \
-        --no-calibration                                   # no calibrator was fitted for this checkpoint: raw only
-    uv run python -m cvr.predictor request-from data/raw/mac/train/train-19.parquet 123 --candidates 3 > request.json
+    uv run python -m cvr.predictor - --jsonl < requests.jsonl      # keep the model loaded, one request per line
 
-A model is a folder (a bundle):
-- config.json: the official model's training arguments, the checkpoint (a path inside the folder or elsewhere) and its
-  SHA-256, the calibrator file, the vocabulary folder (inside the folder, or given with --vocabs), where it came from;
-- calibrator.npz: global Platt (ii) and group-shrunk Platt (iii) on the ad group `ad_feat1`, fitted on this
-  checkpoint's own predictions (absent when none was: the bundle then serves raw probabilities, "calibration": "none");
-- group_codes.json: ad group token -> calibrator group (a token absent from it uses the pooled "unseen" group).
+    uv run python -m cvr.predictor export BASE_lr0.003_lam0.3_s2026 bundles/BASE_train17
+    uv run python -m cvr.predictor request-from data/raw/mac/train/train-19.parquet 123 > request.json
 
-A request is {"user": {...}, "candidates": [{...}, ...]}, with MAC's raw columns: the user's features (`user_feat0`-`5`)
-and purchase history (`ad_feat0_seq`-`ad_feat2_seq`, one list each, equal lengths), and for each candidate its ad and
-context features (`ad_feat0`-`5`, `context_feat0`-`3`) and its similarity to each history item (`mm_feat0_seq`,
-`mm_feat1_seq`, the history's length). The user's history is encoded once for all candidates.
+A model ships as a folder (bundle):
+    config.json        training args of the official model, checkpoint path and SHA-256
+    calibrator.npz     global and group-shrunk Platt, fitted on this checkpoint's predictions (optional)
+    group_codes.json   ad group (ad_feat1) token -> calibrator group; unknown tokens fall into the "unseen" group
+
+A request uses MAC's raw columns:
+    {"user": {user_feat0..5, ad_feat0_seq..ad_feat2_seq},
+     "candidates": [{ad_feat0..5, context_feat0..3, mm_feat0_seq, mm_feat1_seq}, ...]}
+The three history lists have one length, and each candidate carries one similarity per history item.
 """
 
 import argparse
@@ -50,8 +47,7 @@ def _number(v) -> bool:
 
 
 def validate(request: dict) -> None:
-    """Shape and types of a request: tokens are strings, histories lists of strings of one length, similarities lists
-    of numbers of that length. A wrong request raises RequestError naming the field."""
+    """Raise RequestError naming the first field that is missing or has the wrong type or length."""
     D, _ = R.official()
     if not isinstance(request, dict) or not isinstance(request.get("user"), dict):
         raise RequestError('a request is {"user": {...}, "candidates": [{...}, ...]}')
@@ -82,6 +78,7 @@ def validate(request: dict) -> None:
 
 
 def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -> ServerE:
+    """Load a bundle. Real bundles keep the 873 MB vocabularies outside, so pass them with `vocabs`."""
     bundle = Path(bundle)
     cfg = json.loads((bundle / "config.json").read_text())
     ckpt = Path(cfg["checkpoint"])
@@ -101,7 +98,7 @@ def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -
 
 
 def predict(server: ServerE, request: dict, calibration: str = "iii") -> dict:
-    """calibration "iii" or "ii"; a bundle without a calibrator always answers with "none" (cvr = raw probability)."""
+    """CVR per candidate. Without a calibrator in the bundle, cvr is the raw probability and calibration says "none"."""
     validate(request)
     server.oov.clear()
     p = server.score(server.request_tensors(request["user"], request["candidates"]))
@@ -116,11 +113,10 @@ def predict(server: ServerE, request: dict, calibration: str = "iii") -> dict:
 
 
 def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: bool = True) -> dict:
-    """A study E model as a bundle: small files are copied, the checkpoint is referenced by path and SHA-256.
+    """Package a study E run as a bundle. The 2 GB checkpoint stays in place and is referenced by path and SHA-256.
 
-    The run's calibrator was fitted on the predictions of one checkpoint (train-17, on train-18); it is bundled only
-    with that checkpoint, checked through the SHA-256 recorded with those predictions. Another checkpoint needs
-    calibrated=False and serves raw probabilities."""
+    A calibrator only fits the checkpoint whose predictions it was trained on (train-17). Exporting any other
+    checkpoint requires calibrated=False."""
     from . import study_e_eval as Q
     run = json.loads((Q.RUNS / rid / "run.json").read_text())
     ckpt = (Q.RUNS / rid / f"model_after_{Path(after).stem}.pt").resolve()
@@ -148,9 +144,9 @@ def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: boo
 
 
 def request_from(parquet: Path, row: int, k: int) -> dict:
-    """An example request built from real MAC rows: the user of `row` and up to k click rows of that user in the same
-    file as candidates (each row's similarity sequences belong to that user's history; the rows' ad contexts may
-    differ, so this is not a logged request)."""
+    """Build an example request from real MAC rows: the user of `row`, with up to k of that user's clicks as candidates.
+
+    Not a logged request. The clicks may come from different ad contexts."""
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
     user_cols, cand_cols = columns()
@@ -196,12 +192,12 @@ def main(argv: list[str]) -> None:
             raise SystemExit(f"invalid request: {e}") from None
         return
     stream = sys.stdin if str(a.request) == "-" else a.request.open()
-    for line in stream:  # read and answered one line at a time; a failing request answers with its error, the next goes on
+    for line in stream:
         if not line.strip():
             continue
         try:
             out = predict(server, json.loads(line), a.calibration)
-        except Exception as e:  # noqa: BLE001 - one request must never stop the server
+        except Exception as e:  # noqa: BLE001 - a bad request gets an error line, the rest keep being served
             out = {"error": f"{type(e).__name__}: {e}"}
         print(json.dumps(out), flush=True)
 

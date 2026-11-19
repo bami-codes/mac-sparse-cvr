@@ -1,10 +1,8 @@
-"""Latency protocol v3 (docs/DESIGN.md §18.12.1): the measurement schedule, the per-request probes, the load gate and
-the analysis. Kept apart from scripts/serving_e.py so that the schedule and the statistics are tested.
+"""Latency measurement: schedule, per-request probes, load gate and analysis (protocol in docs/DESIGN.md §18.12.1).
 
-Schedule: models alternate in blocks in an ABBA order (BASE, MoAE, MoAE, BASE, ...), so a linear drift in load falls
-equally on both. Inside a request block, consecutive requests alternate between the two paths and the first path flips
-every block. Each request is served once per model, never twice in a row by the same model (a second run would find
-its embedding rows in cache).
+Models alternate in blocks in ABBA order (BASE, MoAE, MoAE, BASE, ...) so a slow drift in machine load hits both
+equally. Inside a block the two request paths alternate, and the first path flips every block. No model serves the
+same request twice in a row, because the second run would find its embedding rows already in cache.
 """
 
 import gc
@@ -18,11 +16,11 @@ import numpy as np
 
 PATHS = ("per_row", "shared")
 MODELS = ("BASE", "MoAE")
-GATE_OTHER_CPU = 450.0  # % of one core, macOS only (fixed from the baseline before any v3 latency was seen)
+GATE_OTHER_CPU = 450.0  # % of one core, macOS only; the idle baseline was 369% (median), 485% (p90)
 GATE_SAMPLE_S, GATE_RETRY_S, GATE_MAX_WAIT_S = 0.5, 2.0, 30.0
-VALID_SESSION_PASS_SHARE = 0.9  # a session counts when at least 90% of its blocks passed the gate without timing out
-STABLE_RATIO = 1.25  # max / min over the sessions for a value to be called reproduced
-P_CORES_M4 = (6, 7, 8, 9)  # performance cores of this M4 (QoS user-interactive threads ran there, background on 0-5)
+VALID_SESSION_PASS_SHARE = 0.9  # share of blocks that must pass the gate for a session to count
+STABLE_RATIO = 1.25  # a value is "reproduced" when max / min over the sessions stays within this
+P_CORES_M4 = (6, 7, 8, 9)  # performance cores of the M4 used here; 0-5 are efficiency cores
 
 
 def abba(n_pairs: int) -> list[str]:
@@ -61,8 +59,10 @@ def click_schedule(n_clicks: int, block: int) -> list[dict]:
 
 # ------------------------------------------------------------------------------------------- the machine and the probes
 def set_latency_priority() -> dict:
-    """macOS: QoS user-interactive for this thread (performance cores, ahead of default-QoS threads). Linux: the
-    process on one CPU of its allowed set (the last one), the usual pinning of a latency-critical server."""
+    """Give the measuring thread a core of its own, as far as the OS allows.
+
+    macOS: QoS user-interactive, which keeps the thread on performance cores ahead of default-QoS work.
+    Linux: pin the process to one CPU of its allowed set, the usual setup for a latency-critical server."""
     if sys.platform == "darwin":
         import ctypes
         lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
@@ -95,8 +95,10 @@ def install_gc_counter() -> None:
 
 
 def probe(server, encode, cands: list[dict]) -> tuple[int, int, int, int, int, int, int]:
-    """One request through the server's own steps: wall total, encoding, model, calibration (ns), thread CPU time (ns),
-    involuntary context switches and Python GC runs during it. The rusage calls sit outside the wall time."""
+    """Time one request through the server's own steps.
+
+    Returns wall time (total, encoding, model, calibration) and thread CPU time in ns, plus the involuntary context
+    switches and GC runs that happened during it. The rusage calls sit outside the timed span."""
     r0, g0 = resource.getrusage(RUSAGE).ru_nivcsw, GC_RUNS[0]
     c0 = time.thread_time_ns()
     t0 = time.perf_counter_ns()
@@ -111,8 +113,7 @@ def probe(server, encode, cands: list[dict]) -> tuple[int, int, int, int, int, i
 
 
 def load_sample(seconds: float) -> dict:
-    """CPU use of everything except this process over `seconds` (psutil, the same definition on macOS and Linux;
-    inside a container Linux reports the whole host)."""
+    """CPU use of every process but this one over `seconds`. Inside a Linux container this covers the whole host."""
     import psutil
     me = psutil.Process()
     a = me.cpu_times()
@@ -126,9 +127,11 @@ def load_sample(seconds: float) -> dict:
 
 
 def gate() -> dict:
-    """macOS: wait until the other processes use at most GATE_OTHER_CPU (sampled for GATE_SAMPLE_S), for at most
-    GATE_MAX_WAIT_S; then run anyway and mark the block. Linux: one sample, recorded, no gate (a container sees the
-    whole host's CPU, so the threshold would not mean the same)."""
+    """Hold a block until the machine is quiet enough, then return the load sample.
+
+    macOS waits until other processes use at most GATE_OTHER_CPU, for up to GATE_MAX_WAIT_S, and then runs anyway
+    with the block marked as failed. Linux only records the sample: a container sees the whole host, so the same
+    threshold would mean something else."""
     t0 = time.monotonic()
     while True:
         s = load_sample(GATE_SAMPLE_S)

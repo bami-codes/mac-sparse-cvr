@@ -1,30 +1,25 @@
-"""Study E (docs/DESIGN.md §18): train and score the official MAC models (PyMAL) without changing them.
+"""Train and score the official MAC models (PyMAL) without changing them.
 
     python -m cvr.pymal_run preprocess train-00.parquet ... test.parquet
-    python -m cvr.pymal_run train --out runs/e_pymal/<name> --model MoAE --lr 0.003 --lamda 0.3 \
+    python -m cvr.pymal_run train --out runs/e_pymal/<name> --model MoAE --lr 0.004 --lamda 0.2 \
         --aux_views first mta linear cartesian --seed 2026
-    python -m cvr.pymal_run train --resume runs/e_pymal/<name>          # after an interruption, from the last file
+    python -m cvr.pymal_run train --resume runs/e_pymal/<name>      # continue from the last finished file
     python -m cvr.pymal_run predict --out <dir> --ckpt <run>/model_after_train-18.pt [--ckpt ...] train-19.parquet
 
-Taken from the official code as is (third_party/pymal, commit 3186be8, unmodified): the model classes, the
-embedding table, the dataset, the label construction (weight > 0), the loss, set_seed, compute_auc_gauc and the
-preprocessing functions. Copied line for line from the official run.py / Trainer.train: the optimizer groups (the
-embedding table at 10x the learning rate), the schedule (5% linear warm-up of 4,000,000 x 21 // batch steps, then
-constant), the file order and shuffle=False. tests/test_pymal_run.py checks that this loop gives the same losses and
-parameters as the official run.py.
+The model, dataset, labels, loss, seeding and preprocessing come from third_party/pymal (commit 3186be8) untouched.
+The optimizer groups (embedding table at 10x the learning rate), the schedule (5% linear warm-up, then constant), the
+file order and shuffle=False are copied line for line from the official run.py. tests/test_pymal_run.py checks that
+training here gives the same losses and parameters as running run.py itself.
 
-Added for the study (§18.1):
-- the device is an argument; unknown arguments are an error and the learning rate has no default (the official
-  parser drops unknown arguments, so the example's --learning_rate 4.0e-3 silently became 0.003);
-- file arguments are bare official names (train-NN.parquet, test.parquet), so the test file has one spelling;
-- the cache of each file records the SHA-256 of its source parquet file and of itself, checked before use;
-- inference checkpoints (model weights) after the named training files; a resume state (model, optimizer,
-  schedule, step, random states) after every file, so a paid run that stops is continued from the last file
-  with the same result (tested: stop + resume equals the uninterrupted run);
-- no test evaluation inside training; predictions in file row order, one folder per checkpoint, never overwritten;
-- the official test file is scored only with a freeze manifest that lists every checkpoint and the SHA-256 of the
-  official test file, and only once per manifest (exclusive lock; a failure after the claim is recorded);
-- a run record with the effective settings, time, steady throughput after warm-up and memory (process and container).
+What the runner adds:
+- Unknown arguments are an error and --lr has no default. The official parser silently drops unknown arguments,
+  which is how the example's --learning_rate 4.0e-3 ends up training at 0.003.
+- Each cache records the SHA-256 of its source file and of itself, checked before use.
+- Checkpoints after chosen files, and a resume state after every file, so an interrupted GPU run continues with the
+  same result.
+- Predictions in file row order, one folder per checkpoint, never overwritten.
+- The official test file can only be scored with a freeze manifest that lists every checkpoint, and only once.
+- A run record with the effective settings, timings, steady throughput and memory.
 """
 
 import argparse
@@ -138,7 +133,7 @@ def build(a, vocabs, device):
     table = list(model.EmbeddingTable.parameters())
     other = [p for p in model.parameters() if p not in set(table)]
     optimizer = torch.optim.Adam([{"params": table, "lr": a.lr * 10}, {"params": other, "lr": a.lr}])
-    # the official length unless a run asks for another (the small example model: its own row count; study E: never)
+    # official length, unless the run sizes the schedule for its own data (only the small example model does)
     total_steps = (getattr(a, "schedule_rows", None) or OFFICIAL_SCHEDULE_ROWS) // a.batch_size
     warmup_steps = int(total_steps * 0.05)
     warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.0001, end_factor=1.0, total_iters=warmup_steps)
@@ -148,9 +143,8 @@ def build(a, vocabs, device):
 
 
 def group_weights(mac: Path, s, vocabs) -> dict | None:
-    """Amendment 3: weight g1_weight on the main-target loss of the clicks of the fixed G1 groups, 1 elsewhere, then
-    divide by the mean weight over the training rows so the average weight is 1. The G1 share is counted again
-    from the training files themselves (raw ad_feat1 tokens)."""
+    """Per-click weights for the main loss: g1_weight on clicks of the fixed G1 groups, 1 elsewhere, scaled so the
+    mean over the training rows is 1. The G1 share is recounted from the training files themselves."""
     if not s.g1_weight:
         return None
     import pyarrow as pa
@@ -248,7 +242,7 @@ def train(a) -> Path:
     weighting = group_weights(Path(a.mac), s, vocabs)
     gw = None if weighting is None else (torch.tensor(weighting["vocab_indices"], device=device),
                                          float(weighting["w_g1"]), float(weighting["w_other"]))
-    if a.resume:  # review: a resumed run read its group list again and could train on another list than recorded
+    if a.resume:  # a resumed run must weight the same groups it started with
         now_w = None if weighting is None else {k: v for k, v in weighting.items() if k != "vocab_indices"}
         if now_w != rec.get("group_weighting"):
             raise ValueError(f"the group weighting read on resume differs from the run's record: {now_w} vs "
@@ -288,7 +282,7 @@ def train(a) -> Path:
             probs = model(user_indices[:, 1:], ad_indices, buy_mm_scores, buy_seq_indices)
             main_loss, aux_loss_list = U.log_loss(probs, labels, s.main_view, s.aux_views)
             logged = main_loss  # the official, unweighted main loss is what the loss files record
-            if gw is not None:  # amendment 3: the main-target loss weighted per click BEFORE the mean
+            if gw is not None:  # weight each click before taking the mean
                 main_loss = weighted_main_loss(probs, labels, s.main_view, ad_indices, gw)
             total_loss = main_loss + sum([s.lamda * x for x in aux_loss_list])
             optimizer.zero_grad()
@@ -306,7 +300,7 @@ def train(a) -> Path:
             if steps == 0:
                 rec["after_first_step"] = memory(device)
             steps += 1
-            if not np.isfinite(losses[-1]):  # diverged: it cannot be selected, so stop paying for it (§18.10, amendment 2)
+            if not np.isfinite(losses[-1]):  # diverged: no point paying for the rest
                 rec["diverged"] = {"file": name, "step": steps, "loss": str(losses[-1])}
                 np.save(out / f"loss_{Path(name).stem}.npy", np.asarray(losses))
                 (out / "resume.pt").unlink(missing_ok=True)
@@ -363,7 +357,7 @@ def claim_official_test(manifest_path: Path, ckpts: list[Path], cache: Path) -> 
     if missing:
         raise ValueError(f"checkpoints not listed in the freeze manifest: {missing}")
     if len(set(given)) != len(given) or sorted(given) != sorted(listed):
-        # review: one of the six frozen checkpoints was enough to claim the single evaluation
+        # the whole frozen set, each once: a partial set must not use up the single evaluation
         raise ValueError(f"the evaluation needs exactly the {len(listed)} frozen checkpoints, each once; got "
                          f"{len(given)} ({len(set(given))} distinct)")
     if cache_meta(cache, TEST_FILE)["source_sha256"] != manifest.get("official_test_sha256"):
@@ -406,8 +400,8 @@ def score(a, ckpt: Path, run: dict) -> dict:
     ckpt_sha = sha256(ckpt)
     ra = argparse.Namespace(**run["args"])
     device = torch.device(a.device)
-    folder = Path(a.out) / f"{ckpt.stem}_{ckpt_sha[:12]}"  # one folder per checkpoint (review: a second
-    folder.mkdir(parents=True, exist_ok=True)              # checkpoint's test.npz replaced the first one)
+    folder = Path(a.out) / f"{ckpt.stem}_{ckpt_sha[:12]}"  # one folder per checkpoint: no two write the same file
+    folder.mkdir(parents=True, exist_ok=True)
     dests = {name: folder / f"{Path(name).stem}.npz" for name in a.files}
     taken = [str(d) for d in dests.values() if d.exists() or d.with_suffix(".json").exists()]
     if taken:
@@ -430,8 +424,8 @@ def score(a, ckpt: Path, run: dict) -> dict:
             for batch in loader:
                 user_indices, ad_indices, buy_mm_scores, buy_seq_indices = [batch[x].to(device) for x in ["user", "ad", "mm", "seq"]]
                 p = model(user_indices[:, 1:], ad_indices, buy_mm_scores, buy_seq_indices)
-                # copies: a numpy view of a worker's batch keeps its shared-memory file open (the pilot ran out of
-                # file descriptors on Linux after ~1,000 batches); the official test() copies through the GPU
+                # copy: a numpy view of a worker's batch keeps its shared-memory file open, and Linux runs out of
+                # file descriptors after about 1,000 batches (the official test() copies through the GPU instead)
                 users.append(np.array(user_indices[:, 0].cpu().numpy(), copy=True))
                 for v in views:
                     probs[v].append(np.array(p[v][:, 1].cpu().numpy(), copy=True))
@@ -471,7 +465,7 @@ def parser() -> argparse.ArgumentParser:
             p.add_argument("--out", required=True)
             p.add_argument("--batch_size", type=int, default=4096)
             p.add_argument("--ckpt", action="append", required=True,  # repeated, so it cannot swallow the file names
-                           help="a checkpoint; repeat for several (Q2: the three seeds in one evaluation)")
+                           help="a checkpoint; repeat the flag for several")
             p.add_argument("--official_test", default=None, help="freeze manifest: checkpoints and test SHA-256")
             p.add_argument("--no_metrics", action="store_true", help="speed only: no labels or metric are kept")
             p.add_argument("files", nargs="+")
@@ -491,7 +485,7 @@ def parser() -> argparse.ArgumentParser:
         p.add_argument("--aux_views", nargs="*", default=None)
         p.add_argument("--train_files", nargs="*", default=None, help="default: the official 20 files in order")
         p.add_argument("--ckpt_after", nargs="*", default=None, help="default: train-17, train-18, train-19")
-        p.add_argument("--g1_weight", type=float, default=None, help="amendment 3: weight of the G1 clicks' main loss")
+        p.add_argument("--g1_weight", type=float, default=None, help="weight of the G1 clicks in the main loss")
         p.add_argument("--weight_groups", default=None, help="group_lists.json holding the fixed G1 tokens")
         p.add_argument("--weight_groups_sha256", default=None, help="the fixed G1 list's SHA-256 (groups.json)")
         p.add_argument("--schedule_rows", type=int, default=None,

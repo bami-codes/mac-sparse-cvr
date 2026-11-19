@@ -1,18 +1,14 @@
-"""Study E, Q2 and Q3 (docs/DESIGN.md §18.4-18.6): calibrate the official models' predictions on V1, choose on V2.
+"""Calibrate the official models' predictions on V1 (train-18) and choose the shrinkage strength on V2 (train-19).
 
     uv run python -m cvr.study_e_eval calibrate runs/e_study/config_choice.json
 
-Inputs: predictions of each research checkpoint (the train-17 checkpoint = a model trained on train-00..17) on
-V1 = train-18 and V2 = train-19, made on the pod by cvr.pymal_run predict --out runs/e_runs/research and copied back
-with the run records (runs/e_runs/<run>/run.json, which give each checkpoint's SHA-256).
-Group codes come from the fixed training statistics (cvr/study_e.py groups); a token absent from them is one
-"unseen" group. Every prediction file is checked row by row against the label (last > 0) read again from the
-source parquet file, so a row-order slip cannot reach the calibration.
+The inputs are the train-17 checkpoints' predictions on V1 and V2, found through each checkpoint's SHA-256 in its
+run record. Every prediction file is checked row by row against labels read again from the source parquet, so a
+row-order slip cannot reach the calibration.
 
-Calibrations fitted on V1 only (§18.4): (ii) global Platt; (iii) group-shrunk Platt solved exactly per group;
-(iii-0) group intercept only. Lambda per model and method is chosen on V2 by the seed mean (main rule: G1 macro
-LogLoss; aggregate rule: G1 group-total Poisson deviance). V2 values are recorded for the dry run; they are
-selection data, not results.
+Calibrations: (ii) global Platt, (iii) group-shrunk Platt solved exactly per group, (iii-0) group intercept only.
+Lambda is picked per model and method by the seed mean on V2: G1 macro LogLoss (main rule) or G1 group-total Poisson
+deviance (aggregate rule). The V2 numbers are selection data, recorded so the dry run can reproduce them.
 """
 
 import hashlib
@@ -39,7 +35,7 @@ V1, V2, TEST = "train-18.parquet", "train-19.parquet", "test.parquet"
 CKPT = "model_after_train-17"
 BOOT = {"reps": 1000, "seed": 20261119}
 METHODS = ("iii", "iii0")
-WEIGHTED = "MoAE-g1w2"  # amendment 3 (Q4): the chosen MoAE retrained with the G1 clicks' main loss weighted 2x
+WEIGHTED = "MoAE-g1w2"  # Q4: the chosen MoAE retrained with the G1 clicks' main loss weighted 2x
 
 
 def source(name: str) -> Path:
@@ -109,19 +105,19 @@ def evaluate(y: np.ndarray, q: np.ndarray, g: np.ndarray, sets: dict[str, np.nda
     """Group metrics on every set, and overall LogLoss, AUC, O/E and (with users) the click-weighted GAUC."""
     from sklearn.metrics import roc_auc_score
     overall = {"logloss": float(M.bce(y, q).mean()), "auc": float(roc_auc_score(y, q)), "O_over_E": float(y.sum() / q.sum())}
-    if users is not None:  # amendment 5: listed in §18.5 but missing from the selection run's rows
+    if users is not None:  # GAUC needs each row's user
         overall["gauc"] = M.gauc(y, q, users)["gauc"]
     return {k: group_metrics(y, q, g, v) for k, v in sets.items()} | {"overall": overall}
 
 
-# amendment 5 (before the official test): values in the plan but not in the V2 selection record; the dry run records
-# their V2 values instead of reproducing them, and refuses any other difference between the two sets of keys
+# Planned values the V2 selection run did not compute. The dry run records their V2 values instead of reproducing
+# them, and refuses any other difference between the two sets of keys.
 ADDED_AFTER_SELECTION = {"Q3 click ii: (MoAE - BASE) on G1 minus on C", "Q3 click raw: (MoAE - BASE) on G1 minus on C"}
 
 
 def did_click_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, seed: int) -> dict:
     """(click LogLoss_1(A) - click LogLoss_1(B)) - (the same on set 2): each set weights its clicks equally; one user
-    resample per replicate for both sets; seed pairs averaged (amendment 1's click-weighted Q3, added in amendment 5)."""
+    resample per replicate for both sets; seed pairs averaged."""
     _, ui = np.unique(users, return_inverse=True)
     U = ui.max() + 1
     d = np.mean([M.bce(y, pa) - M.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
@@ -189,7 +185,7 @@ def click_diff_bootstrap(y, a: list, b: list, users, reps: int, seed: int) -> di
 
 
 def q4_comparisons(y, g, users, sets, get, iii_w: str, iii_u: str) -> dict:
-    """Amendment 3, the same code on V2 and on the test: `get(model, name)` gives the seed-ordered predictions."""
+    """Q4 comparisons, the same code on V2 and on the test. `get(model, name)` returns the predictions in seed order."""
     m1 = np.isin(g, sets["G1"])
 
     def macro(a, b, label):
@@ -304,8 +300,8 @@ def calibrate(choice_path: Path) -> dict:
 
 
 def calibrator_path(rid: str, meth: str, rule: str) -> Path:
-    """With the .npz written out: the run id holds dots (lr0.003), and save_domain_calibrators' with_suffix would
-    otherwise cut the name at the last dot, so every run's calibrator overwrote the others (caught by the test)."""
+    """Spelled with .npz: run ids contain dots (lr0.003), and with_suffix would otherwise cut the name at the last
+    one, making every run write the same file."""
     return E.OUT / "q2" / "calibrators" / f"{rid}__{meth}_{rule}.npz"
 
 

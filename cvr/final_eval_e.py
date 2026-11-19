@@ -1,6 +1,6 @@
-"""Study E: choose the settings on train-19, freeze, dry-run on V2, then evaluate the official test ONCE per question.
+"""Choose the settings, freeze, dry-run on V2, then evaluate the official test once per question.
 
-    uv run python -m cvr.final_eval_e choose runs/e_runs/summary_grid.jsonl     # amendment 2: train-19 GAUC
+    uv run python -m cvr.final_eval_e choose runs/e_runs/summary_grid.jsonl     # by train-19 GAUC
     uv run python -m cvr.study_e_eval calibrate runs/e_study/config_choice.json  # Q2 calibrations on V1, lambdas on V2
     uv run python -m cvr.final_eval_e freeze                                      # freeze_q1.json, freeze_q2.json
     uv run python -m cvr.final_eval_e dryrun                                      # V2 values reproduced (hard check)
@@ -8,10 +8,10 @@
     uv run python -m cvr.final_eval_e test q1
     uv run python -m cvr.final_eval_e test q2
 
-Rules (docs/DESIGN.md §18.5-18.6, amendments 1-2): the checkpoints, calibrators, group lists and selection are
-hashed in the freeze manifests; the pod scores the official test only with a manifest that lists every checkpoint and
-the official test file's SHA-256, once per manifest; here the evaluation of each question runs once (exclusive
-lock), only after a dry run recorded for the same freeze and the same evaluation code on a committed clean tree.
+The freeze manifests hash the checkpoints, calibrators, group lists and selection. The official test is scored only
+with a manifest that lists every checkpoint and the test file's SHA-256, and each question is evaluated once under an
+exclusive lock. Before that, a dry run on V2 must pass for the same freeze and the same evaluation code, committed on a
+clean tree. The rules are in docs/DESIGN.md §18.5-18.6.
 """
 
 import hashlib
@@ -57,9 +57,9 @@ def code_fingerprint() -> str:
     return h.hexdigest()
 
 
-# ------------------------------------------------------------------ amendment 2: settings chosen on train-19
+# ------------------------------------------------------------------ settings chosen on train-19
 def planned_grid() -> list[dict]:
-    """The 45 jobs of amendment 2, from the queue's own definition (scripts/pod_queue.py grid)."""
+    """The 45 planned grid jobs, taken from the queue's own definition (scripts/pod_queue.py grid)."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("pod_queue", Path(__file__).resolve().parents[1] / "scripts" / "pod_queue.py")
     mod = importlib.util.module_from_spec(spec)
@@ -68,9 +68,10 @@ def planned_grid() -> list[dict]:
 
 
 def check_complete(rows: list[dict]) -> dict:
-    """Review: choosing from part of the grid was possible (a failed job is logged and the queue goes on). Every planned
-    job must appear exactly once with its planned settings, validated with a finite GAUC/AUC, or stopped by the
-    non-finite-loss rule; anything else (an infrastructure failure, a missing validation) is left to resume."""
+    """Refuse to choose from a partial grid. The queue logs a failed job and moves on, so a missing job is easy to miss.
+
+    Every planned job must appear once with its planned settings and either a finite validation GAUC/AUC or a
+    recorded non-finite loss. Anything else, such as an infrastructure failure, has to be resumed first."""
     plan = {j["id"]: j for j in planned_grid()}
     seen: dict[str, int] = {}
     for r in rows:
@@ -120,7 +121,7 @@ def choose(summary: Path) -> dict:
     if dest.exists():
         raise CheckFailed(f"{dest} exists: the settings are chosen once")
     E.OUT.mkdir(parents=True, exist_ok=True)
-    out[Q.WEIGHTED] = {"lr": out["MoAE"]["lr"], "lamda": out["MoAE"]["lamda"], "derived_from": "MoAE (amendment 3)"}
+    out[Q.WEIGHTED] = {"lr": out["MoAE"]["lr"], "lamda": out["MoAE"]["lamda"], "derived_from": "MoAE"}
     dest.write_text(json.dumps({k: out[k] for k in ("MoAE", "BASE", Q.WEIGHTED)}, indent=2))
     (E.OUT / "config_choice_record.json").write_text(json.dumps(out, indent=2))
     return out
@@ -158,7 +159,7 @@ def freeze() -> dict:
     sel = json.loads((E.OUT / "q2" / "selection.json").read_text())
     if sel["choice"] != choice:
         raise CheckFailed("the Q2 selection was computed for other settings")
-    if set(choice) != {"MoAE", "BASE", Q.WEIGHTED}:  # review: a freeze without the weighted runs passed
+    if set(choice) != {"MoAE", "BASE", Q.WEIGHTED}:
         raise CheckFailed(f"the freeze needs MoAE, BASE and {Q.WEIGHTED}; got {sorted(choice)}")
     ck17 = checkpoints(choice, "train-17.parquet")  # Q2 and Q4: nine checkpoints in one claim
     ck19 = checkpoints({k: choice[k] for k in ("MoAE", "BASE")}, "train-19.parquet")  # Q1 reproduces the paper's two
@@ -254,7 +255,7 @@ def q2_values(name: str, manifest: dict) -> dict:
 
 
 def hold_flags(b: dict) -> dict:
-    """Amendment 3's reasons to hold the weighted training even when it improves G1."""
+    """Pre-set reasons to hold back the weighted training even when it improves G1."""
     click, pois = b["Q4 guard: weighted iii - plain iii, all clicks"], b["Q4 guard: weighted iii - plain iii, G1 Poisson deviance"]
     return {"all_click_logloss_worse": bool(click["ci95"][0] > 0), "g1_poisson_worse": bool(pois["diff"] > 0)}
 
@@ -281,8 +282,8 @@ def dryrun() -> dict:
                 n += 1
     extra = set(new["bootstrap"]) - set(sel["v2_bootstrap"])
     if extra != Q.ADDED_AFTER_SELECTION or set(sel["v2_bootstrap"]) - set(new["bootstrap"]):
-        raise CheckFailed(f"dry run: values differ from the selection record beyond amendment 5: {sorted(extra)}")
-    added = {k: new["bootstrap"][k] for k in sorted(extra)}  # recorded, not reproduced (amendment 5)
+        raise CheckFailed(f"dry run: values differ from the selection record beyond the ones added after selection: {sorted(extra)}")
+    added = {k: new["bootstrap"][k] for k in sorted(extra)}  # recorded, not reproduced
     for key, b in new["bootstrap"].items():
         if key in extra:
             continue
@@ -294,7 +295,7 @@ def dryrun() -> dict:
         if "ci95" in b:  # the Poisson guard is a point difference
             require_close(f"dry run {key} CI", max(abs(x - z) for x, z in zip(b["ci95"], rec["ci95"])), DRYRUN_TOL)
             n += 1
-        if "per_pair_diff" in b:  # review: the verdict needs every seed pair < 0, which the mean did not check
+        if "per_pair_diff" in b:  # the verdict needs every seed pair below 0, not just the mean
             if len(b["per_pair_diff"]) != len(rec["per_pair_diff"]):
                 raise CheckFailed(f"dry run {key}: {len(b['per_pair_diff'])} seed pairs, recorded {len(rec['per_pair_diff'])}")
             for i, (x, z) in enumerate(zip(b["per_pair_diff"], rec["per_pair_diff"])):
@@ -352,9 +353,10 @@ def guard(name: str) -> tuple[dict, dict]:
 
 
 def check_test_predictions(name: str, m: dict) -> None:
-    """Review: a missing Q1 file was found only after the single evaluation was claimed, and Q2 read files without
-    the prediction step's completion record. Before the claim: the prediction step finished for this manifest, and
-    every frozen checkpoint has its test .npz and .json with matching file, checkpoint and source hashes and labels."""
+    """Check every test input before the single evaluation is claimed, so a missing file cannot waste it.
+
+    The prediction step must have finished for this manifest, and every frozen checkpoint needs its test .npz and
+    .json with matching file, checkpoint and source hashes, the expected fields and the file's labels."""
     status = FROZEN / f"freeze_{name}.official_test_status.json"
     if not status.exists() or json.loads(status.read_text()).get("state") != "done":
         raise CheckFailed(f"the test predictions for {name} are not complete ({status})")
@@ -369,7 +371,7 @@ def check_test_predictions(name: str, m: dict) -> None:
         if meta.get("sha256") != sha256(f) or meta.get("checkpoint_sha256") != ck or meta.get("source_sha256") != m["official_test_sha256"]:
             raise CheckFailed(f"{rid}: the test predictions do not match their record, checkpoint or the official test")
         z = np.load(f)
-        if not {"p_last", "user", "y_last"} <= set(z.files):  # review: a missing field raised only after the claim
+        if not {"p_last", "user", "y_last"} <= set(z.files):  # fail now, not after the claim
             raise CheckFailed(f"{rid}: test predictions lack p_last, user or y_last")
         p = z["p_last"]
         if not (p.size == z["user"].size == z["y_last"].size == y.size):

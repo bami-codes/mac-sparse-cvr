@@ -1,19 +1,14 @@
-"""Study E serving (docs/DESIGN.md §18.8): raw MAC rows -> calibrated probability with an official PyMAL model, in
-process on the CPU.
+"""Serve an official PyMAL model on the CPU: raw MAC rows in, calibrated conversion probabilities out.
 
-Path of one request: raw row dicts -> the official vocabularies (the same lookups as utils.data.df_to_dict) -> the
-official tensor layout (the same as utils.data.MALDataset) -> model -> (ii) global Platt and (iii) group-shrunk Platt
-on the row's ad_feat1 group (the frozen calibrators of study E). The two similarity sequences (mm_feat0_seq,
-mm_feat1_seq) are precomputed in MAC and read as given: computing them is outside the timed path, as are network,
-request parsing and feature-store lookups.
+The lookups match utils.data.df_to_dict and the tensors match utils.data.MALDataset, so a served row gets the same
+probability as in evaluation. The similarity sequences (mm_feat0_seq, mm_feat1_seq) come precomputed with MAC.
 
-New inputs (review: a new user_id raised KeyError although the model never reads it):
-- user_id is not looked up: the official model drops it (user_indices[:, 1:]); it only groups GAUC in evaluation;
-- a value absent from an official vocabulary (a new ad, shop or history item) takes that vocabulary's PAD index, the
-  missing value the model was trained with, and is counted in `oov` for monitoring;
-- an ad_feat1 value absent from the training statistics (including any new value) is the pooled "unseen" group -1 of
-  the frozen calibrators, whose coefficients were fitted on V1's unseen rows; a group the calibrator never saw at
-  all takes the global (ii) mapping. This is the evaluated behavior, kept so that serving equals the evaluation.
+Inputs the model has not seen:
+- user_id is never looked up. The official model drops that column (user_indices[:, 1:]).
+- A value missing from a vocabulary maps to that vocabulary's PAD index, the missing value used in training, and is
+  counted in `oov` so it can be monitored.
+- An ad group missing from the training statistics uses the calibrator's pooled "unseen" group (-1), exactly as in
+  evaluation.
 """
 
 import argparse
@@ -30,7 +25,7 @@ from .schema import PAD
 class ServerE:
     def __init__(self, rid: str, ckpt: Path, vocabs: dict, codes: dict[str, int], threads: int = 1,
                  calibration: str = "iii"):
-        """A study E model: the run record next to the checkpoint and the frozen calibrator of that run."""
+        """A study E model, with its run record next to the checkpoint and its calibrator."""
         run = R.run_record(Path(ckpt))
         cal = Q.calibrator_path(rid, calibration, "main")
         self._setup(run["args"], Path(ckpt), vocabs, codes, cal, threads, {"run": rid})
@@ -38,8 +33,7 @@ class ServerE:
     @classmethod
     def from_parts(cls, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path | None,
                    threads: int = 1, info: dict | None = None) -> "ServerE":
-        """Any official model: its training arguments, state dict, vocabularies, calibrator group codes and file
-        (calibrator None: a model without a calibrator fitted for it serves raw probabilities only)."""
+        """Any official model. With calibrator=None it can only return raw probabilities."""
         self = cls.__new__(cls)
         self._setup(args, Path(ckpt), vocabs, codes, Path(calibrator) if calibrator else None, threads, info or {})
         return self
@@ -56,7 +50,7 @@ class ServerE:
         self.model.eval()
         self.main_view = a.main_view
         self.vocabs, self.codes = vocabs, codes
-        self.pad = {c: v[PAD] for c, v in vocabs.items()}  # the missing-value index of every official vocabulary
+        self.pad = {c: v[PAD] for c, v in vocabs.items()}
         self.oov: dict[str, int] = {}
         self.glob, self.gs = load_domain_calibrators(calibrator) if calibrator else (None, None)
         self.info = info | {"checkpoint": str(ckpt), "checkpoint_sha256": R.sha256(ckpt), "model": a.model,
@@ -76,7 +70,7 @@ class ServerE:
         return i
 
     def user_part(self, row: dict):
-        """User features and purchase history of one row: index 0 (user_id) is a placeholder, never read."""
+        """User features and purchase history as tensors. Slot 0 stands in for user_id, which the model ignores."""
         D, torch = self.D, self.torch
         user = [0] + [self.code(c, row[c]) for c in D.USER_COLS[1:]]
         seq = [[self.code(D.MAP_COLS[c], t) for t in row[c]] for c in D.SEQ_COLS]
@@ -89,15 +83,14 @@ class ServerE:
         return ad, mm
 
     def tensors(self, rows: list[dict]):
-        """The official mapping of df_to_dict and the MALDataset layout, for a list of raw rows (each with its own user)."""
+        """Tensors for rows that each carry their own user, in MALDataset's layout."""
         parts = [self.user_part(r) for r in rows]
         ad, mm = self.ad_part(rows)
         return (self.torch.cat([u for u, _ in parts]), ad, mm, self.torch.cat([q for _, q in parts]))
 
     def request_tensors(self, user_row: dict, candidates: list[dict]):
-        """One request: the user's features and history encoded ONCE and shared by every candidate (the per-row
-        path looked the same history up once per candidate). The candidates bring their ad and context features and
-        their precomputed similarity sequences."""
+        """Tensors for one user's candidates. The user's history is looked up once and broadcast to every
+        candidate instead of once per candidate, which removes most of the encoding time of a request."""
         user, seq = self.user_part(user_row)
         ad, mm = self.ad_part(candidates)
         n = len(candidates)
@@ -115,13 +108,13 @@ class ServerE:
     def calibrate(self, p: np.ndarray, rows: list[dict]) -> np.ndarray:
         if self.gs is None:
             raise ValueError("this model has no calibrator fitted for it")
-        g = np.array([self.codes.get(r["ad_feat1"], -1) for r in rows])  # -1: absent from the training statistics
+        g = np.array([self.codes.get(r["ad_feat1"], -1) for r in rows])  # -1: the pooled "unseen" group
         return self.gs.predict(p, g)
 
     def predict(self, rows: list[dict]) -> np.ndarray:
-        """Calibrated probability (iii) of every row, each row with its own user."""
+        """Calibrated probability per row, each row with its own user."""
         return self.calibrate(self.raw(rows), rows)
 
     def predict_request(self, user_row: dict, candidates: list[dict]) -> np.ndarray:
-        """Calibrated probability (iii) of every candidate of one user's request."""
+        """Calibrated probability per candidate of one user's request."""
         return self.calibrate(self.score(self.request_tensors(user_row, candidates)), candidates)
