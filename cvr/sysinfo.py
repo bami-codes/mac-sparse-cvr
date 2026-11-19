@@ -8,8 +8,7 @@ from pathlib import Path
 
 
 def peak_rss_gb() -> float:
-    """Peak resident memory of this process in GB. getrusage reports bytes on macOS and kilobytes on Linux
-    (the runs used to divide by 1e9 everywhere, which is 1000 times too small on Linux)."""
+    """Peak resident memory of this process in GB. getrusage reports bytes on macOS but kilobytes on Linux."""
     r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return round((r if sys.platform == "darwin" else r * 1024) / 1e9, 2)
 

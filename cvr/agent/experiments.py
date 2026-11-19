@@ -263,8 +263,8 @@ class Menu:
         """The same comparison for 'full + one noise feature' vs 'full', per noise replicate (point estimates).
 
         Descriptive only: how far held-out LogLoss moves when training changes without new information.
-        It is NOT a null distribution and never enters a verdict (a normal-reference test built from 4-5 such
-        replicates rejected 8-9% of the time at nominal 5% in a synthetic null; review of 23ac4b3)."""
+        It is not a null distribution and never enters a verdict: a normal-reference test built from 4-5 such
+        replicates rejected 8-9% of the time at a nominal 5% on a synthetic null."""
         ma = self._seg(segment)
         mb = self._seg(segment_b) if segment_b else None
         est = []

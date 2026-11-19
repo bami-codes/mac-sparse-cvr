@@ -119,9 +119,9 @@ def latency_accepted(start: dict, end: dict) -> bool:
 
 
 def check_latency_provenance(report: dict, run: Path, sel: dict) -> None:
-    """The latency report must come from THIS run's selected models and calibrators (review: a smoke report with
-    lambda 100 was frozen as the development run's, whose lambda is 1), and the kept attempt must be the first one
-    that meets the acceptance rule, with every earlier attempt rejected and at most LATENCY_MAX_ATTEMPTS in all."""
+    """The latency report must come from this run's selected models and calibrators (a smoke run's report, say,
+    with lambda 100 instead of 1), and the kept attempt must be the first one that meets the acceptance rule, with
+    every earlier attempt rejected and at most LATENCY_MAX_ATTEMPTS in all."""
     if Path(report["run"]).resolve() != run.resolve():
         raise CheckFailed(f"latency report is for {report['run']}, not {run}")
     from .serving_c import model_path
@@ -150,8 +150,8 @@ def frozen_p99(lat: dict) -> tuple[dict, dict]:
     """Per family and seed, the p99 (ms) of the uniform-traffic replay, taken from the DETAILED per-seed record.
     Refused unless the record uses the pre-registered protocol (version 2, 5,000 timed requests per seed), passed
     the serving check (codes, numeric features, probabilities) and meets the acceptance rule recomputed from its
-    recorded environment (reviews: one seed, a negative value, a NaN summary, a numeric-feature error of 1.0 and the
-    excluded 1,000-request measurement used to be frozen)."""
+    recorded environment. One seed, a negative value, a NaN summary, a numeric-feature error and the excluded
+    1,000-request measurement are all refused."""
     p99, strat = {}, {}
     for fam in LATENCY_FAMILIES:
         f = lat[fam]
@@ -474,7 +474,7 @@ def summary_table(rows: dict, lam: dict, seeds: list[int], p99: dict) -> list[di
 def dryrun_checks(run: Path, manifest: dict, preds: dict, rows: dict, result: dict) -> dict:
     """The test code must reproduce the development run on V2: predictions, metrics, the primary bootstrap with
     every seed pair matched BY SEED, the verdict derived from them, the secondary bootstraps and the leave-one-out.
-    (Review: flipping all three seed differences still passed when only pooled values were compared.)"""
+    Pooled values alone are not enough: flipping all three seed differences would leave them unchanged."""
     res = json.loads((run / "results.json").read_text())
     checked = 0
 
@@ -524,7 +524,7 @@ def dryrun_checks(run: Path, manifest: dict, preds: dict, rows: dict, result: di
           rec_v["conditions"]["effect_size"]["relative_improvement"])
     bn, bg = manifest["best_on_v2"]["nn"], manifest["best_on_v2"]["gbdt"]
     mapped = secondary_names(result["secondary"], bn, bg)
-    if sorted(mapped) != sorted(res["v2_secondary"]):  # review: a missing comparison still passed
+    if sorted(mapped) != sorted(res["v2_secondary"]):  # a missing comparison must fail too
         raise CheckFailed(f"secondary comparisons {sorted(mapped)} vs recorded {sorted(res['v2_secondary'])}")
     for k, rk in mapped.items():
         same_boot(f"secondary {k}", result["secondary"][rk], res["v2_secondary"][k])
@@ -538,7 +538,7 @@ def secondary_names(secondary: dict, best_nn: str, best_gbdt: str) -> dict[str, 
 
 
 def same_loo(new: dict, rec: dict) -> int:
-    """Leave-one-domain-out reproduced domain by domain (review: an emptied per-domain table still passed)."""
+    """Leave-one-domain-out reproduced domain by domain, so an emptied per-domain table cannot pass."""
     a = {int(k): v for k, v in new["by_removed_domain"].items()}
     b = {int(k): v for k, v in rec["by_removed_domain"].items()}
     if sorted(a) != sorted(b) or not a:

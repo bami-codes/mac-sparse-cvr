@@ -29,13 +29,13 @@ HOLDOUT_FILES = ("train-13.parquet", "train-14.parquet", "test.parquet")  # neve
 ROLES = ("train", "v1", "v2")
 
 
-# ---------------------------------------------------------------- configuration guard (review of §16)
+# ---------------------------------------------------------------- configuration guard
 def check_development_sources(data: dict) -> None:
     """Refuse a development `[data]` section that lists a holdout file, uses one file in two roles, or (smoke mode)
-    overlapping user buckets. Before revision 4 only a `test` key was refused. Paths are joined with `root` and
+    overlapping user buckets. Paths are joined with `root` and
     resolved before any comparison, so `./train-11.parquet` and `train-11.parquet` are the same file; holdout names
     are compared without case, and two existing files are compared with os.path.samefile, because this machine's
-    file system is case-insensitive (review: `train-11.parquet` and `TRAIN-11.PARQUET` passed as two files)."""
+    file system is case-insensitive (`train-11.parquet` and `TRAIN-11.PARQUET` are one file here)."""
     import os
     from pathlib import Path
 
@@ -278,8 +278,8 @@ def power_check(h_v2: float, l_int: float) -> dict:
 def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None) -> dict:
     """Two tiers (§16.6). `boot` is paired_bootstrap(selected, int, pair_seeds=...); `l_int` the int's small macro
     LogLoss; `p99_by_seed` the selected candidate's raw-row p99 (ms) per seed, or None before latency is measured.
-    The evidence is checked against the PRE-REGISTERED seeds (SEEDS), never against a list the caller passes
-    (review: a run configured with [2026] alone, or a NaN p99, could still give adoption_candidate)."""
+    The evidence is checked against the pre-registered seeds (SEEDS), never against a list the caller passes, so a
+    run configured with [2026] alone, or a NaN p99, cannot become an adoption candidate."""
     pt, ci = boot["point"], boot["ci95"]
     per, got = pt["per_pair_small_macro"], pt.get("per_pair_seeds")
     if got is None or sorted(got) != sorted(SEEDS) or len(per) != len(SEEDS):

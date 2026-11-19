@@ -68,7 +68,7 @@ def gauc(y: np.ndarray, p: np.ndarray, users: np.ndarray) -> dict:
 
 def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
     """Primary metric and group calibration for one set of groups (e.g. all G1 rows)."""
-    if y.size == 0:  # an empty definition used to fail later as float(None) inside the metric (synthetic e2e run)
+    if y.size == 0:  # fail here with a clear message, not later as float(None) inside the metric
         raise ValueError("group_report: no rows; the group definition selects no group in this data")
     pg = per_group(y, p, g)
     with_pos = pg.filter(pl.col("O") > 0)

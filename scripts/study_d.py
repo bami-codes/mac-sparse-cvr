@@ -119,8 +119,8 @@ def run_setting(name: str, fams: dict, data: dict, eval_mask: dict, groups: dict
 
 
 def verdict(c: dict) -> dict:
-    """§17.4. The evidence is checked against the pre-registered seeds (review: an empty, single or repeated seed
-    list still gave group_count_error_reduced=True)."""
+    """§17.4. The evidence is checked against the pre-registered seeds, so an empty, single or repeated seed list
+    cannot give group_count_error_reduced=True."""
     b = c["comparisons"]["iii0 - iiid"]
     got = b.get("per_pair_seeds")
     if got is None or sorted(got) != sorted(SEEDS) or len(b["per_pair"]["poisson"]) != len(SEEDS):

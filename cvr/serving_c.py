@@ -3,8 +3,8 @@
 raw strings -> vocabulary codes and purchase-history features (cvr/serving.row_features, shared with the first
 study) -> base model (G-int / G-shared / N-int / N-shared / N-head / N-star) -> (iii-d) group calibration keyed by
 the DOMAIN (context_feat1) code. The first-study server calibrates by ad_feat1; using that key here would silently
-serve a different model (review: 0.021 max difference on the smoke run), so the key is DOMAIN_KEY by construction
-and scripts/latency_c.py compares every served probability with an independent reference before timing.
+serve a different model (0.021 max difference on a smoke run), so the key is DOMAIN_KEY by construction and
+scripts/latency_c.py compares every served probability with an independent reference before timing.
 
 Library imports are lazy and per family: a network server imports PyTorch, a GBDT server LightGBM, never both.
 """

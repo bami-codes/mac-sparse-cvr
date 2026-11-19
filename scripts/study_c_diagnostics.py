@@ -60,7 +60,7 @@ def calib(run: Path) -> dict:
     frozen = json.loads((run / "selection.json").read_text())  # the file the freeze step will use
     if json.dumps(res["selection"], sort_keys=True) != json.dumps(frozen, sort_keys=True):
         raise RuntimeError("selection.json differs from the selection inside results.json")
-    sel, seeds = frozen, frozen["seeds"]  # every comparison below is against selection.json (review)
+    sel, seeds = frozen, frozen["seeds"]  # every comparison below is against selection.json
     lambdas = tomllib.loads((run / "config.toml").read_text())["calibration"]["lambdas"]
     cfg_dom = res["domains"]["definition"]
     tr = load_md(run / "nn_data" / "train")

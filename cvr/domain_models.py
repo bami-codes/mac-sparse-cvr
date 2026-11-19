@@ -4,7 +4,7 @@ G-shared: the M2 GBDT (cvr/models.GBDT) on CAT_INPUTS + NUM_INPUTS, so the domai
 G-int:    a GBDT WITHOUT the domain input, boosted from a per-domain logit offset (LightGBM init_score):
           prediction = sigmoid(tree raw score + offset), the offset added exactly once.
 
-Offsets are logit(beta-binomial smoothed domain rate). Order that keeps labels out of the wrong rows (review):
+Offsets are logit(beta-binomial smoothed domain rate). Fitting order, chosen so no row's offset is computed from its own label:
 1. split off the early-stopping users (the same ~10% rule as GBDT.fit);
 2. on the remaining fitting side only, user 3-fold out-of-fold offsets for the fitting rows;
 3. early-stopping rows get the offset fitted on the whole fitting side;

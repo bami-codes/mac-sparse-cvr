@@ -252,7 +252,7 @@ def main(config_path: str) -> Path:
                  "N-star-noPN - N-star": boot("N-star-noPN", "N-star"), "best NN - best GBDT": boot(best_n, best_g),
                  f"{cand}: iiid - ii": boot(cand, cand, "iiid", "ii"),
                  f"{ctrl}: iiid - ii": boot(ctrl, ctrl, "iiid", "ii")}
-    if cand != "G-shared":  # what would be taken to a serving system (review of §16): the candidate vs G-shared
+    if cand != "G-shared":  # what a serving system would actually get: the candidate vs G-shared
         secondary[f"{cand} - G-shared"] = boot(cand, "G-shared")
     selection = {
         "selected_on": "V2 small-domain macro LogLoss (seed mean) after (iii-d), docs/DESIGN.md §16.6",

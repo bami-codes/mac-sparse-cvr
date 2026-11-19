@@ -13,7 +13,7 @@ star_nopn   star FCN + auxiliary network, no normalization (secondary ablation) 
 
 Domain-specific parameters are ROWS OF SPARSE EMBEDDINGS looked up by the domain code and updated by
 SparseAdam, which changes only the rows present in the batch (values and moments, i.e. lazy Adam). One dense
-tensor with Adam would move domains absent from the batch through their old momentum (§16.4, review).
+tensor with Adam would keep moving domains absent from the batch through their old momentum (§16.4).
 
 Unseen domains (no training row; UNKNOWN, or a code that never occurs in training) are mapped to UNKNOWN before
 anything else, including the shared input embedding (whose UNKNOWN row is zero, padding_idx). Every
@@ -42,7 +42,7 @@ PN statistics (implementation choices, §16.4):
 - the dimensions of the DOMAIN-ID embedding always use the global statistics, in training and evaluation
   (revision 4). Within a domain that embedding is constant at any one step, so its own variance is 0 while
   training, but the running mean / mean of squares mix values from different steps, so at evaluation its variance
-  could pass the 1% rule and switch the normalization (review counterexample: -0.577 in training, +1.000 in
+  could pass the 1% rule and switch the normalization (one counterexample gave -0.577 in training and +1.000 in
   evaluation for the same state and input).
 
 Run this module in a process that does NOT use LightGBM (see cvr/m3_worker.py for why).
@@ -290,8 +290,8 @@ def domain_batches(rng: np.random.Generator, dom_rows: list[np.ndarray], batch: 
 def accumulate_steps(chunks: list[np.ndarray], batch: int) -> list[np.ndarray]:
     """Optimizer steps of >= `batch` rows built from consecutive single-domain chunks (a trailing short step is
     merged into the previous one). The loss of a step is the mean over its rows, so every click has about the
-    same weight (step sizes stay within [batch, 4·batch)) and a 5-row domain no longer gets a full update of its
-    own (review of §16: one step per chunk gave 5 rows and 8,191 rows one update each). A domain appears in at
+    same weight (step sizes stay within [batch, 4·batch)) and a 5-row domain does not get a full update of its
+    own, as it would with one step per chunk. A domain appears in at
     most one chunk of a step, so its PN statistics are still computed on that domain's rows only."""
     steps, cur, n = [], [], 0
     for c in chunks:

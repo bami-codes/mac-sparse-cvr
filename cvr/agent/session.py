@@ -124,8 +124,8 @@ REPORTER_SYSTEM = """너는 분석 보고서 작성자다. 가설별로 코드�
 # ------------------------------------------------------------------ helpers
 def tool_call(h: dict) -> tuple[str, dict]:
     """The exact tool call a valid hypothesis runs: tool name and every argument. Execution and the test key
-    both come from here, so two requests that differ in any argument can never share a result (in review,
-    A/B requests for a 1% and a 10% effect shared one key and both got the 1% sample size)."""
+    both come from here, so two requests that differ in any argument never share a result (otherwise A/B requests
+    for a 1% and a 10% effect would share one key and both get the 1% sample size)."""
     if h["claim_type"] == "causal":  # always an experiment design, whatever observational tool was proposed
         return "ab_test_design", {"segment": h["segment"], "relative_mde": float(h.get("relative_mde") or 0.05)}
     if h["tool"] == "ablation_effect":
@@ -138,9 +138,9 @@ def tool_call(h: dict) -> tuple[str, dict]:
 def test_question(h: dict) -> str:
     """The question a verdict answers, written by code from the tool call and the expected direction.
 
-    Verdicts apply to THIS question, never to the planner's own sentence: in review, a statement saying the
-    opposite of what the tool tested ("the model WITH history has HIGHER LogLoss") was reported "confirmed"
-    with 100% rule compliance, because only the structured fields are validated, not the sentence's meaning."""
+    Verdicts apply to this question, never to the planner's sentence. Only the structured fields are validated, so
+    a sentence can claim the opposite of what the tool tests ("the model with history has higher LogLoss") and
+    still pass every rule."""
     name, a = tool_call(h)
     if name == "ablation_effect":
         return (f"[{a['segment']}] 같은 학습 조건으로 한 번 학습한 두 모델 중, '{a['group']}' 그룹을 넣은 모델의 "
