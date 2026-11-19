@@ -4,6 +4,7 @@
     python3 scripts/runpod.py templates                             # official images
     python3 scripts/runpod.py budget --usd 50 --max-price 1.0       # set the budget (USD) and the highest $/h per pod
     python3 scripts/runpod.py create --name e-pilot --gpu <id> --hours 3 --image <image> [--disk 300]
+    python3 scripts/runpod.py create --name e-cpu --cpu cpu5g --vcpu 8 --hours 3 --image <image> --disk 40
     python3 scripts/runpod.py status                                # pods, rates, spend so far against the budget
     python3 scripts/runpod.py exec <pod> -- <command ...>           # one command in the pod (25 s at most)
     python3 scripts/runpod.py ssh <pod>                             # the ssh command line for this pod
@@ -124,24 +125,35 @@ def create(a) -> None:
     led = load()
     if led["budget_usd"] is None:
         raise SystemExit("set the budget first: scripts/runpod.py budget --usd ... --max-price ...")
-    gpu = {g["id"]: g for g in call("GET", "/catalog/gpus").get("gpus", [])}.get(a.gpu)
-    if gpu is None:
-        raise SystemExit(f"unknown GPU type {a.gpu}")
-    unit = (gpu.get("price") or {}).get(a.cloud.lower())
-    rate = None if unit is None else unit * a.count
-    if rate is None or unit > led["max_price"]:
-        raise SystemExit(f"{a.gpu} costs {unit} USD/h per GPU on {a.cloud}, above the limit {led['max_price']}")
+    if a.cpu:  # a CPU pod (study E latency on a Linux server): the price is per vCPU, secure cloud only
+        cpu = {c["id"]: c for c in call("GET", "/catalog/cpus").get("cpus", [])}.get(a.cpu)
+        if cpu is None or a.cloud != "SECURE":
+            raise SystemExit(f"unknown CPU flavor {a.cpu}, or not on SECURE")
+        rate = cpu["price"]["securePerVcpu"] * a.vcpu
+        hardware = f"{a.vcpu} vCPU {a.cpu}"
+    else:
+        gpu = {g["id"]: g for g in call("GET", "/catalog/gpus").get("gpus", [])}.get(a.gpu)
+        if gpu is None:
+            raise SystemExit(f"unknown GPU type {a.gpu}")
+        unit = (gpu.get("price") or {}).get(a.cloud.lower())
+        rate = None if unit is None else unit * a.count
+        hardware = f"{a.count}x {a.gpu}"
+    if rate is None or rate > led["max_price"] * (1 if a.cpu else a.count):
+        raise SystemExit(f"{hardware} costs {rate} USD/h on {a.cloud}, above the limit {led['max_price']}")
     if spent(led) + rate * a.hours > led["budget_usd"]:
         raise SystemExit(f"spent {spent(led):.2f} + {rate} x {a.hours} h would pass the budget {led['budget_usd']} USD")
     body = {"name": a.name, "image": a.image, "disk": a.disk, "cloud": a.cloud, "ports": ["22/tcp"],
-            "startSsh": True, "env": {"PUBLIC_KEY": public_key()},
-            "gpu": {"id": a.gpu, "count": a.count, "minCudaVersion": a.cuda, "minRamPerGpu": a.min_ram,
-                    "minVcpuCountPerGpu": a.min_vcpu}}  # the official DataLoader (8 workers) runs on the CPU
+            "startSsh": True, "env": {"PUBLIC_KEY": public_key()}}
+    if a.cpu:
+        body["cpu"] = {"id": a.cpu, "vcpuCount": a.vcpu}
+    else:
+        body["gpu"] = {"id": a.gpu, "count": a.count, "minCudaVersion": a.cuda, "minRamPerGpu": a.min_ram,
+                       "minVcpuCountPerGpu": a.min_vcpu}  # the official DataLoader (8 workers) runs on the CPU
     pod = call("POST", "/pods", body)
-    led["pods"][pod["id"]] = {"name": a.name, "gpu": f"{a.count}x {a.gpu}", "rate": float(pod.get("cost") or rate), "created": now(),
+    led["pods"][pod["id"]] = {"name": a.name, "gpu": hardware, "rate": float(pod.get("cost") or rate), "created": now(),
                               "max_hours": a.hours, "ended": None}
     save(led)
-    print(f"created {pod['id']} ({a.gpu}, {led['pods'][pod['id']]['rate']} USD/h, lifetime {a.hours} h); "
+    print(f"created {pod['id']} ({hardware}, {led['pods'][pod['id']]['rate']} USD/h, lifetime {a.hours} h); "
           f"status {pod.get('status')}")
 
 
@@ -242,7 +254,10 @@ def main(argv: list[str]) -> None:
     p.add_argument("--max-price", type=float, required=True)
     p = sub.add_parser("create")
     p.add_argument("--name", required=True)
-    p.add_argument("--gpu", required=True)
+    hw = p.add_mutually_exclusive_group(required=True)
+    hw.add_argument("--gpu")
+    hw.add_argument("--cpu", help="CPU flavor (GET /catalog/cpus), e.g. cpu5g; with --vcpu")
+    p.add_argument("--vcpu", type=int, default=8, help="vCPUs of a CPU pod (a power of two)")
     p.add_argument("--count", type=int, default=1, help="GPUs on the pod; the rate and the budget check use the total")
     p.add_argument("--hours", type=float, required=True, help="lifetime: watch terminates the pod after it")
     p.add_argument("--image", required=True)

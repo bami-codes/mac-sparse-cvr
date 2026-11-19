@@ -5,7 +5,8 @@
 ## 1. 환경
 
 - Python 3.11, 의존성은 `uv.lock`으로 고정한다. `uv sync`로 설치한다.
-- 결과는 모두 Apple M4(10코어), 단일 기계에서 만들었다. 개발 실행 하나의 최대 메모리는 9–15GB였다(1차 실험 14.55GB). 메모리 16GB 이하에서는 개발 실행이 돌지 않을 수 있다.
+- 연구 E의 학습을 뺀 결과는 모두 Apple M4(10코어), 단일 기계에서 만들었다. 개발 실행 하나의 최대 메모리는 9–15GB였다(1차 실험 14.55GB). 메모리 16GB 이하에서는 개발 실행이 돌지 않을 수 있다.
+- 연구 E의 학습(체크포인트 15개)은 RunPod의 Linux 포드(A40 4장)에서 했다. 예측, 보정, 평가는 맥 CPU에서 했다. 장치 차이는 V2에서 따로 확인했다(§5 연구 E). 서빙 지연은 맥과 Linux CPU 포드(AMD EPYC 4565P)에서 쟀다.
 - 원자료는 파일 하나가 2.6–3.3GB이고, 학습 파일 20개와 공식 테스트를 모두 받으면 약 58GB다.
 - PyTorch와 LightGBM은 이 환경에서 한 프로세스에 함께 불러오면 OpenMP 충돌이 난다. 그래서 신경망은 모두 별도 작업 프로세스(`cvr/m3_worker.py`, `cvr/study_c_worker.py`, `cvr/final_eval_m3.py`, `cvr/final_eval_c_nn.py`)에서 돌고, 실행기가 이를 자동으로 띄운다.
 
@@ -151,6 +152,56 @@ PYTHONPATH=. uv run python scripts/study_d.py --render runs/study_d/<UTC 시각>
 
 결과: [표](results/study_d.md).
 
+### 연구 E: 공식 PyMAL 코드로 본 강한 모델의 희소 그룹 보정 (DESIGN §18)
+
+공식 코드(`third_party/pymal`, 커밋 `3186be8`, 수정 없음)는 [cvr/pymal_run.py](../cvr/pymal_run.py)가 감싸 부른다. 학습 루프, 옵티마이저, 스케줄은 공식 `run.py`와 비트 단위로 같다(`tests/test_pymal_run.py`).
+
+```bash
+# 1. 그룹 목록 (train-00~17 통계만, 모델 결과 전에 한 번 고정)
+uv run python -m cvr.study_e groups
+# 2. GPU 포드 (Linux, A40 4장): 환경, 자료, 공식 전처리, 탐색 격자 45개 실행
+python3 scripts/runpod.py budget --usd 60 --max-price 2.0
+python3 scripts/runpod.py create --name e-main --gpu "NVIDIA A40" --count 4 --hours 15 --image <PyTorch 이미지>
+bash scripts/pod_setup.sh && python3 scripts/pod_queue.py run runs/e_runs/jobs_grid.json --gpus 4      # 포드에서
+# 3. 맥: 격자가 끝나면 설정 선택(train-18 체크포인트의 train-19 GAUC), 시드 2개와 가중 학습 3개, 체크포인트 회수,
+#    포드 종료, V1/V2 예측, 보정, 고정, 예행 (각 단계는 결과가 있으면 건너뛴다)
+POD="-p <port> root@<host>" POD_ID=<pod id> bash scripts/e_autopilot.sh
+bash scripts/e_local_finish.sh                 # 포드가 이미 종료된 뒤라면 이것으로 이어서
+# 4. 공식 테스트 (질문마다 한 번만; 깨끗한 트리와 같은 평가 코드의 예행이 필요)
+#    먼저 고정한 체크포인트로 테스트 예측을 만든다. --official_test가 고정 파일의 체크포인트 집합과 테스트 SHA-256을
+#    확인하고 실행권을 한 번 잡는다. Q1은 train-19 체크포인트 6개, Q2는 train-17 체크포인트 9개다.
+uv run python -m cvr.pymal_run preprocess test.parquet          # 공식 전처리 캐시 (train-18, train-19도 같은 방식)
+uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/e_runs/q1 \
+    --official_test runs/e_study/frozen/freeze_q1.json \
+    --ckpt runs/e_runs/<실행 id>/model_after_train-19.pt ...  test.parquet   # --ckpt를 6번
+uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/e_runs/research \
+    --official_test runs/e_study/frozen/freeze_q2.json \
+    --ckpt runs/e_runs/<실행 id>/model_after_train-17.pt ...  test.parquet   # --ckpt를 9번
+uv run python -m cvr.final_eval_e test q1    # 예측 완료 기록, 파일·체크포인트·원본 해시, 행 수, 확률 범위를 확인한 뒤 평가
+uv run python -m cvr.final_eval_e test q2
+# 5. 테스트 뒤 서술 (판정 없음)
+PYTHONPATH=. uv run python scripts/q2_per_group.py
+```
+
+- 학습 실행 기록은 `runs/e_runs/<실행 id>/run.json`에 있다. 인자, 학습 파일의 SHA-256, 손실, 체크포인트 SHA-256이 들어 있다. 예측 파일은 체크포인트 해시로 찾는다(`<체크포인트>_<SHA-256 앞 12자>/<파일>.npz`). 그래서 다른 체크포인트의 예측을 잘못 읽을 수 없다.
+- GPU와 맥 CPU의 예측 차이: 같은 체크포인트, 같은 V2 행에서 `p_last` 최대 7.86e-7, 보조 출력 포함 최대 4.47e-6이었다(`scripts/device_compare.py`, 허용 오차 1e-5).
+- 포드 비용은 $28.21이었다(파일럿 포함, `runs/runpod/ledger.json`).
+
+결과: [공식 테스트](results/e_final_test.md).
+
+### 연구 E 서빙: 원시 입력 → 보정 확률과 지연 (DESIGN §18.12)
+
+```bash
+uv run pytest -q tests/test_pymal_run.py -k serving               # 원자료 없이: 공식 텐서와 같은지, 신규 입력, 공유 인코딩
+PYTHONPATH=. uv run python scripts/serving_e.py prepare            # 측정 행과 저장 예측을 한 번 고정 (V2 필요)
+bash scripts/serving_sessions.sh mac                               # 일치 검사, 20분 간격 세션 3개, 요약
+bash scripts/serving_sessions.sh linux                             # Linux 서버에서 (prepare의 파일과 체크포인트 2개를 복사)
+```
+
+- 측정 규약(v3)은 DESIGN §18.12.1에 측정 전에 고정했다. 측정 중에는 이 저장소의 다른 작업을 돌리지 않는다.
+
+결과: [서빙](results/e_serving.md).
+
 ## 6. 재현을 확인한 범위
 
 - **확인함**:
@@ -159,5 +210,5 @@ PYTHONPATH=. uv run python scripts/study_d.py --render runs/study_d/<UTC 시각>
   - 명령 전체: 종단 테스트가 합성 자료에서 모든 명령을 끝까지 실행한다.
 - **확인하지 않음**:
   - 다른 기계에서 처음부터 다시 학습했을 때 같은 값이 나오는지. LightGBM·PyTorch의 다중 스레드 계산은 기계와 스레드 수에 따라 마지막 자리가 달라질 수 있다.
-  - 지연 수치. 같은 기계에서도 다른 프로세스의 부하에 따라 달라진다(그래서 채택 규칙을 따로 뒀다).
+  - 지연 수치. 같은 기계에서도 다른 프로세스의 부하에 따라 달라진다. 그래서 1차–연구 C는 채택 규칙을 따로 뒀다. 연구 E는 세션 세 개 사이의 차이를 함께 보고한다(DESIGN §18.12.1).
 - 테스트 단계는 실행 폴더마다 한 번만 돈다. 다시 재현하려면 개발 실행부터 새 실행 폴더를 만들어야 하고, 그 테스트 결과는 이미 열어 본 파일에 대한 것이므로 확증이 아니다.
