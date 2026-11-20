@@ -24,7 +24,7 @@ import numpy as np
 import polars as pl
 from sklearn.metrics import log_loss, roc_auc_score
 
-PAD = "dbee74ee5fbf"  # [추정] padding/missing hash token (EDA E5)
+PAD = "dbee74ee5fbf"  # inferred padding/missing hash token (EDA E5)
 SEED = 2026
 CATS = [
     "user_feat0",

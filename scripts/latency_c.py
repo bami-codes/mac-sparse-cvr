@@ -48,7 +48,7 @@ PROTOCOL = {
     "traffic_seed": TRAFFIC_SEED,
 }
 # acceptance of a measurement, fixed before measuring the development run and independent of the measured p99
-# (docs/DESIGN.md §16 rev. 7): at the start and end of every family's timing, no OTHER python process of this
+# (docs/DESIGN.md §16): at the start and end of every family's timing, no other python process of this
 # repository's virtualenv runs, and the other processes together use at most ACCEPT_OTHER_CPU percent CPU (ps).
 # The load average is recorded but not used: it includes this script's own multi-threaded parquet decoding just
 # before the timing (a smoke run rose to 9.8 that way).

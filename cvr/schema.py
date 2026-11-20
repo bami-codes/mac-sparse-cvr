@@ -4,7 +4,7 @@ Labels other than the target are kept only as `label_*` columns for later auxili
 experiments and are never model inputs (checked by `assert_no_label_inputs`).
 """
 
-PAD = "dbee74ee5fbf"  # [추정] missing/padding hash token (docs/DESIGN.md §10.1 E5)
+PAD = "dbee74ee5fbf"  # inferred: the hash token used for missing values and padding (docs/DESIGN.md §10.1 E5)
 
 TARGET = "last"  # y = (last > 0): last-click attributed conversion
 AUX_LABELS = ["first", "linear", "mta"]
@@ -18,8 +18,8 @@ VOCAB_COLS = USER_COLS + CTX_COLS + AD_COLS
 SEQ_PAIRS = [("ad_feat0", "ad_feat0_seq"), ("ad_feat1", "ad_feat1_seq"), ("ad_feat2", "ad_feat2_seq")]
 MM_COLS = ["mm_feat0_seq", "mm_feat1_seq"]
 
-GROUP_KEY = "ad_feat1"  # [추정] category-like anonymous item feature
-SHOP_KEY = "ad_feat2"  # [추정] shop-like anonymous item feature
+GROUP_KEY = "ad_feat1"  # inferred: an anonymous category-like item feature
+SHOP_KEY = "ad_feat2"  # inferred: an anonymous shop-like item feature
 DOMAIN_KEY = (
     "context_feat1"  # study C domain: anonymous ad-context groups (docs/DESIGN.md §16), not asserted to be scenarios
 )

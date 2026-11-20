@@ -110,7 +110,7 @@ def main(config_path: str) -> Path:
     del counts
     V.save(vocab, run_dir / "vocab")
     sizes = V.sizes(vocab)
-    # M3 has its own id vocabulary (targets AND purchase sequences); M1/M2 codes are untouched
+    # M3 has its own id vocabulary (targets and purchase sequences); M1/M2 codes are untouched
     m3c = cfg["models"].get("m3", {})
     use_m3 = bool(m3c.get("enabled"))
     if use_m3:

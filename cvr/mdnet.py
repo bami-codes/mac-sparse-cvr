@@ -19,10 +19,10 @@ Unseen domains (no training row; UNKNOWN, or a code that never occurs in trainin
 anything else, including the shared input embedding (whose UNKNOWN row is zero, padding_idx). Every
 domain-specific term then takes its identity (intercept 0, w_d = 0, b_d = 0, W_d = 1, gamma_d = 1, beta_d = 0,
 auxiliary logit 0) and PN uses the global running statistics, so every unseen domain gets the same shared
-prediction (§16.4 revision 2: before, the shared input still carried a random embedding of the original code).
+prediction. The shared input is mapped too; otherwise it would still carry a random embedding of the original code.
 
 Numeric inputs: standardized with training mean / std; a column constant over the training rows is set to the
-neutral 0 at training AND inference (a new value there would otherwise be divided by ~1e-6), and the std is
+neutral 0 at training and at inference (a new value there would otherwise be divided by ~1e-6), and the std is
 floored at NUM_STD_FLOOR.
 
 PN statistics (implementation choices, §16.4):
@@ -30,20 +30,20 @@ PN statistics (implementation choices, §16.4):
   update replaces the initial value;
 - one training forward = one optimizer step, which may hold several domains (accumulated chunks). The global
   statistics are read once at the start of the step, so every domain of the step refers to the same values, and
-  updated once at the end from the sum, sum of squares and count of all the step's rows (revision 3: updating
-  them while looping over the domains in code order made the result depend on the codes, which follow traffic
-  rank, and averaged a 4,096-row and a 512-row domain with equal weight);
+  updated once at the end from the sum, sum of squares and count of all the step's rows. Updating them domain by
+  domain would make the result depend on the order of the domain codes (they follow traffic rank) and give a
+  4,096-row and a 512-row domain the same weight;
 - a training batch with fewer than PN_MIN_ROWS rows of a domain is normalized with the global statistics and
   updates nothing; at evaluation a domain whose statistics were never updated uses the global statistics;
-- PER DIMENSION, a domain (or batch) variance below PN_REL_VAR x the global variance is replaced by the global
+- per dimension, a domain (or batch) variance below PN_REL_VAR x the global variance is replaced by the global
   mean and variance of that dimension: enough rows do not make every feature vary (e.g. a purchase-history
-  match that is always 0 in one group), and dividing by that near-zero variance blew up a later 1;
+  match that is always 0 in one group), and dividing by that near-zero variance turns a later 1 into a huge input;
 - the global variance is floored at PN_VAR_FLOOR;
-- the dimensions of the DOMAIN-ID embedding always use the global statistics, in training and evaluation
-  (revision 4). Within a domain that embedding is constant at any one step, so its own variance is 0 while
+- the dimensions of the domain-id embedding always use the global statistics, in training and evaluation.
+  Within a domain that embedding is constant at any one step, so its own variance is 0 while
   training, but the running mean / mean of squares mix values from different steps, so at evaluation its variance
-  could pass the 1% rule and switch the normalization (one counterexample gave -0.577 in training and +1.000 in
-  evaluation for the same state and input).
+  could pass the 1% rule and switch the normalization (the same state and input gave -0.577 in training and
+  +1.000 in evaluation).
 
 Run this module in a process that does not use LightGBM (see cvr/m3_worker.py for why).
 """
@@ -323,7 +323,7 @@ def accumulate_steps(chunks: list[np.ndarray], batch: int) -> list[np.ndarray]:
 
 
 def make_optimizers(net: nn.Module, lr: float) -> list[torch.optim.Optimizer]:
-    """SparseAdam for sparse embeddings (lazy: rows absent from the batch keep values AND moments), Adam for the
+    """SparseAdam for sparse embeddings (lazy: rows absent from the batch keep values and moments), Adam for the
     rest. With sparse=False every parameter goes to Adam (used by the test that shows the momentum leak)."""
     sparse_p = [m.weight for m in net.modules() if isinstance(m, nn.Embedding) and m.sparse]
     ids = {id(p) for p in sparse_p}

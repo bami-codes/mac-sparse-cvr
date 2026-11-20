@@ -267,7 +267,7 @@ def main(config_path: str) -> Path:
             rep(f"{name}|raw", p2)
             rep(f"{name}|ii", glob.predict(p2))
             for lam in lambdas:
-                gs, sinfo = fit_group_shrunk_exact(p1, y1, dom["v1"], glob, lam)  # exact per-domain solve (rev. 4)
+                gs, sinfo = fit_group_shrunk_exact(p1, y1, dom["v1"], glob, lam)  # exact per-domain solve
                 if gs.n_nonpositive_slopes or not gs.converged:
                     raise RuntimeError(
                         f"(iii-d) fit of {name}, lambda {lam}: converged={gs.converged}, "

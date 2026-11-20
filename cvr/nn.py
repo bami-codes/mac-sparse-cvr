@@ -3,7 +3,7 @@
 Inputs (identical for both variants, so the variants differ only in pooling):
 - other categorical inputs (CAT_INPUTS without ad_feat1/ad_feat2), main vocabulary codes
 - target ids ad_feat0/1/2 and the 20-step purchase sequence of the same three id types,
-  encoded with a SEPARATE id vocabulary counted over training targets AND sequences
+  encoded with a separate id vocabulary counted over training targets and sequences
   (M1/M2 codes are untouched); PAD -> MISSING (masked), rare/unseen -> UNKNOWN
 - the two per-step visual-similarity scores provided by the data (mm_feat0/1); MAC BASE uses
   SimTier instead, so this is a simplification

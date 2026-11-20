@@ -1,4 +1,4 @@
-"""Study C networks in a SEPARATE PyTorch-only process (OpenMP: PyTorch and LightGBM cannot share a process here).
+"""Study C networks in a separate PyTorch-only process (OpenMP: PyTorch and LightGBM cannot share a process here).
 
 Job folder (written by cvr/study_c.py):
     job.json      {"cat_sizes", "dom_col", "dim", "batch", "threads", "models_dir", "reload_rows", "data_dir",

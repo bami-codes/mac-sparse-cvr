@@ -1,4 +1,4 @@
-# Smoke run of the second study (docs/DESIGN.md §13) on ONE file split by users; not a study result.
+# Smoke run of the second study (docs/DESIGN.md §13) on one file split by users; not a study result.
 name = "smoke_stacking"
 
 [data]

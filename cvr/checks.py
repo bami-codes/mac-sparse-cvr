@@ -22,8 +22,8 @@ class CheckFailed(RuntimeError):
 
 
 def require_commit(git: dict, what: str = "the evaluation") -> None:
-    """`git_state` returns commit "" and no changed files when git fails (outside a repository), which used to
-    pass the clean-tree check silently (found while setting up the synthetic end-to-end test)."""
+    """Refuse when the commit is unknown. `git_state` returns commit "" and no changed files when git fails (outside a
+    repository), and that would otherwise pass the clean-tree check."""
     import re
 
     if not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", str(git.get("commit", ""))):

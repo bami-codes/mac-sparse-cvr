@@ -310,7 +310,7 @@ def freeze(run: Path) -> dict:
         "primary": {
             "comparison": f"{cand} (iii-d) - {ctrl} (iii-d), lambda chosen on V2 per family",
             "metric": "small-domain macro LogLoss (equal weight over small domains), lower is better",
-            "uncertainty": f"seed-paired user bootstrap over BOTH test files, {cfg['bootstrap']['reps']} reps, "
+            "uncertainty": f"seed-paired user bootstrap over both test files, {cfg['bootstrap']['reps']} reps, "
             f"seed {cfg['bootstrap']['seed']}; models fixed",
             "improvement_confirmed": "difference < 0, 95% CI upper < 0, and all three seed pairs < 0",
             "adoption_candidate": f"improvement confirmed and relative improvement >= {D.ADOPT_REL:.1%}, "

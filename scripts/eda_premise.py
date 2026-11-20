@@ -35,7 +35,7 @@ SCALAR = [
     "ad_feat5",
 ]
 SEQ = ["ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq"]
-PAD = "dbee74ee5fbf"  # [추정] padding/missing hash token, see E5 diagnostics
+PAD = "dbee74ee5fbf"  # inferred padding/missing hash token, see E5 diagnostics
 MM = ["mm_feat0_seq", "mm_feat1_seq"]
 
 

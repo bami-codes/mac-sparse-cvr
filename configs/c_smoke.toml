@@ -1,4 +1,4 @@
-# Study C smoke run: ONE development file (train-08) split by user buckets, 10% of users, to exercise every step
+# Study C smoke run: one development file (train-08) split by user buckets, 10% of users, to exercise every step
 # end to end. Not a research result. The small-domain click minimum is scaled down to the smoke size.
 name = "c_smoke"
 

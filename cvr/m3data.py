@@ -1,6 +1,6 @@
 """M3 input arrays (no PyTorch here, so the LightGBM process never loads a second OpenMP runtime).
 
-- a SEPARATE id vocabulary for ad_feat0/1/2 counted over training targets AND purchase sequences
+- a separate id vocabulary for ad_feat0/1/2 counted over training targets and purchase sequences
   (M1/M2 codes are untouched); PAD -> MISSING (masked in the network), rare/unseen -> UNKNOWN
 - arrays: other categorical codes, target ids, 20-step sequence ids, per-step visual-similarity
   scores, and the same summary history features as M1/M2
@@ -22,7 +22,7 @@ assert_no_label_inputs(OTHER_CATS + NUM_INPUTS)
 
 # ---------------------------------------------------------------- id vocabulary and arrays
 def count_ids(raw: pl.DataFrame, counts: dict | None = None) -> dict[str, pl.DataFrame]:
-    """Counts of each id value over the target column AND its purchase-sequence column."""
+    """Counts of each id value over the target column and its purchase-sequence column."""
     counts = dict(counts or {})
     for tgt, seq in SEQ_PAIRS:
         both = pl.concat([raw.select(pl.col(tgt).alias("v")), raw.select(pl.col(seq).explode().alias("v"))])

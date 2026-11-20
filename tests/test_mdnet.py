@@ -295,9 +295,9 @@ def test_pn_dimension_constant_in_a_domain_falls_back_to_the_global_statistics()
         g_mu, g_var = net.pn.global_stats()
     j = net.emb[0].embedding_dim * len(net.in_cols) + 2
     assert torch.allclose(zn[:, j], (x[:, j] - g_mu[j]) / torch.sqrt(g_var[j] + PN_EPS))
-    assert float(zn[:, j].abs().max()) < 10  # was 736 before the fix
+    assert float(zn[:, j].abs().max()) < 10  # 736 when this dimension used its own variance
     p = m.predict(flipped)
-    assert (p > 1e-4).all() and (p < 1 - 1e-4).all()  # was 0.0586 -> 0.0 before the fix
+    assert (p > 1e-4).all() and (p < 1 - 1e-4).all()  # 0.0586 became 0.0 with the domain's own variance
 
 
 @pytest.mark.parametrize("variant", ["int", "shared", "head", "star"])

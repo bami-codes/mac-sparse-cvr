@@ -1,4 +1,4 @@
-# Smoke run: exercises the whole pipeline on ONE training file split by user buckets.
+# Smoke run: exercises the whole pipeline on one training file split by user buckets.
 # Not a study result: train/V1/V2 come from the same day. Use configs/dev_day17_v18_v19.toml
 # once train-18 and train-19 are available.
 name = "smoke_day17"

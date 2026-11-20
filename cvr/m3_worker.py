@@ -1,4 +1,4 @@
-"""Train and predict the M3 variants in a SEPARATE process that uses PyTorch only.
+"""Train and predict the M3 variants in a separate process that uses PyTorch only.
 
 Why a separate process: PyTorch and LightGBM ship separate OpenMP runtimes on this machine, and
 using both in one process segfaults or hangs (checked with a small script: torch first -> exit 139,
