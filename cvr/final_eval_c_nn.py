@@ -7,9 +7,11 @@ batch as the development run (cvr/study_c_worker.PREDICT_BATCH), so the V2 dry r
 """
 
 import sys
+import tomllib
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from .checks import require_finite_probs
 from .domain_eval import SEEDS
@@ -22,6 +24,8 @@ FAMILIES = ["N-int", "N-shared", "N-head", "N-star", "N-star-noPN"]
 
 
 def main(run: str, arrays: str, out: str) -> None:
+    # same thread count as the training worker that recorded the V2 predictions (see cvr/final_eval_m3.py)
+    torch.set_num_threads(tomllib.loads((Path(run) / "config.toml").read_text())["models"]["nn"]["threads"])
     a = load_md(Path(arrays), mmap=True)
     out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)

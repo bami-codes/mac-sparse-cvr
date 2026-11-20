@@ -7,7 +7,7 @@
 # train-17 checkpoint (Q2) and the train-19 checkpoint (Q1) are copied six at a time (one connection to the pod is
 # slow) and checked against the run record before the pod is terminated.
 set -euo pipefail
-: "${POD:?set POD to the ssh port and address, e.g. POD='-p 22138 root@69.30.85.238'}"
+: "${POD:?set POD to the ssh port and address, e.g. POD='-p <port> root@<host>'}"
 port=$(echo "$POD" | awk '{print $2}'); addr=$(echo "$POD" | awk '{print $3}')
 SSH="ssh -i $HOME/.ssh/runpod_naver_ed25519 -p $port -o UserKnownHostsFile=$HOME/.ssh/known_hosts_runpod"
 mkdir -p runs/e_runs

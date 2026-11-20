@@ -4,10 +4,12 @@ python -m cvr.final_eval_m3 <run_dir> <eval_file> <out_dir> [<bucket_lo> <bucket
 """
 
 import sys
+import tomllib
 from pathlib import Path
 
 import numpy as np
 import polars as pl
+import torch
 
 from .features import featurize, read_raw
 from .m3data import encode_m3
@@ -19,6 +21,9 @@ def main(
 ) -> None:
     run, out = Path(run_dir), Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    # Predict with the thread count the training worker used for the recorded V2 predictions. On x86 another count
+    # changes the float32 rounding and the dry run's 1e-9 comparison fails (Apple CPUs give the same bits either way).
+    torch.set_num_threads(tomllib.loads((run / "config.toml").read_text())["models"]["m3"]["threads"])
     vocab = {p.stem: pl.read_parquet(p) for p in (run / "vocab").glob("*.parquet")}
     id_vocab = {p.stem: pl.read_parquet(p) for p in (run / "id_vocab").glob("*.parquet")}
     buckets = (int(lo), int(hi)) if lo is not None else None
