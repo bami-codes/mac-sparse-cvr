@@ -4,15 +4,15 @@
 
 클릭은 많은데 전환이 거의 없는 광고 그룹에서는 CVR 모델의 확률이 쉽게 어긋납니다. 입찰은 이 확률을 그대로 쓰기 때문에 순위만 맞아서는 부족합니다. 소규모 버티컬처럼 전환 표본이 적은 광고가 이런 처지에 놓입니다.
 
-이 저장소는 Alimama의 공개 데이터셋 [MAC](https://huggingface.co/datasets/alimamaTech/MAC)과 논문([arXiv 2603.02184](https://arxiv.org/abs/2603.02184))의 공식 모델로 이 문제를 다룹니다. 공식 모델을 전체 규모로 재현하고, 전환이 드문 그룹의 확률 오차를 재서 보정하고, 한 사용자의 광고 후보 100개를 CPU 코어 하나로 수 ms 안에 점수화하는 예측기를 만들었습니다.
+이 저장소는 Alimama의 공개 데이터셋 [MAC](https://huggingface.co/datasets/alimamaTech/MAC)과 논문([arXiv 2603.02184](https://arxiv.org/abs/2603.02184))의 공식 모델 두 개(BASE, MoAE)로 이 문제를 다룹니다. 논문에서는 MoAE가 앞서지만, 마지막 두 학습 파일을 보정용으로 남긴 조건에서는 BASE가 순위와 희소 그룹의 확률 손실 모두에서 나았고 두 배 넘게 빨랐습니다. 그래서 BASE에 그룹별 축소 보정을 붙인 예측기를 만들었고, 이 예측기는 한 사용자의 광고 후보 100개를 CPU 코어 하나에서 수 ms 안에 점수화합니다.
 
 ## 주요 결과
 
-- **공식 모델을 전체 규모로 재현했습니다.** AUC와 GAUC 네 값이 모두 논문 표 4와 0.0032 안입니다. 그 과정에서 공식 실행 예제가 학습률 인자를 전달하지 못해, 의도한 0.004가 아니라 기본값 0.003으로 학습된다는 것을 찾았습니다.
+- **공식 모델을 전체 학습 자료로 학습해 논문 표 4와 비교했습니다.** AUC와 GAUC 네 값이 모두 논문과 0.0032 안이고, 미리 정한 기준으로는 재현 1개, 근접 3개입니다. 그 과정에서 공식 실행 예제가 학습률 인자를 전달하지 못해, 의도한 0.004가 아니라 기본값 0.003으로 학습된다는 것을 찾았습니다.
 - **확률 오차는 대부분 전체 수준의 문제였습니다.** 논문의 제안 모델(MoAE)은 전체 전환을 약 20%, 전환이 드문 그룹에서는 약 25% 적게 예측했습니다. 모든 클릭에 같은 보정을 하나 붙이자 O/E가 0.98, 0.99로 맞춰졌습니다. 그룹마다 보정을 따로 두는 방법은 그 위에 작지만 확인 가능한 이득을 더했습니다.
 - **학습 파일을 두 개 더 쓰자 두 모델의 순위가 뒤집혔습니다.** `train-17`까지 학습하면 기준 모델(BASE)이 AUC에서 0.019 앞서고, `train-19`까지 학습하면 MoAE가 0.016 앞섭니다. 한 시점의 비교만으로 모델을 고르면 위험합니다.
 - **보정 강도는 어떤 지표로 고르느냐에 따라 달라졌습니다.** 그룹 평균 LogLoss로 고르면 λ = 1, 그룹별 전환 합계로 고르면 λ = 10000이 뽑혔고, 앞의 선택은 그룹 합계 오차를 두 배 가까이 키웠습니다. 입찰은 클릭 한 건의 확률을, 성과 예측은 그룹 합계를 쓰므로 보정 후보는 실제로 쓸 곳의 지표로 함께 비교해야 합니다(LightGBM 백테스트).
-- **후보 100개 요청을 CPU 코어 하나에서 p50 1.89ms, p99 3.21ms에 점수화합니다**(BASE, Linux 서버). 사용자 이력을 후보마다가 아니라 요청마다 한 번만 인코딩해서 p50을 34% 줄였고, 확률은 그대로입니다.
+- **후보 100개 요청을 CPU 코어 하나에서 p50 1.89ms, p99 3.21ms에 점수화합니다**(BASE, Linux 서버). V2 클릭으로 만든 합성 요청이고, 인코딩부터 보정까지의 시간입니다. 사용자 이력을 후보마다가 아니라 요청마다 한 번만 인코딩해서 p50을 34% 줄였고, 확률은 그대로입니다.
 
 <details>
 <summary>용어</summary>
@@ -50,14 +50,14 @@ uv run python -m cvr.predictor examples/request.json
 }
 ```
 
-요청은 MAC의 원시 열(사용자 특성, 구매 이력, 후보별 광고 특성과 맥락 특성, 이력 상품별 유사도)로 씁니다. 어휘에 없는 값은 학습 때의 결측값으로 처리하고 응답에 개수를 돌려줍니다. `--jsonl`을 주면 모델을 한 번 띄운 채 한 줄에 요청 하나씩 받습니다.
+요청은 MAC의 원시 열(사용자 특성, 구매 이력, 후보별 광고 특성과 맥락 특성, 이력 상품별 유사도)로 씁니다. 구매 이력은 MAC처럼 20칸이고 빈 칸은 결측 토큰으로 채우며, 길이가 다르면 요청을 거부합니다. 어휘에 없는 값은 학습 때의 결측값으로 처리하고 응답에 개수를 돌려줍니다. `--jsonl`을 주면 모델을 한 번 띄운 채 한 줄에 요청 하나씩 받습니다.
 
 [examples/model](examples/model)은 합성 자료로 공식 학습 코드를 돌려 만든 1.3MB짜리 예제라서 확률 값 자체는 의미가 없습니다. MAC으로 학습한 모델은 체크포인트가 2GB라 저장소에 넣지 않았습니다. 학습한 뒤에는 같은 명령에 모델 폴더와 어휘만 바꿔 씁니다.
 
 ```bash
 python3 scripts/fetch_mac.py vocabs train/train-19.parquet     # 어휘(873MB)와 자료 한 파일
 uv run python -m cvr.predictor export BASE_lr0.003_lam0.3_s2026 bundles/BASE_train17
-uv run python -m cvr.predictor request-from data/raw/mac/train/train-19.parquet 123456 --candidates 100 > request.json
+uv run python -m cvr.predictor request-from data/raw/mac/train/train-19.parquet 123456 --candidates 100 > request.json   # 그 사용자의 클릭을 최대 100개
 uv run python -m cvr.predictor request.json --bundle bundles/BASE_train17 --vocabs data/raw/mac/vocabs
 ```
 
@@ -95,7 +95,7 @@ uv run python -m cvr.predictor request.json --bundle bundles/BASE_train17 --voca
 
 ### 어떤 모델을 쓰는가
 
-| 학습 범위 | AUC (BASE / MoAE) | 희소 그룹 LogLoss (BASE / MoAE) | 요청 p50 (BASE / MoAE) |
+| 학습 범위 | 보정 전 AUC (BASE / MoAE) | 그룹별 축소 보정 뒤 희소 그룹 LogLoss (BASE / MoAE) | 요청 p50 (BASE / MoAE) |
 |---|---|---|---|
 | `train-17`까지, 남은 두 파일로 보정 | 0.848 / 0.829 | 0.06248 / 0.06473 | 1.89 / 3.98ms |
 | `train-19`까지 (모든 학습 파일) | 0.851 / 0.867 | 보정할 자료가 없어 평가하지 않음 | 구조가 같음 (재지 않음) |

@@ -147,6 +147,8 @@ uv run python -m cvr.study_e groups
 # 2. GPU 포드 (Linux, A40 4장): 환경, 자료, 공식 전처리, 탐색 격자 45개 실행
 python3 scripts/runpod.py budget --usd 60 --max-price 2.0
 python3 scripts/runpod.py create --name e-main --gpu "NVIDIA A40" --count 4 --hours 15 --image <PyTorch 이미지>
+python3 scripts/runpod.py watch &              # 맥에서 끝까지 켜 둠: 수명(--hours)이나 예산에 닿으면 포드를 종료
+git ls-files -z | rsync -az --from0 --files-from=- -e "ssh -i ~/.ssh/runpod_naver_ed25519 -p <port>" ./ root@<host>:/root/naver/
 bash scripts/pod_setup.sh && python3 scripts/pod_queue.py run runs/e_runs/jobs_grid.json --gpus 4      # 포드에서
 # 3. 맥: 격자가 끝나면 설정 선택(train-18 체크포인트의 train-19 GAUC), 시드 2개와 가중 학습 3개, 체크포인트 회수,
 #    포드 종료, V1/V2 예측, 보정, 고정, 예행 (각 단계는 결과가 있으면 건너뜀)
@@ -168,6 +170,8 @@ uv run python -m cvr.final_eval_e test q2
 PYTHONPATH=. uv run python scripts/q2_per_group.py
 ```
 
+- `--hours`는 맥의 장부에 적히는 포드 수명이고, 실제로 종료하는 것은 `runpod.py watch`입니다. RunPod API에는 이미 뜬 포드에 종료 시각을 거는 기능이 없고, 포드 안에서 스스로 종료하려면 API 키를 포드에 넣어야 하기 때문입니다(DESIGN §18). 감시기를 켜 두지 않으면 수명이 지나도 포드가 계속 돌고 비용이 나갑니다.
+- 포드에는 git이 추적하는 파일만 보냅니다. API 키(`.secrets/`), 원자료, 실행 결과는 보내지 않습니다.
 - 학습 실행 기록은 `runs/e_runs/<실행 id>/run.json`에 있습니다. 인자, 학습 파일의 SHA-256, 손실, 체크포인트 SHA-256이 들어 있습니다. 예측 파일은 체크포인트 해시로 찾기 때문에(`<체크포인트>_<SHA-256 앞 12자>/<파일>.npz`), 다른 체크포인트의 예측을 잘못 읽을 수 없습니다.
 - GPU와 맥 CPU의 예측 차이는 같은 체크포인트, 같은 V2 행에서 `p_last` 최대 7.86e-7, 보조 출력 포함 최대 4.47e-6이었습니다(`scripts/device_compare.py`, 허용 오차 1e-5).
 - 포드 비용은 학습 $28.21(파일럿 포함), 서빙 측정 $1.01입니다(`runs/runpod/ledger.json`).

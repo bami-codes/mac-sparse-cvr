@@ -36,8 +36,8 @@ log "chosen: MoAE lr $MLR lambda $MLAM, BASE lr $BLR"
 
 log "3. seeds and the weighted runs on the pod"
 if ! on_pod "test -f /root/naver/runs/e_runs/jobs_seeds.json"; then
-  rsync -az --exclude ".secrets/" --exclude ".venv/" --exclude "data/" --exclude "runs/" --exclude "__pycache__/" \
-    --exclude ".pytest_cache/" --exclude ".ruff_cache/" --exclude ".DS_Store" -e "ssh $SSHOPT" ./ "$addr:/root/naver/"
+  # only the files git tracks: never keys, data, runs, local bundles or the repository itself
+  git ls-files -z | rsync -az --from0 --files-from=- -e "ssh $SSHOPT" ./ "$addr:/root/naver/"
   on_pod "mkdir -p /root/naver/runs/e_study"
   rsync -a -e "ssh $SSHOPT" runs/e_study/group_lists.json runs/e_study/groups.json "$addr:/root/naver/runs/e_study/"
   on_pod "chown -R root:root /root/naver && cd /root/naver && (setsid nohup bash scripts/pod_after_grid.sh $MLR $MLAM $BLR \

@@ -61,10 +61,12 @@ def validate(request: dict) -> None:
         raise RequestError(f"user {bad} must be strings (MAC tokens)")
     if bad := [c for c in D.SEQ_COLS if not (isinstance(user[c], list) and all(isinstance(t, str) for t in user[c]))]:
         raise RequestError(f"user {bad} must be lists of strings")
+    # MAC always stores the last SEQ_LEN purchases, padded with the missing token. A shorter list is not "no history":
+    # the model would see fewer slots than it was trained on and give another probability, so it is refused.
     lengths = {c: len(user[c]) for c in D.SEQ_COLS}
-    if len(set(lengths.values())) != 1:
-        raise RequestError(f"the purchase history columns must be lists of one length: {lengths}")
-    n = lengths[D.SEQ_COLS[0]]
+    n = D.SEQ_LEN
+    if set(lengths.values()) != {n}:
+        raise RequestError(f"the purchase history columns must each hold {n} items, padded as in MAC: {lengths}")
     for i, c in enumerate(cands):
         if not isinstance(c, dict):
             raise RequestError(f"candidate {i} must be an object")
@@ -181,7 +183,7 @@ def request_from(parquet: Path, row: int, k: int) -> dict:
     users = pq.read_table(parquet, columns=["user_id"]).column("user_id")
     uid = users[row].as_py()
     idx = np.flatnonzero(pc.equal(users, uid).to_numpy(zero_copy_only=False))
-    idx = np.r_[row, [i for i in idx if i != row]][:k]
+    idx = np.array([row, *(i for i in idx if i != row)][:k], dtype=np.int64)  # int even when the user has one click
     t = pq.read_table(parquet, columns=["user_id", *user_cols, *cand_cols]).take(idx).to_pylist()
     return {
         "user": {c: t[0][c] for c in ["user_id", *user_cols]},
@@ -203,7 +205,7 @@ def main(argv: list[str]) -> None:
         ap = argparse.ArgumentParser(prog="cvr.predictor request-from")
         ap.add_argument("parquet", type=Path)
         ap.add_argument("row", type=int)
-        ap.add_argument("--candidates", type=int, default=3)
+        ap.add_argument("--candidates", type=int, default=3, help="at most this many of the user's clicks (default 3)")
         a = ap.parse_args(argv[1:])
         print(json.dumps(request_from(a.parquet, a.row, a.candidates)))
         return

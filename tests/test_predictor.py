@@ -91,7 +91,8 @@ def test_line_by_line_answers_each_request_without_waiting_for_the_input_to_end(
     "break_it, message",
     [
         (lambda r: r["user"].pop("ad_feat0_seq"), "user lacks"),
-        (lambda r: r["user"]["ad_feat1_seq"].pop(), "one length"),
+        (lambda r: r["user"]["ad_feat1_seq"].pop(), "must each hold 20 items"),
+        (lambda r: [r["user"].update({c: []}) for c in ("ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq")], "hold 20"),
         (lambda r: r["user"].update(user_feat0=3), "must be strings"),
         (lambda r: r["user"]["ad_feat2_seq"].__setitem__(0, None), "lists of strings"),
         (lambda r: r["candidates"][1].pop("context_feat2"), "candidate 1 lacks"),
@@ -192,3 +193,33 @@ def test_export_bundles_a_calibrator_only_with_the_checkpoint_it_was_fitted_on(t
     assert not (tmp_path / "b19").exists()
     cfg = P.export(rid, tmp_path / "b19", after="train-19.parquet", calibrated=False)
     assert cfg["calibrator"] is None and not (tmp_path / "b19" / "calibrator.npz").exists()
+
+
+def test_an_empty_history_is_refused_rather_than_scored_differently(server):
+    """An empty purchase history used to pass and give another probability than MAC's padded history (0.0365 vs 0.0482
+    for the example's first candidate); MAC always stores 20 slots, so the request must too."""
+    r = copy.deepcopy(REQUEST)
+    for c in ("ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq"):
+        r["user"][c] = []
+    for cand in r["candidates"]:
+        cand["mm_feat0_seq"], cand["mm_feat1_seq"] = [], []
+    with pytest.raises(P.RequestError, match="hold 20"):
+        P.predict(server, r)
+
+
+def test_request_from_a_user_with_one_click_and_with_several(tmp_path):
+    import polars as pl
+    from synthetic_mac import make_file, make_world
+
+    src = make_file(make_world(seed=5, n_users=40, n_items=60), tmp_path / "src.parquet", seed=5, rows=200)
+    rows = pl.read_parquet(src)
+    counts = rows["user_id"].value_counts()
+    many = counts.filter(pl.col("count") >= 3)["user_id"][0]
+    one = pl.concat([rows.filter(pl.col("user_id") == many), rows.filter(pl.col("user_id") != many).head(1)])
+    path = tmp_path / "rows.parquet"
+    one.write_parquet(path)
+    single = P.request_from(path, one.height - 1, 100)  # its user has this one click only
+    assert len(single["candidates"]) == 1
+    several = P.request_from(path, 1, 2)
+    assert len(several["candidates"]) == 2 and several["user"]["user_id"] == many
+    assert several["candidates"][0]["ad_feat0"] == one["ad_feat0"][1]  # the given row comes first
