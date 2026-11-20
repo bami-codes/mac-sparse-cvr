@@ -143,7 +143,7 @@ LogLoss로 고른 보정은 공통 보정보다 그룹 평균 LogLoss를 낮췄�
 | [cvr/study_e.py](cvr/study_e.py), [cvr/study_e_eval.py](cvr/study_e_eval.py), [cvr/final_eval_e.py](cvr/final_eval_e.py) | 희소 그룹 정의, 보정 선택, 지표와 부트스트랩, 고정 → 예행 → 한 번의 테스트 |
 | [cvr/serving_e.py](cvr/serving_e.py), [cvr/predictor.py](cvr/predictor.py) | 원시 행 → 공식 텐서 → 모델 → 보정, 모델 묶음과 명령줄 |
 | [cvr/latency_v3.py](cvr/latency_v3.py), [scripts/serving_e.py](scripts/serving_e.py) | 지연 측정과 분석 |
-| [scripts/runpod.py](scripts/runpod.py), `scripts/pod_*` | GPU 포드 운영(예산 상한, 수명, 체크포인트 회수와 해시 대조) |
+| [scripts/pod_queue.py](scripts/pod_queue.py), `scripts/pod_setup.sh` | GPU 학습: 환경과 자료 준비, 탐색 격자와 시드 학습을 GPU마다 나눠 실행 |
 
 ```bash
 uv run pytest -q                               # 단위 테스트 178개, 약 1분, 원자료 없이 합성 자료로

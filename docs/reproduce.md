@@ -141,23 +141,24 @@ PYTHONPATH=. uv run python scripts/study_d.py --render runs/study_d/<UTC 시각>
 
 공식 코드(`third_party/pymal`, 커밋 `3186be8`, 수정 없음)는 [cvr/pymal_run.py](../cvr/pymal_run.py)가 감싸서 부릅니다. 학습 루프, 옵티마이저, 스케줄은 공식 `run.py`와 비트 단위로 같습니다(`tests/test_pymal_run.py`).
 
+**학습** (CUDA GPU가 있는 Linux 기계). 결과의 모델은 A40 4장에서 학습했고, 자료 받기와 전처리부터 체크포인트를 옮기기까지 약 12시간 걸렸습니다. 공식 전처리는 파일 하나에 메모리가 약 23GB 듭니다.
+
 ```bash
-# 1. 그룹 목록 (train-00~17 통계만, 모델 결과 전에 한 번 고정)
-uv run python -m cvr.study_e groups
-# 2. GPU 포드 (Linux, A40 4장): 환경, 자료, 공식 전처리, 탐색 격자 45개 실행
-python3 scripts/runpod.py budget --usd 60 --max-price 2.0
-python3 scripts/runpod.py create --name e-main --gpu "NVIDIA A40" --count 4 --hours 15 --image <PyTorch 이미지>
-python3 scripts/runpod.py watch &              # 맥에서 끝까지 켜 둠: 수명(--hours)이나 예산에 닿으면 포드를 종료
-git ls-files -z | rsync -az --from0 --files-from=- -e "ssh -i ~/.ssh/runpod_naver_ed25519 -p <port>" ./ root@<host>:/root/naver/
-bash scripts/pod_setup.sh && python3 scripts/pod_queue.py run runs/e_runs/jobs_grid.json --gpus 4      # 포드에서
-# 3. 맥: 격자가 끝나면 설정 선택(train-18 체크포인트의 train-19 GAUC), 시드 2개와 가중 학습 3개, 체크포인트 회수,
-#    포드 종료, V1/V2 예측, 보정, 고정, 예행 (각 단계는 결과가 있으면 건너뜀)
-POD="-p <port> root@<host>" POD_ID=<pod id> bash scripts/e_autopilot.sh
-bash scripts/e_local_finish.sh                 # 포드가 이미 종료된 뒤라면 이것으로 이어서
-# 4. 공식 테스트 (질문마다 한 번만, 깨끗한 트리와 같은 평가 코드의 예행이 필요)
-#    먼저 고정한 체크포인트로 테스트 예측을 만든다. --official_test가 고정 파일의 체크포인트 집합과 테스트 SHA-256을
-#    확인하고 실행권을 한 번 잡는다. Q1은 train-19 체크포인트 6개, Q2는 train-17 체크포인트 9개.
-uv run python -m cvr.pymal_run preprocess test.parquet          # 공식 전처리 캐시 (train-18, train-19도 같은 방식)
+uv run python -m cvr.study_e groups                                    # 그룹 목록 (train-00~17 통계만, 모델 결과 전에 고정)
+bash scripts/pod_setup.sh                                              # 환경, 자료 21개, 공식 전처리, 탐색 격자 목록
+uv run python scripts/pod_queue.py run runs/e_runs/jobs_grid.json --gpus 4   # 탐색 격자 45개를 GPU마다 나눠 실행
+uv run python scripts/pod_queue.py summary runs/e_runs/jobs_grid.json > runs/e_runs/summary_grid.jsonl
+uv run python -m cvr.final_eval_e choose runs/e_runs/summary_grid.jsonl     # train-18 체크포인트의 train-19 GAUC로 설정 선택
+bash scripts/pod_after_grid.sh <MoAE lr> <MoAE λ> <BASE lr>            # 고른 설정의 시드 2개와 가중 학습 3개
+```
+
+**평가** (CPU). 학습한 기계에서 이어서 해도 되고, 실행 폴더(`runs/e_runs/`)를 옮겨 다른 기계에서 해도 됩니다. 다른 기계라면 먼저 `uv run python -m cvr.pymal_run preprocess train-18.parquet train-19.parquet test.parquet`로 공식 전처리 캐시를 만듭니다.
+
+```bash
+bash scripts/e_local_finish.sh     # 체크포인트 15개 해시 확인, V1/V2 예측, 보정, 고정, 예행 (결과가 있는 단계는 건너뜀)
+# 공식 테스트 (질문마다 한 번만, 깨끗한 트리와 같은 평가 코드의 예행이 필요)
+#   --official_test가 고정 파일의 체크포인트 집합과 테스트 SHA-256을 확인하고 실행권을 한 번 잡는다.
+#   Q1은 train-19 체크포인트 6개, Q2는 train-17 체크포인트 9개.
 uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/e_runs/q1 \
     --official_test runs/e_study/frozen/freeze_q1.json \
     --ckpt runs/e_runs/<실행 id>/model_after_train-19.pt ...  test.parquet   # --ckpt를 6번
@@ -166,15 +167,12 @@ uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/e
     --ckpt runs/e_runs/<실행 id>/model_after_train-17.pt ...  test.parquet   # --ckpt를 9번
 uv run python -m cvr.final_eval_e test q1    # 예측 완료 기록, 파일과 체크포인트와 원본 해시, 행 수, 확률 범위를 확인한 뒤 평가
 uv run python -m cvr.final_eval_e test q2
-# 5. 테스트 뒤 서술 (판정 없음)
-PYTHONPATH=. uv run python scripts/q2_per_group.py
+PYTHONPATH=. uv run python scripts/q2_per_group.py               # 테스트 뒤 서술 (판정 없음)
 ```
 
-- `--hours`는 맥의 장부에 적히는 포드 수명이고, 실제로 종료하는 것은 `runpod.py watch`입니다. RunPod API에는 이미 뜬 포드에 종료 시각을 거는 기능이 없고, 포드 안에서 스스로 종료하려면 API 키를 포드에 넣어야 하기 때문입니다(DESIGN §18). 감시기를 켜 두지 않으면 수명이 지나도 포드가 계속 돌고 비용이 나갑니다.
-- 포드에는 git이 추적하는 파일만 보냅니다. API 키(`.secrets/`), 원자료, 실행 결과는 보내지 않습니다.
 - 학습 실행 기록은 `runs/e_runs/<실행 id>/run.json`에 있습니다. 인자, 학습 파일의 SHA-256, 손실, 체크포인트 SHA-256이 들어 있습니다. 예측 파일은 체크포인트 해시로 찾기 때문에(`<체크포인트>_<SHA-256 앞 12자>/<파일>.npz`), 다른 체크포인트의 예측을 잘못 읽을 수 없습니다.
-- GPU와 맥 CPU의 예측 차이는 같은 체크포인트, 같은 V2 행에서 `p_last` 최대 7.86e-7, 보조 출력 포함 최대 4.47e-6이었습니다(`scripts/device_compare.py`, 허용 오차 1e-5).
-- 포드 비용은 학습 $28.21(파일럿 포함), 서빙 측정 $1.01입니다(`runs/runpod/ledger.json`).
+- 학습은 GPU에서, 예측은 CPU에서 했습니다. 같은 체크포인트와 같은 V2 행에서 두 장치의 예측 차이는 `p_last` 최대 7.86e-7, 보조 출력 포함 최대 4.47e-6이었습니다(`scripts/device_compare.py`, 허용 오차 1e-5).
+- 학습에 쓴 GPU는 빌린 것이었고, 그때 쓴 도구가 `scripts/runpod.py`(예산 상한과 포드 수명), `scripts/e_autopilot.sh`(격자 이후 단계를 원격으로 이어 실행), `scripts/pod_fetch.sh`(체크포인트 회수와 해시 대조)입니다. 자기 GPU에서 돌린다면 필요 없습니다. 비용은 학습 $28.21(파일럿 포함), 서빙 측정 $1.01이었습니다.
 
 결과: [공식 테스트](results/e_final_test.md), 기록 [results/records](results/records)
 
