@@ -360,7 +360,7 @@ def render(machine: str) -> str:
     worst = max(v["max_over_min"] for k, v in st.items() if "/" not in k)
     out += [
         "",
-        f"세 세션의 중앙값(범위), ms. 모든 값이 세 세션 사이에서 {worst:.2f}배 안이다.",
+        f"세 세션의 중앙값(범위), ms. 모든 값이 세 세션 사이에서 {worst:.2f}배 안입니다.",
         "",
         "| 모델 | 공유 ÷ 후보마다, p50 | 공유 ÷ 후보마다, p99 |",
         "|---|---|---|",
@@ -387,7 +387,7 @@ def render(machine: str) -> str:
     ]
     note = (
         f"단계별 p50 / p99, ms (세 세션의 중앙값). 측정 중 문맥 전환이 일어난 요청은 경로마다 "
-        f"{min(switched):.1%}–{max(switched):.1%}였다."
+        f"{min(switched):.1%}–{max(switched):.1%}였습니다."
     )
     out += ["", note]
     return "\n".join(out)
