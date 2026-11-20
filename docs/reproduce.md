@@ -45,8 +45,8 @@ MAC의 학습 파일 20개와 공식 테스트는 모두 이미 어느 연구에
 |---|---|
 | `train-00`~`02` | 2차 실험 학습, 연구 B |
 | `train-03` / `train-04` | 2차 실험 V1 / V2, 연구 B |
-| `train-05`, `06` / `train-07` | 에이전트 최종 실행의 발견 / 확증 |
-| `train-08`, `09` / `train-10`, `11` | 에이전트 개발 실행의 발견 / 확증 |
+| `train-05`, `06` / `train-07` | LLM 가설 검증 실험의 발견 / 확증 (이 저장소에는 포함하지 않음) |
+| `train-08`, `09` / `train-10`, `11` | 같은 실험의 개발 단계 |
 | `train-08`~`10` / `train-11` / `train-12` | 연구 C 학습 / V1 / V2 (연구 D 설정 C도 같음) |
 | `train-12` | 2차 실험 테스트 (연구 C의 V2보다 먼저) |
 | `train-13`, `14` | 연구 C 테스트, 연구 D 설정 C 평가 |
@@ -103,36 +103,6 @@ PYTHONPATH=. uv run python scripts/aux_label_control.py runs/p2_train00_02/20261
 ```
 
 결과: [연구 A](results/calibration_data_study.md), [연구 B](results/aux_label_control.md).
-
-### 전환 단서 가설 생성·검증 에이전트 (DESIGN §14)
-
-HyperCLOVA X 키는 환경 변수 `CLOVASTUDIO_API_KEY` 또는 git이 무시하는 `.secrets/clovastudio_api_key`에서 읽는다. 키 없이 도는 경로는 `--scripted`다.
-
-```bash
-uv run python -m cvr.agent.experiments precompute configs/agent_menu_v2.toml       # 메뉴 계산 (코드만)
-uv run python -m cvr.agent.session runs/agent_menu_v2 runs/agent_runs/<이름> --sessions 5 --negative-control 5 --plans-only
-# plans_frozen.json을 docs/results/agent_final_plans.json으로 커밋한 뒤 (확증 자료를 읽기 전)
-uv run python -m cvr.agent.session runs/agent_menu_v2 runs/agent_runs/<이름> --from-plans docs/results/agent_final_plans.json
-uv run python scripts/agent_bootstrap_check.py --gate diagnostic   # 검정 오류율 (합성 자료)
-uv run python scripts/agent_bootstrap_check.py --gate operating
-```
-
-- 최종 실행 폴더는 `runs/agent_runs/run3_final`이다. 이 폴더의 `plans_frozen.json` SHA-256(`3befbfb0…`)은 커밋 `088546d`의 [계획 파일](results/agent_final_plans.json)과 같다.
-- 플래너 호출은 LLM 응답이라, 같은 시드와 temperature 0.3으로 다시 호출해도 같은 계획이 나온다는 보장이 없다. 판정 재현은 커밋한 계획 파일을 `--from-plans`로 실행하는 것을 기준으로 한다.
-
-결과: [보고서](results/agent_final_report.md), [요약](results/agent_final_summary.json), [오류율 진단](results/agent_bootstrap_check.md), [운영 규칙](results/agent_bootstrap_check_operating.md).
-
-에이전트 v2 (DESIGN §19, 라운드마다 다음 날 자료로 검정, 5자리 예산):
-
-```bash
-uv run python -m cvr.agent.experiments precompute configs/agent_menu_v2_r2.toml   # train-10 메뉴 (r3: train-11)
-uv run python -m cvr.agent.loop evidence && uv run python -m cvr.agent.loop exhaustive && uv run python -m cvr.agent.loop rules
-uv run python -m cvr.agent.loop run            # --v21, --v22 / --scripted면 API 없이
-uv run python -m cvr.agent.loop score          # --v21, --v22
-uv run python -m cvr.agent.loop tables
-```
-
-결과: [에이전트 v2](results/agent_v2.md).
 
 ### 연구 C: 작은 광고 맥락 그룹과 도메인 구조 (DESIGN §16)
 
