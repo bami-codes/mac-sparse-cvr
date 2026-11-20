@@ -17,16 +17,16 @@ cp "$FAKE_POD/${src#*:/root/naver/}" "$last"
 
 def test_all_fifteen_checkpoints_are_copied_and_verified(tmp_path):
     pod, work, bin_ = tmp_path / "pod", tmp_path / "work", tmp_path / "bin"
-    for d in (pod, work / "runs" / "e_study", bin_):
+    for d in (pod, work / "runs" / "eval", bin_):
         d.mkdir(parents=True)
     (bin_ / "rsync").write_text(SHIM)
     (bin_ / "rsync").chmod(0o755)
     choice = {"MoAE": {"lr": 0.00035, "lamda": 0.4}, "BASE": {"lr": 0.0035, "lamda": 0.3}}  # long run ids
-    (work / "runs" / "e_study" / "config_choice.json").write_text(json.dumps(choice))
+    (work / "runs" / "eval" / "config_choice.json").write_text(json.dumps(choice))
     ids = [f"{m}_lr{c['lr']:g}_lam{c['lamda']:g}_s{s}" for m, c in choice.items() for s in (2026, 2027, 2028)]
     ids += [f"MoAE-g1w2_lr0.00035_lam0.4_s{s}" for s in (2026, 2027, 2028)]
     for rid in ids:
-        d = pod / "runs" / "e_runs" / rid
+        d = pod / "runs" / "train" / rid
         d.mkdir(parents=True)
         cks = {}
         for k in (17,) if rid.startswith("MoAE-g1w2") else (17, 19):
@@ -35,8 +35,8 @@ def test_all_fifteen_checkpoints_are_copied_and_verified(tmp_path):
             cks[f"train-{k}.parquet"] = {"sha256": hashlib.sha256(blob).hexdigest()}
         (d / "run.json").write_text(json.dumps({"checkpoints": cks}))
         if not rid.startswith("MoAE-g1w2"):  # the chosen runs' records were fetched with `records` before
-            (work / "runs" / "e_runs" / rid).mkdir(parents=True)
-            (work / "runs" / "e_runs" / rid / "run.json").write_text((d / "run.json").read_text())
+            (work / "runs" / "train" / rid).mkdir(parents=True)
+            (work / "runs" / "train" / rid / "run.json").write_text((d / "run.json").read_text())
     env = os.environ | {"PATH": f"{bin_}:{os.environ['PATH']}", "FAKE_POD": str(pod), "POD": "-p 1 root@pod"}
     p = subprocess.run(
         ["bash", str(REPO / "scripts" / "pod_fetch.sh"), "checkpoints"],

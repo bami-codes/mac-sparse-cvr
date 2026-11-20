@@ -14,14 +14,14 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts import serving_bench as S
+from scripts import serving_bench
 
-OUT = S.DIR
+OUT = serving_bench.DIR
 
 
 def dump(name: str) -> dict:
-    meta, plan, rows = S.load_inputs()
-    srv = S.servers(meta)
+    meta, plan, rows = serving_bench.load_inputs()
+    srv = serving_bench.servers(meta)
     check_rows = [rows[int(i)] for i in plan["check"]]
     arrays = {}
     for m, server in srv.items():
@@ -34,7 +34,7 @@ def dump(name: str) -> dict:
             f"{m}_cal_single": server.calibrate(single, check_rows),
         }
     np.savez(OUT / f"raw_{name}.npz", **arrays)
-    return {"name": name, "machine": S.machine(), "code": S.code_version()}
+    return {"name": name, "machine": serving_bench.machine(), "code": serving_bench.code_version()}
 
 
 def stats(d: np.ndarray, p: np.ndarray) -> dict:
@@ -51,7 +51,7 @@ def stats(d: np.ndarray, p: np.ndarray) -> dict:
 def compare(a: str, b: str) -> dict:
     x, y = dict(np.load(OUT / f"raw_{a}.npz")), dict(np.load(OUT / f"raw_{b}.npz"))
     out = {}
-    for m in S.L.MODELS:
+    for m in serving_bench.L.MODELS:
         saved = x[f"{m}_saved"]
         if not np.array_equal(saved, y[f"{m}_saved"]):
             raise ValueError("the two dumps hold different saved predictions")

@@ -26,8 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from synthetic_mac import make_file, make_world, write_official_vocabs
 
-from cvr import predictor as P
-from cvr import pymal_run as R
+from cvr import predictor, pymal_run
 from cvr.calibration import GlobalPlatt, fit_group_shrunk_exact, save_group_calibrators
 
 TRAIN, CALIB = ["train-00.parquet", "train-01.parquet", "train-02.parquet"], "train-03.parquet"
@@ -43,8 +42,8 @@ def build(out: Path, rows: int = 20000) -> dict:
         for i, name in enumerate([*TRAIN, CALIB]):
             make_file(world, mac / "train" / name, seed=10 + i, rows=rows)
         write_official_vocabs(mac)
-        R.preprocess(mac, mac / "cached", [*TRAIN, CALIB])
-        a = R.parser().parse_args(
+        pymal_run.preprocess(mac, mac / "cached", [*TRAIN, CALIB])
+        a = pymal_run.parser().parse_args(
             [
                 "train",
                 "--mac",
@@ -73,13 +72,13 @@ def build(out: Path, rows: int = 20000) -> dict:
                 TRAIN[-1],
             ]
         )
-        run = R.train(a)
+        run = pymal_run.train(a)
         args = json.loads((run / "run.json").read_text())["args"]
         ckpt = run / f"model_after_{Path(TRAIN[-1]).stem}.pt"
         # calibrators on the third file, with the ad groups of the training files
-        D, _ = R.official()
+        D, _ = pymal_run.official()
         vocabs = D.get_vocabs(str(mac / "vocabs"))
-        model, _, _ = R.build(argparse.Namespace(**args), vocabs, torch.device("cpu"))
+        model, _, _ = pymal_run.build(argparse.Namespace(**args), vocabs, torch.device("cpu"))
         model.load_state_dict(torch.load(ckpt))
         model.eval()
         with open(mac / "cached" / CALIB.replace(".parquet", ".pkl"), "rb") as f:
@@ -120,7 +119,7 @@ def build(out: Path, rows: int = 20000) -> dict:
         cfg = {
             "args": args,
             "checkpoint": "model.pt",
-            "checkpoint_sha256": R.sha256(model_dir / "model.pt"),
+            "checkpoint_sha256": pymal_run.sha256(model_dir / "model.pt"),
             "calibrator": "calibrator.npz",
             "calibration": "iii",
             "vocabs": "vocabs",
@@ -137,9 +136,9 @@ def build(out: Path, rows: int = 20000) -> dict:
         users = calib.column("user_id").to_pylist()
         counts = {u: users.count(u) for u in set(users)}
         row = next(i for i, u in enumerate(users) if counts[u] >= 3)
-        request = P.request_from(mac / "train" / CALIB, row, 3)
+        request = predictor.request_from(mac / "train" / CALIB, row, 3)
     (out / "request.json").write_text(json.dumps(request, indent=1))
-    response = P.predict(P.load(model_dir), request)
+    response = predictor.predict(predictor.load(model_dir), request)
     (out / "response.json").write_text(json.dumps(response, indent=2) + "\n")
     return response
 

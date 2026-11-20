@@ -7,8 +7,8 @@
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 # the weighted runs need the fixed group lists, copied to the pod beforehand
-test -f runs/e_study/group_lists.json
-uv run python scripts/pod_queue.py seeds --moae "$1 $2" --base "$3" --with-weighted > runs/e_runs/jobs_seeds.json
-uv run python scripts/pod_queue.py run runs/e_runs/jobs_seeds.json --gpus 4
-uv run python scripts/pod_queue.py summary runs/e_runs/jobs_seeds.json
+test -f runs/eval/group_lists.json
+uv run python scripts/pod_queue.py seeds --moae "$1 $2" --base "$3" --with-weighted > runs/train/jobs_seeds.json
+uv run python scripts/pod_queue.py run runs/train/jobs_seeds.json --gpus 4
+uv run python scripts/pod_queue.py summary runs/train/jobs_seeds.json
 echo "seeds done"

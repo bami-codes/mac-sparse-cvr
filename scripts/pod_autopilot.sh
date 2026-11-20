@@ -25,53 +25,53 @@ wait_jobs() {  # $1 job file on the pod, $2 the number of jobs it must hold
 rsync -a -e "ssh $SSHOPT" scripts/pod_left.py "$addr:/root/naver/scripts/"  # new file only; the grid code stays
 
 log "1. wait for the grid"
-wait_jobs runs/e_runs/jobs_grid.json 45
+wait_jobs runs/train/jobs_grid.json 45
 
 log "2. records and the complete-grid choice"
 bash scripts/pod_fetch.sh records
-python3 scripts/pod_queue.py summary runs/e_runs/jobs_grid.json > runs/e_runs/summary_grid.jsonl
-[ -f runs/e_study/config_choice.json ] || uv run python -m cvr.final_test choose runs/e_runs/summary_grid.jsonl
-read -r MLR MLAM BLR < <(python3 -c "import json; c=json.load(open('runs/e_study/config_choice.json')); print(c['MoAE']['lr'], c['MoAE']['lamda'], c['BASE']['lr'])")
+python3 scripts/pod_queue.py summary runs/train/jobs_grid.json > runs/train/summary_grid.jsonl
+[ -f runs/eval/config_choice.json ] || uv run python -m cvr.final_test choose runs/train/summary_grid.jsonl
+read -r MLR MLAM BLR < <(python3 -c "import json; c=json.load(open('runs/eval/config_choice.json')); print(c['MoAE']['lr'], c['MoAE']['lamda'], c['BASE']['lr'])")
 log "chosen: MoAE lr $MLR lambda $MLAM, BASE lr $BLR"
 
 log "3. seeds and the weighted runs on the pod"
-if ! on_pod "test -f /root/naver/runs/e_runs/jobs_seeds.json"; then
+if ! on_pod "test -f /root/naver/runs/train/jobs_seeds.json"; then
   # only the files git tracks: never keys, data, runs, local bundles or the repository itself
   git ls-files -z | rsync -az --from0 --files-from=- -e "ssh $SSHOPT" ./ "$addr:/root/naver/"
-  on_pod "mkdir -p /root/naver/runs/e_study"
-  rsync -a -e "ssh $SSHOPT" runs/e_study/group_lists.json runs/e_study/groups.json "$addr:/root/naver/runs/e_study/"
+  on_pod "mkdir -p /root/naver/runs/eval"
+  rsync -a -e "ssh $SSHOPT" runs/eval/group_lists.json runs/eval/groups.json "$addr:/root/naver/runs/eval/"
   on_pod "chown -R root:root /root/naver && cd /root/naver && (setsid nohup bash scripts/pod_after_grid.sh $MLR $MLAM $BLR \
-          > runs/e_after.log 2>&1 < /dev/null &) ; sleep 20; tail -2 runs/e_after.log"
+          > runs/after_grid.log 2>&1 < /dev/null &) ; sleep 20; tail -2 runs/after_grid.log"
 fi
 sleep 60
-wait_jobs runs/e_runs/jobs_seeds.json 7
+wait_jobs runs/train/jobs_seeds.json 7
 
 log "4. records and the 15 checkpoints, then the pod is terminated"
 bash scripts/pod_fetch.sh records
-rsync -a -e "ssh $SSHOPT" "$addr:/root/naver/runs/e_runs/jobs_seeds.json" runs/e_runs/
-python3 scripts/pod_queue.py summary runs/e_runs/jobs_seeds.json > runs/e_runs/summary_seeds.jsonl
+rsync -a -e "ssh $SSHOPT" "$addr:/root/naver/runs/train/jobs_seeds.json" runs/train/
+python3 scripts/pod_queue.py summary runs/train/jobs_seeds.json > runs/train/summary_seeds.jsonl
 bash scripts/pod_fetch.sh checkpoints
 python3 scripts/runpod.py terminate "$POD_ID"
 
 log "5. V1/V2 predictions of the nine research checkpoints on the local machine"
 ids=$(python3 - <<'PY'
 import json
-c = json.load(open("runs/e_study/config_choice.json"))
+c = json.load(open("runs/eval/config_choice.json"))
 print(" ".join(f"{m}_lr{c[m]['lr']:g}_lam{c[m]['lamda']:g}_s{s}" for m in ("MoAE", "BASE", "MoAE-g1w2") for s in (2026, 2027, 2028)))
 PY
 )
 todo=()
 for id in $ids; do
-  sha=$(python3 -c "import json,sys; print(json.load(open('runs/e_runs/$id/run.json'))['checkpoints']['train-17.parquet']['sha256'][:12])")
-  [ -f "runs/e_runs/research/model_after_train-17_$sha/train-19.npz" ] || todo+=(--ckpt "runs/e_runs/$id/model_after_train-17.pt")
+  sha=$(python3 -c "import json,sys; print(json.load(open('runs/train/$id/run.json'))['checkpoints']['train-17.parquet']['sha256'][:12])")
+  [ -f "runs/train/research/model_after_train-17_$sha/train-19.npz" ] || todo+=(--ckpt "runs/train/$id/model_after_train-17.pt")
 done
 if [ ${#todo[@]} -gt 0 ]; then
-  uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/e_runs/research "${todo[@]}" \
+  uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/train/research "${todo[@]}" \
     train-18.parquet train-19.parquet
 fi
 
 log "6. calibration on V1, choice on V2, freeze, dry run"
-[ -f runs/e_study/q2/selection.json ] || uv run python -m cvr.evaluation calibrate runs/e_study/config_choice.json
-[ -f runs/e_study/frozen/freeze_q2.json ] || uv run python -m cvr.final_test freeze
+[ -f runs/eval/q2/selection.json ] || uv run python -m cvr.evaluation calibrate runs/eval/config_choice.json
+[ -f runs/eval/frozen/freeze_q2.json ] || uv run python -m cvr.final_test freeze
 uv run python -m cvr.final_test dryrun
 log "done: freeze and dry run ready for review; the official test is not run"

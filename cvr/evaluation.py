@@ -1,6 +1,6 @@
 """Calibrate the official models' predictions on V1 (train-18) and choose the shrinkage strength on V2 (train-19).
 
-    uv run python -m cvr.evaluation calibrate runs/e_study/config_choice.json
+    uv run python -m cvr.evaluation calibrate runs/eval/config_choice.json
 
 The inputs are the train-17 checkpoints' predictions on V1 and V2, found through each checkpoint's SHA-256 in its
 run record. Every prediction file is checked row by row against labels read again from the source parquet, so a
@@ -21,8 +21,7 @@ import polars as pl
 import pyarrow.parquet as pq
 from scipy import sparse
 
-from . import groups as E
-from . import metrics as M
+from . import groups, metrics
 from .calibration import (
     GlobalPlatt,
     fit_group_intercept_exact,
@@ -32,7 +31,7 @@ from .calibration import (
 )
 from .metrics import poisson_deviance
 
-RUNS = Path("runs/e_runs")
+RUNS = Path("runs/train")
 TEST_PATH = Path("data/raw/mac/test/test.parquet")
 LAMBDAS = [1.0, 10.0, 100.0, 1000.0, 10000.0]
 SEEDS = [2026, 2027, 2028]
@@ -44,11 +43,11 @@ WEIGHTED = "MoAE-g1w2"  # Q4: the chosen MoAE retrained with the G1 clicks' main
 
 
 def source(name: str) -> Path:
-    return TEST_PATH if name == TEST else E.DATA / name
+    return TEST_PATH if name == TEST else groups.DATA / name
 
 
 def token_codes() -> dict[str, int]:
-    tokens = pl.read_parquet(E.OUT / "train_stats_ad_feat1.parquet")["ad_feat1"].to_list()
+    tokens = pl.read_parquet(groups.OUT / "train_stats_ad_feat1.parquet")["ad_feat1"].to_list()
     return {t: i for i, t in enumerate(sorted(tokens))}
 
 
@@ -59,7 +58,7 @@ def file_columns(name: str, codes: dict[str, int]) -> tuple[np.ndarray, np.ndarr
 
 
 def group_sets(codes: dict[str, int]) -> dict[str, np.ndarray]:
-    lists = json.loads((E.OUT / "group_lists.json").read_text())
+    lists = json.loads((groups.OUT / "group_lists.json").read_text())
     return {k: np.array(sorted(codes[t] for t in lists[k])) for k in ("G1", "C")}
 
 
@@ -103,8 +102,8 @@ def predictions(rid: str, name: str, y_file: np.ndarray) -> dict:
 # ------------------------------------------------------------------ metrics (the same function for V2, dry run and test)
 def group_metrics(y: np.ndarray, q: np.ndarray, g: np.ndarray, members: np.ndarray) -> dict:
     m = np.isin(g, members)
-    r = M.group_report(y[m], q[m], g[m])
-    pg = M.per_group(y[m], q[m], g[m])
+    r = metrics.group_report(y[m], q[m], g[m])
+    pg = metrics.per_group(y[m], q[m], g[m])
     return {
         "macro_logloss": r["macro_logloss"],
         "click_logloss": r["click_weighted_logloss"],
@@ -121,12 +120,12 @@ def evaluate(y: np.ndarray, q: np.ndarray, g: np.ndarray, sets: dict[str, np.nda
     from sklearn.metrics import roc_auc_score
 
     overall = {
-        "logloss": float(M.bce(y, q).mean()),
+        "logloss": float(metrics.bce(y, q).mean()),
         "auc": float(roc_auc_score(y, q)),
         "O_over_E": float(y.sum() / q.sum()),
     }
     if users is not None:  # GAUC needs each row's user
-        overall["gauc"] = M.gauc(y, q, users)["gauc"]
+        overall["gauc"] = metrics.gauc(y, q, users)["gauc"]
     return {k: group_metrics(y, q, g, v) for k, v in sets.items()} | {"overall": overall}
 
 
@@ -140,7 +139,7 @@ def did_click_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, 
     resample per replicate for both sets; seed pairs averaged."""
     _, ui = np.unique(users, return_inverse=True)
     U = ui.max() + 1
-    d = np.mean([M.bce(y, pa) - M.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
+    d = np.mean([metrics.bce(y, pa) - metrics.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
     parts = []
     for members in (set_1, set_2):
         m = np.isin(g, members)
@@ -170,7 +169,7 @@ def did_bootstrap(y, a: list, b: list, g, users, set_1, set_2, reps: int, seed: 
     (the same scheme as cvr.metrics.paired_bootstrap_macro_diff); seed pairs averaged as in that function."""
     _, ui = np.unique(users, return_inverse=True)
     U = ui.max() + 1
-    d = np.mean([M.bce(y, pa) - M.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
+    d = np.mean([metrics.bce(y, pa) - metrics.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
     parts = []
     for members in (set_1, set_2):
         m = np.isin(g, members)
@@ -210,7 +209,7 @@ def click_diff_bootstrap(y, a: list, b: list, users, reps: int, seed: int) -> di
     """Click-weighted LogLoss(A) - LogLoss(B) over all rows, one user resample per replicate, seed pairs averaged."""
     _, ui = np.unique(users, return_inverse=True)
     U = ui.max() + 1
-    d = np.mean([M.bce(y, pa) - M.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
+    d = np.mean([metrics.bce(y, pa) - metrics.bce(y, pb) for pa, pb in zip(a, b)], axis=0)
     n, tot = np.bincount(ui, minlength=U).astype(float), np.bincount(ui, weights=d, minlength=U)
     rng = np.random.default_rng(seed)
     reps_ = []
@@ -224,7 +223,7 @@ def click_diff_bootstrap(y, a: list, b: list, users, reps: int, seed: int) -> di
         "reps": reps,
         "users": int(U),
         "seed_pairs": len(a),
-        "per_pair_diff": [float((M.bce(y, pa) - M.bce(y, pb)).mean()) for pa, pb in zip(a, b)],
+        "per_pair_diff": [float((metrics.bce(y, pa) - metrics.bce(y, pb)).mean()) for pa, pb in zip(a, b)],
     }
 
 
@@ -233,7 +232,7 @@ def q4_comparisons(y, g, users, sets, get, iii_w: str, iii_u: str) -> dict:
     m1 = np.isin(g, sets["G1"])
 
     def macro(a, b, label):
-        return M.paired_bootstrap_macro_diff(
+        return metrics.paired_bootstrap_macro_diff(
             y[m1], [x[m1] for x in a], [x[m1] for x in b], g[m1], users[m1], **BOOT
         ) | {"compared": label}
 
@@ -281,7 +280,7 @@ def calibrate(choice_path: Path) -> dict:
     sets = group_sets(codes)
     g1, y1 = file_columns(V1, codes)
     g2, y2 = file_columns(V2, codes)
-    out_dir = E.OUT / "q2"
+    out_dir = groups.OUT / "q2"
     out_dir.mkdir(parents=True, exist_ok=True)
     rows, solver, q2, used, users2 = {}, {}, {}, {}, None
     cal_dir = out_dir / "calibrators"
@@ -333,7 +332,7 @@ def calibrate(choice_path: Path) -> dict:
     m1 = np.isin(g2, sets["G1"])
 
     def boot(model, a_name, b_name):
-        r = M.paired_bootstrap_macro_diff(
+        r = metrics.paired_bootstrap_macro_diff(
             y2[m1],
             [x[m1] for x in seeds_of(model, a_name)],
             [x[m1] for x in seeds_of(model, b_name)],
@@ -378,7 +377,7 @@ def calibrate(choice_path: Path) -> dict:
             rid: {"v1": u["v1"]["sha256"], "v2": u["v2"]["sha256"], "checkpoint_sha256": u["checkpoint_sha256"]}
             for rid, u in used.items()
         },
-        "groups_sha256": json.loads((E.OUT / "groups.json").read_text())["group_lists_sha256"],
+        "groups_sha256": json.loads((groups.OUT / "groups.json").read_text())["group_lists_sha256"],
         "note": "V2 = selection data, not a result",
     }
     (out_dir / "selection.json").write_text(json.dumps(rec, indent=2, default=str))
@@ -388,7 +387,7 @@ def calibrate(choice_path: Path) -> dict:
 def calibrator_path(rid: str, meth: str, rule: str) -> Path:
     """Spelled with .npz: run ids contain dots (lr0.003), and with_suffix would otherwise cut the name at the last
     one, making every run write the same file."""
-    return E.OUT / "q2" / "calibrators" / f"{rid}__{meth}_{rule}.npz"
+    return groups.OUT / "q2" / "calibrators" / f"{rid}__{meth}_{rule}.npz"
 
 
 def load_calibrated(rid: str, meth: str, rule: str, p: np.ndarray, g: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

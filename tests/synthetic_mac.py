@@ -128,9 +128,9 @@ def make_mac_tree(root: Path, rows: int = 20_000) -> dict[str, Path]:
 def write_official_vocabs(mac: Path) -> None:
     """Official vocabulary files ({token: index}, PAD included) over every file under mac/train and mac/test, as the
     official vocabularies cover all of MAC."""
-    from cvr import pymal_run as R
+    from cvr import pymal_run
 
-    D, _ = R.official()
+    D, _ = pymal_run.official()
     tables = [
         pq.read_table(p) for p in sorted((mac / "train").glob("*.parquet")) + sorted((mac / "test").glob("*.parquet"))
     ]

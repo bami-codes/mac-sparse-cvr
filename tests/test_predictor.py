@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cvr import predictor as P
+from cvr import predictor
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST = json.loads((ROOT / "examples" / "request.json").read_text())
@@ -17,11 +17,11 @@ REQUEST = json.loads((ROOT / "examples" / "request.json").read_text())
 
 @pytest.fixture(scope="module")
 def server():
-    return P.load()
+    return predictor.load()
 
 
 def test_the_example_answers_its_saved_response(server):
-    got = P.predict(server, REQUEST)
+    got = predictor.predict(server, REQUEST)
     want = json.loads((ROOT / "examples" / "response.json").read_text())
     assert [c["ad_feat0"] for c in got["candidates"]] == [c["ad_feat0"] for c in want["candidates"]]
     for key in ("cvr", "cvr_uncalibrated"):
@@ -30,7 +30,7 @@ def test_the_example_answers_its_saved_response(server):
 
 
 def test_the_response_is_the_server_request_path(server):
-    got = P.predict(server, REQUEST)
+    got = predictor.predict(server, REQUEST)
     direct = server.predict_request(REQUEST["user"], REQUEST["candidates"])
     assert np.allclose([c["cvr"] for c in got["candidates"]], direct, atol=1e-8)
     per_row = server.predict([c | REQUEST["user"] for c in REQUEST["candidates"]])  # the same as one row per candidate
@@ -106,8 +106,8 @@ def test_jsonl_answers_each_line_at_once():
 def test_invalid_requests_are_refused_with_the_reason(server, break_it, message):
     r = copy.deepcopy(REQUEST)
     break_it(r)
-    with pytest.raises(P.RequestError, match=message):
-        P.predict(server, r)
+    with pytest.raises(predictor.RequestError, match=message):
+        predictor.predict(server, r)
 
 
 def test_new_values_are_served_and_counted(server):
@@ -115,7 +115,7 @@ def test_new_values_are_served_and_counted(server):
     r["candidates"][0]["ad_feat0"] = "never-seen-ad"
     r["candidates"][0]["ad_feat1"] = "never-seen-group"
     r["user"]["user_id"] = "never-seen-user"
-    got = P.predict(server, r)
+    got = predictor.predict(server, r)
     assert got["values_not_in_vocabulary"] == {"ad_feat0": 1, "ad_feat1": 1}
     assert all(0 < c["cvr"] < 1 for c in got["candidates"])
 
@@ -124,20 +124,20 @@ def test_a_bundle_refuses_another_checkpoint(tmp_path):
     import shutil
 
     b = tmp_path / "bundle"
-    shutil.copytree(P.EXAMPLE, b)
+    shutil.copytree(predictor.EXAMPLE, b)
     cfg = json.loads((b / "config.json").read_text())
     (b / "config.json").write_text(json.dumps(cfg | {"checkpoint_sha256": "0" * 64}))
     with pytest.raises(SystemExit, match="not the checkpoint"):
-        P.load(b)
+        predictor.load(b)
 
 
 def test_the_example_is_rebuilt_identically(tmp_path):
     sys.path.insert(0, str(ROOT / "scripts"))
-    import make_example_bundle as M
+    import make_example_bundle
     import torch
 
     try:
-        rebuilt = M.build(tmp_path)
+        rebuilt = make_example_bundle.build(tmp_path)
     finally:
         torch.use_deterministic_algorithms(False)  # the official set_seed switches it on for the whole process
     want = json.loads((ROOT / "examples" / "response.json").read_text())
@@ -148,11 +148,11 @@ def test_a_bundle_without_calibrator_serves_raw_probabilities(tmp_path):
     import shutil
 
     b = tmp_path / "bundle"
-    shutil.copytree(P.EXAMPLE, b)
+    shutil.copytree(predictor.EXAMPLE, b)
     cfg = json.loads((b / "config.json").read_text())
     (b / "config.json").write_text(json.dumps(cfg | {"calibrator": None, "calibration": "none"}))
     (b / "calibrator.npz").unlink()
-    got = P.predict(P.load(b), REQUEST)
+    got = predictor.predict(predictor.load(b), REQUEST)
     assert got["calibration"] == "none"
     assert all(c["cvr"] == c["cvr_uncalibrated"] for c in got["candidates"])
 
@@ -161,37 +161,37 @@ def test_export_pairs_calibrator_with_its_checkpoint(tmp_path, monkeypatch):
     """A training-run layout in miniature: two checkpoints of one run, the calibrator fitted on train-17's predictions."""
     import polars as pl
 
-    from cvr import evaluation as Q
-    from cvr import groups as E
-    from cvr import pymal_run as R
+    from cvr import evaluation, groups, pymal_run
 
     shutil = __import__("shutil")
-    monkeypatch.setattr(Q, "RUNS", tmp_path / "e_runs")
-    monkeypatch.setattr(E, "OUT", tmp_path / "e_study")
+    monkeypatch.setattr(evaluation, "RUNS", tmp_path / "train")
+    monkeypatch.setattr(groups, "OUT", tmp_path / "eval")
     rid = "BASE_lr0.003_lam0.3_s2026"
-    d = Q.RUNS / rid
+    d = evaluation.RUNS / rid
     d.mkdir(parents=True)
     shas = {}
     for k in (17, 19):
         (d / f"model_after_train-{k}.pt").write_bytes(f"checkpoint {k}".encode())
-        shas[f"train-{k}.parquet"] = {"sha256": R.sha256(d / f"model_after_train-{k}.pt")}
+        shas[f"train-{k}.parquet"] = {"sha256": pymal_run.sha256(d / f"model_after_train-{k}.pt")}
     (d / "run.json").write_text(json.dumps({"args": {"model": "BASE"}, "checkpoints": shas}))
-    pred = Q.prediction_file("research", Q.CKPT, shas["train-17.parquet"]["sha256"], Q.V1).with_suffix(".json")
+    pred = evaluation.prediction_file(
+        "research", evaluation.CKPT, shas["train-17.parquet"]["sha256"], evaluation.V1
+    ).with_suffix(".json")
     pred.parent.mkdir(parents=True)
     pred.write_text(json.dumps({"checkpoint_sha256": shas["train-17.parquet"]["sha256"]}))
-    cal = Q.calibrator_path(rid, "iii", "main")
+    cal = evaluation.calibrator_path(rid, "iii", "main")
     cal.parent.mkdir(parents=True)
-    shutil.copy(P.EXAMPLE / "calibrator.npz", cal)
+    shutil.copy(predictor.EXAMPLE / "calibrator.npz", cal)
     pl.DataFrame({"ad_feat1": ["a", "b"], "clicks": [1, 2], "pos": [0, 1]}).write_parquet(
-        E.OUT / "train_stats_ad_feat1.parquet"
+        groups.OUT / "train_stats_ad_feat1.parquet"
     )
 
-    cfg = P.export(rid, tmp_path / "b17")
+    cfg = predictor.export(rid, tmp_path / "b17")
     assert cfg["calibrator"] == "calibrator.npz" and (tmp_path / "b17" / "calibrator.npz").exists()
     with pytest.raises(SystemExit, match="no-calibration"):
-        P.export(rid, tmp_path / "b19", after="train-19.parquet")
+        predictor.export(rid, tmp_path / "b19", after="train-19.parquet")
     assert not (tmp_path / "b19").exists()
-    cfg = P.export(rid, tmp_path / "b19", after="train-19.parquet", calibrated=False)
+    cfg = predictor.export(rid, tmp_path / "b19", after="train-19.parquet", calibrated=False)
     assert cfg["calibrator"] is None and not (tmp_path / "b19" / "calibrator.npz").exists()
 
 
@@ -203,8 +203,8 @@ def test_empty_history_is_refused(server):
         r["user"][c] = []
     for cand in r["candidates"]:
         cand["mm_feat0_seq"], cand["mm_feat1_seq"] = [], []
-    with pytest.raises(P.RequestError, match="hold 20"):
-        P.predict(server, r)
+    with pytest.raises(predictor.RequestError, match="hold 20"):
+        predictor.predict(server, r)
 
 
 def test_request_from_a_user_with_one_click_and_with_several(tmp_path):
@@ -218,8 +218,8 @@ def test_request_from_a_user_with_one_click_and_with_several(tmp_path):
     one = pl.concat([rows.filter(pl.col("user_id") == many), rows.filter(pl.col("user_id") != many).head(1)])
     path = tmp_path / "rows.parquet"
     one.write_parquet(path)
-    single = P.request_from(path, one.height - 1, 100)  # its user has this one click only
+    single = predictor.request_from(path, one.height - 1, 100)  # its user has this one click only
     assert len(single["candidates"]) == 1
-    several = P.request_from(path, 1, 2)
+    several = predictor.request_from(path, 1, 2)
     assert len(several["candidates"]) == 2 and several["user"]["user_id"] == many
     assert several["candidates"][0]["ad_feat0"] == one["ad_feat0"][1]  # the given row comes first

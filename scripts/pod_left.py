@@ -1,6 +1,6 @@
 """Print '<left> <total> <queue up|down>' for a job file of scripts/pod_queue.py, or 'missing 0 <queue>'.
 
-    python scripts/pod_left.py runs/e_runs/jobs_grid.json
+    python scripts/pod_left.py runs/train/jobs_grid.json
 
 'left' counts the jobs that are neither done nor diverged, using pod_queue's own state rules. The queue is looked
 up with a pattern that cannot match this process or the shell that started it: a plain 'pod_queue.py run' matches

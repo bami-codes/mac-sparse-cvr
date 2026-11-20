@@ -1,7 +1,7 @@
 """Choose the settings, freeze, dry-run on V2, then evaluate the official test once per question.
 
-    uv run python -m cvr.final_test choose runs/e_runs/summary_grid.jsonl     # by train-19 GAUC
-    uv run python -m cvr.evaluation calibrate runs/e_study/config_choice.json  # Q2 calibrations on V1, lambdas on V2
+    uv run python -m cvr.final_test choose runs/train/summary_grid.jsonl     # by train-19 GAUC
+    uv run python -m cvr.evaluation calibrate runs/eval/config_choice.json  # Q2 calibrations on V1, lambdas on V2
     uv run python -m cvr.final_test freeze                                      # freeze_q1.json, freeze_q2.json
     uv run python -m cvr.final_test dryrun                                      # V2 values reproduced (hard check)
     (pod) python -m cvr.pymal_run predict --official_test freeze_q1.json --ckpt ... test.parquet   # one claim each
@@ -23,16 +23,14 @@ from pathlib import Path
 
 import numpy as np
 
-from . import evaluation as Q
-from . import groups as E
-from . import metrics as M
+from . import evaluation, groups, metrics
 from .checks import CheckFailed, require_close, require_commit
 
 PAPER = {"BASE": {"auc": 0.8494, "gauc": 0.7424}, "MoAE": {"auc": 0.8694, "gauc": 0.7636}}  # Table 4, last-click
 TOL = {"reproduced": 0.002, "close": 0.005}
 TIE = 1e-6
 DRYRUN_TOL = 1e-9
-FROZEN = E.OUT / "frozen"
+FROZEN = groups.OUT / "frozen"
 
 
 def sha256(path: Path) -> str:
@@ -140,13 +138,13 @@ def choose(summary: Path) -> dict:
         "max train-19 GAUC of the train-18 checkpoint; ties < 1e-6: higher AUC, then closest to lr 0.003, lambda 0.3"
     )
     out["grid"] = rows  # every planned job, checked complete above
-    dest = E.OUT / "config_choice.json"
+    dest = groups.OUT / "config_choice.json"
     if dest.exists():
         raise CheckFailed(f"{dest} exists: the settings are chosen once")
-    E.OUT.mkdir(parents=True, exist_ok=True)
-    out[Q.WEIGHTED] = {"lr": out["MoAE"]["lr"], "lamda": out["MoAE"]["lamda"], "derived_from": "MoAE"}
-    dest.write_text(json.dumps({k: out[k] for k in ("MoAE", "BASE", Q.WEIGHTED)}, indent=2))
-    (E.OUT / "config_choice_record.json").write_text(json.dumps(out, indent=2))
+    groups.OUT.mkdir(parents=True, exist_ok=True)
+    out[evaluation.WEIGHTED] = {"lr": out["MoAE"]["lr"], "lamda": out["MoAE"]["lamda"], "derived_from": "MoAE"}
+    dest.write_text(json.dumps({k: out[k] for k in ("MoAE", "BASE", evaluation.WEIGHTED)}, indent=2))
+    (groups.OUT / "config_choice_record.json").write_text(json.dumps(out, indent=2))
     return out
 
 
@@ -155,21 +153,21 @@ def checkpoints(choice: dict, after: str) -> dict[str, str]:
     """SHA-256 of the checkpoint after `after` of every chosen run, from the run records copied from the pod."""
     out = {}
     for model, c in choice.items():
-        for s in Q.SEEDS:
-            rid = Q.run_id(model, c["lr"], c["lamda"], s)
-            rec = json.loads((Q.RUNS / rid / "run.json").read_text())
+        for s in evaluation.SEEDS:
+            rid = evaluation.run_id(model, c["lr"], c["lamda"], s)
+            rec = json.loads((evaluation.RUNS / rid / "run.json").read_text())
             out[rid] = rec["checkpoints"][after]["sha256"]
     return out
 
 
 def official_test_sha() -> str:
-    side = Q.TEST_PATH.with_name(Q.TEST_PATH.name + ".sha256")
+    side = evaluation.TEST_PATH.with_name(evaluation.TEST_PATH.name + ".sha256")
     return side.read_text().split()[0]
 
 
 def hashed_files() -> dict[str, str]:
     files = [
-        E.OUT / f
+        groups.OUT / f
         for f in (
             "groups.json",
             "group_lists.json",
@@ -178,20 +176,20 @@ def hashed_files() -> dict[str, str]:
             "q2/selection.json",
         )
     ]
-    files += sorted((E.OUT / "q2" / "calibrators").glob("*.npz"))
-    return {str(p.relative_to(E.OUT)): sha256(p) for p in files}
+    files += sorted((groups.OUT / "q2" / "calibrators").glob("*.npz"))
+    return {str(p.relative_to(groups.OUT)): sha256(p) for p in files}
 
 
 def freeze() -> dict:
     FROZEN.mkdir(parents=True, exist_ok=True)
     if (FROZEN / "freeze_q2.json").exists() or (FROZEN / "freeze_q1.json").exists():
         raise CheckFailed("a freeze manifest exists; it is never rewritten")
-    choice = json.loads((E.OUT / "config_choice.json").read_text())
-    sel = json.loads((E.OUT / "q2" / "selection.json").read_text())
+    choice = json.loads((groups.OUT / "config_choice.json").read_text())
+    sel = json.loads((groups.OUT / "q2" / "selection.json").read_text())
     if sel["choice"] != choice:
         raise CheckFailed("the Q2 selection was computed for other settings")
-    if set(choice) != {"MoAE", "BASE", Q.WEIGHTED}:
-        raise CheckFailed(f"the freeze needs MoAE, BASE and {Q.WEIGHTED}; got {sorted(choice)}")
+    if set(choice) != {"MoAE", "BASE", evaluation.WEIGHTED}:
+        raise CheckFailed(f"the freeze needs MoAE, BASE and {evaluation.WEIGHTED}; got {sorted(choice)}")
     ck17 = checkpoints(choice, "train-17.parquet")  # Q2 and Q4: nine checkpoints in one claim
     ck19 = checkpoints({k: choice[k] for k in ("MoAE", "BASE")}, "train-19.parquet")  # Q1 reproduces the paper's two
     if len(set(ck17.values())) != 9 or len(set(ck19.values())) != 6:
@@ -218,7 +216,7 @@ def freeze() -> dict:
         "primary": {
             "comparison": f"MoAE (iii, lambda {lam['MoAE']['iii']['main']:g}) - MoAE (ii)",
             "metric": "G1 macro LogLoss on the official test, seed-paired user bootstrap "
-            f"({Q.BOOT['reps']} reps, seed {Q.BOOT['seed']}), models and calibrators fixed",
+            f"({evaluation.BOOT['reps']} reps, seed {evaluation.BOOT['seed']}), models and calibrators fixed",
             "improvement_confirmed": "difference < 0, 95% CI upper < 0, all three seed pairs < 0",
         },
         "secondary": [
@@ -227,7 +225,7 @@ def freeze() -> dict:
             "Q3: (MoAE - BASE) on G1 minus on C, after (ii) and raw, no verdict",
         ],
         "q4": {
-            "comparison": f"{Q.WEIGHTED} (iii) - MoAE (iii), each with its own lambda chosen on V2",
+            "comparison": f"{evaluation.WEIGHTED} (iii) - MoAE (iii), each with its own lambda chosen on V2",
             "metric": "G1 macro LogLoss on the official test, same bootstrap and verdict rule as Q2",
             "guards": "hold the method if the all-click LogLoss difference has 95% CI lower > 0 or the G1 Poisson "
             "deviance gets worse",
@@ -261,36 +259,41 @@ def verify_freeze(name: str) -> dict:
 # ------------------------------------------------------------------ evaluation shared by the dry run and the test
 def q2_values(name: str, manifest: dict) -> dict:
     """Every planned Q2/Q3 value on file `name` with the frozen calibrators (the same code for V2 and the test)."""
-    codes = Q.token_codes()
-    sets = Q.group_sets(codes)
-    g, y = Q.file_columns(name, codes)
+    codes = evaluation.token_codes()
+    sets = evaluation.group_sets(codes)
+    g, y = evaluation.file_columns(name, codes)
     choice = manifest["choice"]  # the chosen lambdas are inside the saved calibrators
     cal, users = {}, None
     for model, c in choice.items():
-        for s in Q.SEEDS:
-            rid = Q.run_id(model, c["lr"], c["lamda"], s)
-            pr = Q.predictions(rid, name, y)
+        for s in evaluation.SEEDS:
+            rid = evaluation.run_id(model, c["lr"], c["lamda"], s)
+            pr = evaluation.predictions(rid, name, y)
             if pr["checkpoint_sha256"] != manifest["checkpoints"][rid]:
                 raise CheckFailed(f"{rid} {name}: predictions of another checkpoint")
             users = pr["user"] if users is None else users
             if not np.array_equal(users, pr["user"]):
                 raise CheckFailed("users differ between runs")
             q = {"raw": pr["p"]}
-            for meth in Q.METHODS:
+            for meth in evaluation.METHODS:
                 for rule in ("main", "aggregate"):
-                    q["ii"], q[f"{meth}_{rule}"] = Q.load_calibrated(rid, meth, rule, pr["p"], g)
+                    q["ii"], q[f"{meth}_{rule}"] = evaluation.load_calibrated(rid, meth, rule, pr["p"], g)
             cal[rid] = q
-    rows = {f"{rid}|{k}": Q.evaluate(y, v, g, sets, users) for rid, q in cal.items() for k, v in q.items()}
+    rows = {f"{rid}|{k}": evaluation.evaluate(y, v, g, sets, users) for rid, q in cal.items() for k, v in q.items()}
 
     def seeds(model, k):
         c = choice[model]
-        return [cal[Q.run_id(model, c["lr"], c["lamda"], s)][k] for s in Q.SEEDS]
+        return [cal[evaluation.run_id(model, c["lr"], c["lamda"], s)][k] for s in evaluation.SEEDS]
 
     m1 = np.isin(g, sets["G1"])
 
     def boot(model, a, b):
-        return M.paired_bootstrap_macro_diff(
-            y[m1], [x[m1] for x in seeds(model, a)], [x[m1] for x in seeds(model, b)], g[m1], users[m1], **Q.BOOT
+        return metrics.paired_bootstrap_macro_diff(
+            y[m1],
+            [x[m1] for x in seeds(model, a)],
+            [x[m1] for x in seeds(model, b)],
+            g[m1],
+            users[m1],
+            **evaluation.BOOT,
         ) | {"compared": f"{model}: {a} - {b}"}
 
     out = {}
@@ -300,14 +303,14 @@ def q2_values(name: str, manifest: dict) -> dict:
         out[f"{model}: iii0 - iii"] = boot(model, "iii0_main", "iii_main")
         out[f"{model}: iii (aggregate rule) - ii"] = boot(model, "iii_aggregate", "ii")
     for k in ("ii", "raw"):
-        out[f"Q3 {k}: (MoAE - BASE) on G1 minus on C"] = Q.did_bootstrap(
-            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT
+        out[f"Q3 {k}: (MoAE - BASE) on G1 minus on C"] = evaluation.did_bootstrap(
+            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **evaluation.BOOT
         )
-        out[f"Q3 click {k}: (MoAE - BASE) on G1 minus on C"] = Q.did_click_bootstrap(
-            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT
+        out[f"Q3 click {k}: (MoAE - BASE) on G1 minus on C"] = evaluation.did_click_bootstrap(
+            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **evaluation.BOOT
         )
-    if Q.WEIGHTED in choice:
-        out |= Q.q4_comparisons(y, g, users, sets, seeds, "iii_main", "iii_main")
+    if evaluation.WEIGHTED in choice:
+        out |= evaluation.q4_comparisons(y, g, users, sets, seeds, "iii_main", "iii_main")
     return {"rows": rows, "bootstrap": out}
 
 
@@ -334,8 +337,8 @@ def verdict(b: dict) -> dict:
 
 def dryrun() -> dict:
     m = verify_freeze("q2")
-    sel = json.loads((E.OUT / "q2" / "selection.json").read_text())
-    new = q2_values(Q.V2, m)
+    sel = json.loads((groups.OUT / "q2" / "selection.json").read_text())
+    new = q2_values(evaluation.V2, m)
     lam, n = m["lambda_chosen"], 0
     for key, row in new["rows"].items():
         rid, k = key.split("|")
@@ -351,7 +354,7 @@ def dryrun() -> dict:
                 require_close(f"dry run {key} {part} {metric}", abs(row[part][metric] - rec[part][metric]), DRYRUN_TOL)
                 n += 1
     extra = set(new["bootstrap"]) - set(sel["v2_bootstrap"])
-    if extra != Q.ADDED_AFTER_SELECTION or set(sel["v2_bootstrap"]) - set(new["bootstrap"]):
+    if extra != evaluation.ADDED_AFTER_SELECTION or set(sel["v2_bootstrap"]) - set(new["bootstrap"]):
         raise CheckFailed(
             f"dry run: values differ from the selection record beyond the ones added after selection: {sorted(extra)}"
         )
@@ -440,9 +443,9 @@ def check_test_predictions(name: str, m: dict) -> None:
     if not status.exists() or json.loads(status.read_text()).get("state") != "done":
         raise CheckFailed(f"the test predictions for {name} are not complete ({status})")
     folder, stem = ("q1", "model_after_train-19") if name == "q1" else ("research", "model_after_train-17")
-    _, y = Q.file_columns(Q.TEST, Q.token_codes())
+    _, y = evaluation.file_columns(evaluation.TEST, evaluation.token_codes())
     for rid, ck in m["checkpoints"].items():
-        f = Q.prediction_file(folder, stem, ck, Q.TEST)
+        f = evaluation.prediction_file(folder, stem, ck, evaluation.TEST)
         meta_f = f.with_suffix(".json")
         if not (f.exists() and meta_f.exists()):
             raise CheckFailed(f"{rid}: no test predictions at {f}")
@@ -489,7 +492,7 @@ def test(name: str) -> dict:
 
 
 def _test_q2(m: dict) -> dict:
-    v = q2_values(Q.TEST, m)
+    v = q2_values(evaluation.TEST, m)
     b = v["bootstrap"]
     out = {
         "question": "Q2",
@@ -510,15 +513,15 @@ def _test_q2(m: dict) -> dict:
 def _test_q1(m: dict) -> dict:
     from sklearn.metrics import roc_auc_score
 
-    codes = Q.token_codes()
-    _, y = Q.file_columns(Q.TEST, codes)
+    codes = evaluation.token_codes()
+    _, y = evaluation.file_columns(evaluation.TEST, codes)
     per, out = {}, {}
     for model in ("MoAE", "BASE"):
         c = m["choice"][model]
         vals = []
-        for s in Q.SEEDS:
-            rid = Q.run_id(model, c["lr"], c["lamda"], s)
-            hits = [Q.prediction_file("q1", "model_after_train-19", m["checkpoints"][rid], Q.TEST)]
+        for s in evaluation.SEEDS:
+            rid = evaluation.run_id(model, c["lr"], c["lamda"], s)
+            hits = [evaluation.prediction_file("q1", "model_after_train-19", m["checkpoints"][rid], evaluation.TEST)]
             if not hits[0].exists():
                 raise CheckFailed(f"{rid}: no Q1 test predictions at {hits[0]}")
             z = np.load(hits[0])
@@ -527,7 +530,7 @@ def _test_q1(m: dict) -> dict:
                 raise CheckFailed(f"{rid}: Q1 predictions of another checkpoint or test file")
             if not np.array_equal(z["y_last"].astype(np.int8), y):
                 raise CheckFailed(f"{rid}: Q1 labels differ from the test file read again")
-            auc, gauc = float(roc_auc_score(y, z["p_last"])), M.gauc(y, z["p_last"], z["user"])["gauc"]
+            auc, gauc = float(roc_auc_score(y, z["p_last"])), metrics.gauc(y, z["p_last"], z["user"])["gauc"]
             require_close(f"{rid} AUC official vs project", abs(auc - rec["auc"]), 1e-9)
             require_close(f"{rid} GAUC official vs project", abs(gauc - rec["gauc"]), 1e-9)
             vals.append({"seed": s, "auc": auc, "gauc": gauc})

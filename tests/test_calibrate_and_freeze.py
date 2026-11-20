@@ -15,10 +15,10 @@ case "$*" in
     for a; do last=$a; done
     ck=$(echo "$*" | sed 's/.*--ckpt \\([^ ]*\\).*/\\1/')
     sha=$(python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest()[:12])" "$ck")
-    d="runs/e_runs/research/model_after_train-17_$sha"; mkdir -p "$d"
+    d="runs/train/research/model_after_train-17_$sha"; mkdir -p "$d"
     touch "$d/${last%.parquet}.npz" "$d/${last%.parquet}.json" ;;
-  *cvr.evaluation\\ calibrate*) mkdir -p runs/e_study/q2 && touch runs/e_study/q2/selection.json ;;
-  *cvr.final_test\\ freeze*) mkdir -p runs/e_study/frozen && touch runs/e_study/frozen/freeze_q2.json ;;
+  *cvr.evaluation\\ calibrate*) mkdir -p runs/eval/q2 && touch runs/eval/q2/selection.json ;;
+  *cvr.final_test\\ freeze*) mkdir -p runs/eval/frozen && touch runs/eval/frozen/freeze_q2.json ;;
 esac
 """
 
@@ -33,13 +33,13 @@ def test_only_missing_predictions_are_made(tmp_path):
         "BASE": {"lr": 0.0035, "lamda": 0.3},
         "MoAE-g1w2": {"lr": 0.003, "lamda": 0.3},
     }
-    (tmp_path / "runs" / "e_study").mkdir(parents=True)
-    (tmp_path / "runs" / "e_study" / "config_choice.json").write_text(json.dumps(choice))
+    (tmp_path / "runs" / "eval").mkdir(parents=True)
+    (tmp_path / "runs" / "eval" / "config_choice.json").write_text(json.dumps(choice))
     shas = {}
     for m, c in choice.items():
         for s in (2026, 2027, 2028):
             rid = f"{m}_lr{c['lr']:g}_lam{c['lamda']:g}_s{s}"
-            d = tmp_path / "runs" / "e_runs" / rid
+            d = tmp_path / "runs" / "train" / rid
             d.mkdir(parents=True)
             cks = {}
             for k in (17,) if m == "MoAE-g1w2" else (17, 19):
@@ -48,7 +48,7 @@ def test_only_missing_predictions_are_made(tmp_path):
                 cks[f"train-{k}.parquet"] = {"sha256": hashlib.sha256(blob).hexdigest()}
             (d / "run.json").write_text(json.dumps({"checkpoints": cks}))
             shas[rid] = cks["train-17.parquet"]["sha256"][:12]
-    done = tmp_path / "runs" / "e_runs" / "research"
+    done = tmp_path / "runs" / "train" / "research"
     first = "MoAE_lr0.003_lam0.3_s2026"
     (done / f"model_after_train-17_{shas[first]}").mkdir(parents=True)
     for f in ("train-18.npz", "train-18.json", "train-19.npz", "train-19.json"):  # this run is complete
@@ -87,12 +87,12 @@ def test_a_changed_local_checkpoint_stops_before_any_prediction(tmp_path):
         "BASE": {"lr": 0.0035, "lamda": 0.3},
         "MoAE-g1w2": {"lr": 0.003, "lamda": 0.3},
     }
-    (tmp_path / "runs" / "e_study").mkdir(parents=True)
-    (tmp_path / "runs" / "e_study" / "config_choice.json").write_text(json.dumps(choice))
+    (tmp_path / "runs" / "eval").mkdir(parents=True)
+    (tmp_path / "runs" / "eval" / "config_choice.json").write_text(json.dumps(choice))
     for m, c in choice.items():
         for s in (2026, 2027, 2028):
             rid = f"{m}_lr{c['lr']:g}_lam{c['lamda']:g}_s{s}"
-            d = tmp_path / "runs" / "e_runs" / rid
+            d = tmp_path / "runs" / "train" / rid
             d.mkdir(parents=True)
             cks = {}
             for k in (17,) if m == "MoAE-g1w2" else (17, 19):

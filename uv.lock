@@ -161,6 +161,41 @@ wheels = [
 ]
 
 [[package]]
+name = "mac-sparse-cvr"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "lightgbm" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "polars" },
+    { name = "psutil" },
+    { name = "pyarrow" },
+    { name = "scikit-learn" },
+    { name = "torch" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lightgbm", specifier = ">=4.3" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pandas", specifier = ">=2.2,<3" },
+    { name = "polars", specifier = ">=1.0" },
+    { name = "psutil", specifier = ">=7.2.2" },
+    { name = "pyarrow", specifier = ">=15" },
+    { name = "scikit-learn", specifier = ">=1.4" },
+    { name = "torch", specifier = ">=2.4" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -585,41 +620,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/70/b3/c19426f783614d625
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl", hash = "sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2", size = 876263, upload-time = "2026-10-20T19:01:35.678Z" },
 ]
-
-[[package]]
-name = "sparse-cvr"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "lightgbm" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "polars" },
-    { name = "psutil" },
-    { name = "pyarrow" },
-    { name = "scikit-learn" },
-    { name = "torch" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "lightgbm", specifier = ">=4.3" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "pandas", specifier = ">=2.2,<3" },
-    { name = "polars", specifier = ">=1.0" },
-    { name = "psutil", specifier = ">=7.2.2" },
-    { name = "pyarrow", specifier = ">=15" },
-    { name = "scikit-learn", specifier = ">=1.4" },
-    { name = "torch", specifier = ">=2.4" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "sympy"

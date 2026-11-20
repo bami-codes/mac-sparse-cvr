@@ -1,9 +1,9 @@
 r"""Train and score the official MAC models (PyMAL) without changing them.
 
     python -m cvr.pymal_run preprocess train-00.parquet ... test.parquet
-    python -m cvr.pymal_run train --out runs/e_pymal/<name> --model MoAE --lr 0.004 --lamda 0.2 \
+    python -m cvr.pymal_run train --out runs/train/<name> --model MoAE --lr 0.004 --lamda 0.2 \
         --aux_views first mta linear cartesian --seed 2026
-    python -m cvr.pymal_run train --resume runs/e_pymal/<name>      # continue from the last finished file
+    python -m cvr.pymal_run train --resume runs/train/<name>      # continue from the last finished file
     python -m cvr.pymal_run predict --out <dir> --ckpt <run>/model_after_train-18.pt [--ckpt ...] train-19.parquet
 
 The model, dataset, labels, loss, seeding and preprocessing come from third_party/pymal (commit 3186be8) untouched.

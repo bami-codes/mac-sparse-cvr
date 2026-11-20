@@ -5,7 +5,7 @@
     PYTHONPATH=. uv run python scripts/serving_bench.py session NAME   # one latency session, NAME = <machine>_<n>
     PYTHONPATH=. uv run python scripts/serving_bench.py summary        # the sessions of every machine
 
-prepare samples V2 once and writes runs/e_study/serving_v3/: the raw rows for the consistency check (2,000 random and
+prepare samples V2 once and writes runs/eval/serving/: the raw rows for the consistency check (2,000 random and
 1,000 sparse-group rows), the click traffic, a pool of candidates and the request owners, plus the saved evaluation
 predictions of the check rows. Later steps read only these files, the two checkpoints, the vocabularies and the
 calibrators, so every machine measures the same rows.
@@ -29,9 +29,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from cvr import evaluation as Q
-from cvr import latency as L
-from cvr import pymal_run as R
+from cvr import evaluation, latency, pymal_run
 from cvr.checks import NN_SINGLE_VS_BATCH_TOL, CheckFailed
 from cvr.serving import Server
 from cvr.sysinfo import cpu_name, peak_rss_gb
@@ -48,7 +46,7 @@ SAVED_ON = "mac"  # the saved evaluation predictions were made on the local CPU,
 # keeps 1e-6 on every machine.
 CROSS_MACHINE_ROW_TOL = 1e-5
 SESSIONS_PER_MACHINE = 3
-DIR = Path("runs/e_study/serving_v3")
+DIR = Path("runs/eval/serving")
 CODE = ("cvr/latency.py", "cvr/serving.py", "scripts/serving_bench.py", "scripts/serving_sessions.sh")
 FIELDS = ("phase", "who", "path", "item", "block", "wall", "encode", "model", "calibrate", "cpu", "nivcsw", "gc")
 
@@ -65,14 +63,14 @@ def read_rows(path: Path, idx: np.ndarray, cols: list[str]) -> pa.Table:
 
 
 def runs() -> dict[str, str]:
-    choice = json.loads(Path("runs/e_study/config_choice.json").read_text())
-    return {m: Q.run_id(m, choice[m]["lr"], choice[m]["lamda"], 2026) for m in L.MODELS}
+    choice = json.loads(Path("runs/eval/config_choice.json").read_text())
+    return {m: evaluation.run_id(m, choice[m]["lr"], choice[m]["lamda"], 2026) for m in latency.MODELS}
 
 
 def prepare() -> dict:
-    codes = Q.token_codes()
-    g1 = set(json.loads(Path("runs/e_study/group_lists.json").read_text())["G1"])
-    v2 = Q.source(Q.V2)
+    codes = evaluation.token_codes()
+    g1 = set(json.loads(Path("runs/eval/group_lists.json").read_text())["G1"])
+    v2 = evaluation.source(evaluation.V2)
     tokens = np.array(pq.read_table(v2, columns=["ad_feat1"]).column("ad_feat1").to_pylist(), dtype=object)
     n = tokens.size
     rng = np.random.default_rng(SEED)
@@ -86,8 +84,8 @@ def prepare() -> dict:
     t0 = time.time()
     DIR.mkdir(parents=True, exist_ok=True)
     pq.write_table(read_rows(v2, need, Server.columns()), DIR / "rows.parquet")
-    _, y2 = Q.file_columns(Q.V2, codes)
-    saved = {f"p_{m}": Q.predictions(rid, Q.V2, y2)["p"][check] for m, rid in runs().items()}
+    _, y2 = evaluation.file_columns(evaluation.V2, codes)
+    saved = {f"p_{m}": evaluation.predictions(rid, evaluation.V2, y2)["p"][check] for m, rid in runs().items()}
     np.savez(
         DIR / "plan.npz",
         check=check,
@@ -104,8 +102,8 @@ def prepare() -> dict:
         "source_rows": int(n),
         "rows": int(need.size),
         "runs": runs(),
-        "rows_sha256": R.sha256(DIR / "rows.parquet"),
-        "plan_sha256": R.sha256(DIR / "plan.npz"),
+        "rows_sha256": pymal_run.sha256(DIR / "rows.parquet"),
+        "plan_sha256": pymal_run.sha256(DIR / "plan.npz"),
         "check_rows": int(check.size),
         "sparse_check_rows": int(np.isin(check, sparse).sum()),
         "read_seconds": round(time.time() - t0, 1),
@@ -117,7 +115,7 @@ def prepare() -> dict:
 def load_inputs() -> tuple[dict, dict, dict]:
     meta = json.loads((DIR / "meta.json").read_text())
     for f, key in (("rows.parquet", "rows_sha256"), ("plan.npz", "plan_sha256")):
-        if R.sha256(DIR / f) != meta[key]:
+        if pymal_run.sha256(DIR / f) != meta[key]:
             raise CheckFailed(f"{f} differs from the one prepared")
     t = pq.read_table(DIR / "rows.parquet")
     rows = dict(zip(t.column("v2_row").to_pylist(), t.drop(["v2_row"]).to_pylist()))
@@ -125,17 +123,17 @@ def load_inputs() -> tuple[dict, dict, dict]:
 
 
 def servers(meta: dict) -> dict:
-    D, _ = R.official()
+    D, _ = pymal_run.official()
     vocabs = D.get_vocabs("data/raw/mac/vocabs")
-    codes = Q.token_codes()
+    codes = evaluation.token_codes()
     return {
-        m: Server(rid, Q.RUNS / rid / "model_after_train-17.pt", vocabs, codes, threads=1)
+        m: Server(rid, evaluation.RUNS / rid / "model_after_train-17.pt", vocabs, codes, threads=1)
         for m, rid in meta["runs"].items()
     }
 
 
 def requests_of(plan: dict, rows: dict) -> list[tuple[dict, list[dict]]]:
-    D, _ = R.official()
+    D, _ = pymal_run.official()
     user_cols = D.USER_COLS + D.SEQ_COLS
     pool = [rows[int(i)] for i in plan["pool"]]
     return [
@@ -150,7 +148,7 @@ def code_version() -> dict:
     git = subprocess.run(["git", "rev-parse", "HEAD"], check=False, capture_output=True, text=True)
     dirty = subprocess.run(["git", "status", "--porcelain", "--", *CODE], check=False, capture_output=True, text=True)
     return {
-        "files_sha256": {f: R.sha256(Path(f)) for f in CODE},
+        "files_sha256": {f: pymal_run.sha256(Path(f)) for f in CODE},
         "git_commit": git.stdout.strip() if git.returncode == 0 else None,
         "code_uncommitted": bool(dirty.stdout.strip()) if git.returncode == 0 else None,
     }
@@ -187,7 +185,7 @@ def check(name: str) -> dict:
         raw = np.array([server.raw([r])[0] for r in served_rows])
         cal = np.array([server.predict([r])[0] for r in served_rows])
         batch = server.raw(served_rows)
-        _, ref = Q.load_calibrated(meta["runs"][m], "iii", "main", saved, plan["check_group"])
+        _, ref = evaluation.load_calibrated(meta["runs"][m], "iii", "main", saved, plan["check_group"])
         d_req = max(
             float(np.abs(server.predict([c | o for c in cs]) - server.predict_request(o, cs)).max()) for o, cs in reqs
         )
@@ -217,8 +215,8 @@ def session(name: str) -> dict:
     if dest.exists() or dest.with_suffix(".npz").exists():
         raise CheckFailed(f"{dest} exists: a session is never measured again under the same name")
     torch.set_num_interop_threads(1)
-    prio = L.set_latency_priority()  # before the servers: threads created later inherit the Linux affinity
-    L.install_gc_counter()
+    prio = latency.set_latency_priority()  # before the servers: threads created later inherit the Linux affinity
+    latency.install_gc_counter()
     meta, plan, rows = load_inputs()
     srv = servers(meta)
     reqs = requests_of(plan, rows)
@@ -230,34 +228,34 @@ def session(name: str) -> dict:
 
     for s in srv.values():  # warm-up on requests and clicks that are not timed
         for k in range(REQ_WARMUP):
-            for p in L.PATHS:
-                L.probe(s, encoder(s, p, k), reqs[k][1])
+            for p in latency.PATHS:
+                latency.probe(s, encoder(s, p, k), reqs[k][1])
         for r in clicks[:CLICK_WARMUP]:
-            L.probe(s, lambda r=r, s=s: s.tensors([r]), [r])
+            latency.probe(s, lambda r=r, s=s: s.tensors([r]), [r])
     rec = {k: [] for k in FIELDS}
     blocks = []
-    env_start, t_start = L.load_sample(1.0), time.time()
+    env_start, t_start = latency.load_sample(1.0), time.time()
 
     def block(phase: str, model: str) -> tuple:
-        g = L.gate()
+        g = latency.gate()
         blocks.append({"id": len(blocks), "phase": phase, "model": model, "t": round(time.time() - t_start, 2)} | g)
-        return len(blocks) - 1, srv[model], L.MODELS.index(model)
+        return len(blocks) - 1, srv[model], latency.MODELS.index(model)
 
     def add(*values) -> None:
         for k, v in zip(FIELDS, values):
             rec[k].append(v)
 
-    for b in L.click_schedule(CLICKS, CLICK_BLOCK):
+    for b in latency.click_schedule(CLICKS, CLICK_BLOCK):
         bi, s, m = block("click", b["model"])
         for i in b["clicks"]:
             r = clicks[CLICK_WARMUP + i]
-            add(0, m, -1, i, bi, *L.probe(s, lambda r=r, s=s: s.tensors([r]), [r]))
-    for b in L.request_schedule(REQUESTS, REQ_BLOCK):
+            add(0, m, -1, i, bi, *latency.probe(s, lambda r=r, s=s: s.tensors([r]), [r]))
+    for b in latency.request_schedule(REQUESTS, REQ_BLOCK):
         bi, s, m = block("request", b["model"])
         for i, p in zip(b["requests"], b["paths"]):
             k = REQ_WARMUP + i
-            add(1, m, L.PATHS.index(p), i, bi, *L.probe(s, encoder(s, p, k), reqs[k][1]))
-    env_end = L.load_sample(1.0)
+            add(1, m, latency.PATHS.index(p), i, bi, *latency.probe(s, encoder(s, p, k), reqs[k][1]))
+    env_end = latency.load_sample(1.0)
     (DIR / "sessions").mkdir(parents=True, exist_ok=True)
     np.savez(DIR / "sessions" / f"{name}.npz", **{k: np.asarray(v, dtype=np.int64) for k, v in rec.items()})
     passed = float(np.mean([b["passed"] for b in blocks]))
@@ -271,7 +269,7 @@ def session(name: str) -> dict:
         "env_end": env_end,
         "blocks": blocks,
         "gate_pass_share": passed,
-        "valid": bool(passed >= L.VALID_SESSION_PASS_SHARE),
+        "valid": bool(passed >= latency.VALID_SESSION_PASS_SHARE),
         "oov": {m: dict(s.oov) for m, s in srv.items()},
         "protocol": {
             "seed": SEED,
@@ -283,8 +281,8 @@ def session(name: str) -> dict:
             "pool": POOL,
             "warmup_clicks": CLICK_WARMUP,
             "warmup_requests": REQ_WARMUP,
-            "gate_other_cpu": L.GATE_OTHER_CPU,
-            "gate_max_wait_s": L.GATE_MAX_WAIT_S,
+            "gate_other_cpu": latency.GATE_OTHER_CPU,
+            "gate_max_wait_s": latency.GATE_MAX_WAIT_S,
         },
     }
     dest.write_text(json.dumps(out, indent=1))
@@ -294,13 +292,13 @@ def session(name: str) -> dict:
 def analyse(name: str) -> dict:
     z = dict(np.load(DIR / "sessions" / f"{name}.npz"))
     out = {}
-    for m, model in enumerate(L.MODELS):
-        out[f"{model} click"] = L.describe(z, (z["phase"] == 0) & (z["who"] == m), z["block"])
+    for m, model in enumerate(latency.MODELS):
+        out[f"{model} click"] = latency.describe(z, (z["phase"] == 0) & (z["who"] == m), z["block"])
         req = (z["phase"] == 1) & (z["who"] == m)
-        for p, path in enumerate(L.PATHS):
-            out[f"{model} request {path}"] = L.describe(z, req & (z["path"] == p), z["block"])
-        out[f"{model} shared/per_row p50"] = L.path_ratio(z, req, z["block"], L.p50)
-        out[f"{model} shared/per_row p99"] = L.path_ratio(z, req, z["block"], L.p99)
+        for p, path in enumerate(latency.PATHS):
+            out[f"{model} request {path}"] = latency.describe(z, req & (z["path"] == p), z["block"])
+        out[f"{model} shared/per_row p50"] = latency.path_ratio(z, req, z["block"], latency.p50)
+        out[f"{model} shared/per_row p99"] = latency.path_ratio(z, req, z["block"], latency.p99)
     return out
 
 
@@ -326,13 +324,15 @@ def summary() -> dict:
         if len(valid) == SESSIONS_PER_MACHINE:
             first = an[valid[0]["name"]]
             res["stability"] = {
-                f"{k} {q}": L.stability([an[s["name"]][k]["wall"][q] for s in valid])
+                f"{k} {q}": latency.stability([an[s["name"]][k]["wall"][q] for s in valid])
                 for k in first
                 if "/" not in k
                 for q in ("p50", "p99")
             }
-            res["stability"] |= {k: L.stability([an[s["name"]][k]["ratio"] for s in valid]) for k in first if "/" in k}
-            res["effect"] = {k: L.effect([an[s["name"]][k]["ci95"] for s in valid]) for k in first if "/" in k}
+            res["stability"] |= {
+                k: latency.stability([an[s["name"]][k]["ratio"] for s in valid]) for k in first if "/" in k
+            }
+            res["effect"] = {k: latency.effect([an[s["name"]][k]["ci95"] for s in valid]) for k in first if "/" in k}
         out[mach] = res
     (DIR / "summary.json").write_text(json.dumps(out, indent=1))
     return out
@@ -354,7 +354,7 @@ def render(machine: str) -> str:
         return f"{v['median']:.2f} ({min(v['sessions']):.2f}–{max(v['sessions']):.2f})"
 
     out = ["| 모델 | 경로 | p50 | p99 |", "|---|---|---|---|"]
-    for model in L.MODELS:
+    for model in latency.MODELS:
         for k, label in paths.items():
             out.append(f"| {model} | {label} | {span(st[f'{model} {k} p50'])} | {span(st[f'{model} {k} p99'])} |")
     worst = max(v["max_over_min"] for k, v in st.items() if "/" not in k)
@@ -365,7 +365,7 @@ def render(machine: str) -> str:
         "| 모델 | 공유 ÷ 후보마다, p50 | 공유 ÷ 후보마다, p99 |",
         "|---|---|---|",
     ]
-    for model in L.MODELS:
+    for model in latency.MODELS:
         cells = []
         for q in ("p50", "p99"):
             k = f"{model} shared/per_row {q}"
@@ -374,7 +374,7 @@ def render(machine: str) -> str:
             cells.append(f"{st[k]['median']:.2f} (세 세션의 95% 구간 {lo:.2f}–{hi:.2f})")
         out.append(f"| {model} | {cells[0]} | {cells[1]} |")
     out += ["", "| 모델 | 경로 | 인코딩 | 모델 계산 | 보정 |", "|---|---|---|---|---|"]
-    for model in L.MODELS:
+    for model in latency.MODELS:
         for k, label in paths.items():
             ds = [r["per_session"][n][f"{model} {k}"] for n in names]
             cells = [
@@ -383,7 +383,7 @@ def render(machine: str) -> str:
             ]
             out.append(f"| {model} | {label} | {' | '.join(cells)} |")
     switched = [
-        r["per_session"][n][f"{m} {k}"]["share_context_switched"] for n in names for m in L.MODELS for k in paths
+        r["per_session"][n][f"{m} {k}"]["share_context_switched"] for n in names for m in latency.MODELS for k in paths
     ]
     note = (
         f"단계별 p50 / p99, ms (세 세션의 중앙값). 측정 중 문맥 전환이 일어난 요청은 경로마다 "

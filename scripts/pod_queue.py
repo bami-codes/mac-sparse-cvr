@@ -1,9 +1,9 @@
 """Job queue on a multi-GPU machine: one training run per GPU at a time.
 
-    python scripts/pod_queue.py grid  > runs/e_runs/jobs_grid.json          # the paper's search space, seed 2026
-    python scripts/pod_queue.py seeds --moae "<lr> <lamda>" --base "<lr>" > runs/e_runs/jobs_seeds.json
-    python scripts/pod_queue.py run runs/e_runs/jobs_grid.json [--gpus 4]   # resumable: run it again after a stop
-    python scripts/pod_queue.py summary runs/e_runs/jobs_grid.json          # status and validation GAUC per job
+    python scripts/pod_queue.py grid  > runs/train/jobs_grid.json          # the paper's search space, seed 2026
+    python scripts/pod_queue.py seeds --moae "<lr> <lamda>" --base "<lr>" > runs/train/jobs_seeds.json
+    python scripts/pod_queue.py run runs/train/jobs_grid.json [--gpus 4]   # resumable: run it again after a stop
+    python scripts/pod_queue.py summary runs/train/jobs_grid.json          # status and validation GAUC per job
 
 Each job trains with cvr.pymal_run on the official 20 files (checkpoints after train-17, 18, 19) and then scores
 the train-18 checkpoint on train-19 (the paper's validation: the day before the test day). The official test file
@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-RUNS = Path("runs/e_runs")
+RUNS = Path("runs/train")
 LRS = [round(x * f, 8) for f in (0.1, 1.0, 10.0) for x in (0.0030, 0.0035, 0.0040)]  # the paper's grid (§6.1.1)
 LAMDAS = [0.1, 0.2, 0.3, 0.4]
 MOAE_AUX = ["first", "mta", "linear", "cartesian"]  # Table 4 / Table 5: first, linear, DDA (mta) and CAT
@@ -40,7 +40,7 @@ def weighted(lr: float, lamda: float) -> list[dict]:
     """The chosen MoAE retrained on train-00..17 with the G1 clicks' main loss weighted 2x; only the train-17
     checkpoint is kept and no validation run is made (the control is the chosen run's own train-17 checkpoint)."""
     out = []
-    g1_sha = json.loads(Path("runs/e_study/groups.json").read_text())["sha256"]["G1"]  # fixed before any result
+    g1_sha = json.loads(Path("runs/eval/groups.json").read_text())["sha256"]["G1"]  # fixed before any result
     for seed in (2026, 2027, 2028):
         j = job("MoAE", lr, lamda, seed)
         j["id"] = j["id"].replace("MoAE_", f"{WEIGHTED}_", 1)
@@ -49,7 +49,7 @@ def weighted(lr: float, lamda: float) -> list[dict]:
             "--g1_weight",
             "2",
             "--weight_groups",
-            "runs/e_study/group_lists.json",
+            "runs/eval/group_lists.json",
             "--weight_groups_sha256",
             g1_sha,
             "--train_files",

@@ -6,7 +6,7 @@ For each G1 group: LogLoss after (iii) minus after (ii), the mean over the three
 (train-19, where lambda was chosen) and on the official test (already evaluated once for Q2; this reads the same
 predictions and calibrators and adds no claim). The mean over the 979 groups is the Q2 macro difference and must equal
 the recorded V2 and test values. Groups are also split by their training positives (the G1 rule is < 123).
-Output: runs/e_study/q2_per_group.json.
+Output: runs/eval/q2_per_group.json.
 """
 
 import json
@@ -15,26 +15,25 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from cvr import evaluation as Q
-from cvr import metrics as M
+from cvr import evaluation, metrics
 from cvr.checks import CheckFailed
 
-OUT = Path("runs/e_study/q2_per_group.json")
+OUT = Path("runs/eval/q2_per_group.json")
 BINS = ((0, 40), (40, 80), (80, 123))
 
 
 def per_seed_diff(rid: str, name: str, y: np.ndarray, g: np.ndarray, m: np.ndarray, s: int) -> pl.DataFrame:
-    p = Q.predictions(rid, name, y)["p"]
-    q2, q3 = Q.load_calibrated(rid, "iii", "main", p[m], g[m])
-    a = M.per_group(y[m], q2, g[m]).select("g", "n", "O", pl.col("logloss").alias("ll2"))
-    b = M.per_group(y[m], q3, g[m]).select("g", pl.col("logloss").alias("ll3"))
+    p = evaluation.predictions(rid, name, y)["p"]
+    q2, q3 = evaluation.load_calibrated(rid, "iii", "main", p[m], g[m])
+    a = metrics.per_group(y[m], q2, g[m]).select("g", "n", "O", pl.col("logloss").alias("ll2"))
+    b = metrics.per_group(y[m], q3, g[m]).select("g", pl.col("logloss").alias("ll3"))
     return a.join(b, on="g").select("g", "n", "O", (pl.col("ll3") - pl.col("ll2")).alias(f"d{s}"))
 
 
 def describe(t: pl.DataFrame) -> dict:
     d = t["d"].to_numpy()
     zero = t.filter(pl.col("O") == 0)
-    seeds = t.select([f"d{s}" for s in Q.SEEDS]).to_numpy()
+    seeds = t.select([f"d{s}" for s in evaluation.SEEDS]).to_numpy()
     bins = []
     for lo, hi in BINS:
         bd = t.filter((pl.col("pos") >= lo) & (pl.col("pos") < hi))["d"].to_numpy()
@@ -64,30 +63,32 @@ def describe(t: pl.DataFrame) -> dict:
 
 
 def main() -> dict:
-    codes = Q.token_codes()
-    g1 = Q.group_sets(codes)["G1"]
-    choice = json.loads(Path("runs/e_study/config_choice.json").read_text())
-    stats = pl.read_parquet("runs/e_study/train_stats_ad_feat1.parquet").select(
+    codes = evaluation.token_codes()
+    g1 = evaluation.group_sets(codes)["G1"]
+    choice = json.loads(Path("runs/eval/config_choice.json").read_text())
+    stats = pl.read_parquet("runs/eval/train_stats_ad_feat1.parquet").select(
         pl.col("ad_feat1").replace_strict(codes, return_dtype=pl.Int64).alias("g"), "clicks", "pos"
     )
     out = {}
-    for name in (Q.V2, Q.TEST):
-        g, y = Q.file_columns(name, codes)
+    for name in (evaluation.V2, evaluation.TEST):
+        g, y = evaluation.file_columns(name, codes)
         m = np.isin(g, g1)
         for model in ("MoAE", "BASE"):
             parts = [
-                per_seed_diff(Q.run_id(model, choice[model]["lr"], choice[model]["lamda"], s), name, y, g, m, s)
-                for s in Q.SEEDS
+                per_seed_diff(
+                    evaluation.run_id(model, choice[model]["lr"], choice[model]["lamda"], s), name, y, g, m, s
+                )
+                for s in evaluation.SEEDS
             ]
             t = parts[0]
             for d in parts[1:]:
                 t = t.join(d.drop("n", "O"), on="g")
-            t = t.with_columns(pl.mean_horizontal([f"d{s}" for s in Q.SEEDS]).alias("d")).join(stats, on="g")
+            t = t.with_columns(pl.mean_horizontal([f"d{s}" for s in evaluation.SEEDS]).alias("d")).join(stats, on="g")
             out[f"{name} {model}"] = describe(t)
-    v2 = json.loads(Path("runs/e_study/q2/selection.json").read_text())["v2_bootstrap"]
-    test = json.loads(Path("runs/e_study/frozen/result_q2.json").read_text())["secondary"]
+    v2 = json.loads(Path("runs/eval/q2/selection.json").read_text())["v2_bootstrap"]
+    test = json.loads(Path("runs/eval/frozen/result_q2.json").read_text())["secondary"]
     for model in ("MoAE", "BASE"):
-        for name, rec in ((Q.V2, v2), (Q.TEST, test)):
+        for name, rec in ((evaluation.V2, v2), (evaluation.TEST, test)):
             want = rec[f"{model}: iii - ii"]["diff"]
             if abs(out[f"{name} {model}"]["macro_diff"] - want) > 1e-12:
                 raise CheckFailed(f"{model} {name}: the per-group mean differs from the recorded difference {want}")

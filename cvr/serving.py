@@ -16,8 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import evaluation as Q
-from . import pymal_run as R
+from . import evaluation, pymal_run
 from .calibration import load_group_calibrators
 from .schema import PAD
 
@@ -27,8 +26,8 @@ class Server:
         self, rid: str, ckpt: Path, vocabs: dict, codes: dict[str, int], threads: int = 1, calibration: str = "iii"
     ):
         """A model of the official code, with its run record next to the checkpoint and its calibrator."""
-        run = R.run_record(Path(ckpt))
-        cal = Q.calibrator_path(rid, calibration, "main")
+        run = pymal_run.run_record(Path(ckpt))
+        cal = evaluation.calibrator_path(rid, calibration, "main")
         self._setup(run["args"], Path(ckpt), vocabs, codes, cal, threads, {"run": rid})
 
     @classmethod
@@ -61,9 +60,9 @@ class Server:
 
         torch.set_num_threads(threads)
         self.torch = torch
-        self.D, _ = R.official()
+        self.D, _ = pymal_run.official()
         a = argparse.Namespace(**args)
-        self.model, _, _ = R.build(a, vocabs, torch.device("cpu"))
+        self.model, _, _ = pymal_run.build(a, vocabs, torch.device("cpu"))
         self.model.load_state_dict(torch.load(ckpt, map_location="cpu"))
         self.model.eval()
         self.main_view = a.main_view
@@ -73,7 +72,7 @@ class Server:
         self.glob, self.gs = load_group_calibrators(calibrator) if calibrator else (None, None)
         self.info = info | {
             "checkpoint": str(ckpt),
-            "checkpoint_sha256": R.sha256(ckpt),
+            "checkpoint_sha256": pymal_run.sha256(ckpt),
             "model": a.model,
             "calibrator": calibrator.name if calibrator else None,
             "lambda": float(self.gs.lam) if self.gs else None,
@@ -82,7 +81,7 @@ class Server:
 
     @staticmethod
     def columns() -> list[str]:
-        D, _ = R.official()
+        D, _ = pymal_run.official()
         return D.USER_COLS + D.AD_COLS + D.SEQ_COLS + D.MM_COLS
 
     def code(self, col: str, value: str) -> int:

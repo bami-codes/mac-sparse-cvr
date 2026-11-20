@@ -1,6 +1,6 @@
 """Fix the ad group lists from the training files alone, before any model result exists.
 
-    uv run python -m cvr.groups groups      # G1, the comparison set C and small context groups, with their SHA-256
+    uv run python -m cvr.groups      # G1, the comparison set C and small context groups, with their SHA-256
 
 Groups are kept as the raw MAC token (hashed string), so they do not depend on any vocabulary. The PAD token is the
 missing value and belongs to no group list. A click is positive when last > 0 (the official label).
@@ -18,7 +18,7 @@ from .schema import PAD
 
 DATA = Path("data/raw/mac/train")
 TRAIN = [f"train-{i:02d}.parquet" for i in range(18)]  # what the research models were trained on
-OUT = Path("runs/e_study")
+OUT = Path("runs/eval")
 BASE_ROWS_G1, BASE_ROWS_C = 10_883_174, 10_499_793  # training rows of the first study and of study C
 G1_BASE = {"n_min": 500, "c_min": 20, "c_dense": 50}
 SMALL_SHARE, SMALL_MIN_CLICKS_BASE = 0.01, 3000
@@ -137,7 +137,7 @@ def groups() -> dict:
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["groups"]:
+    if not sys.argv[1:]:
         print(json.dumps({k: v for k, v in groups().items() if k != "training_files"}, indent=2))
     else:
         raise SystemExit(__doc__)

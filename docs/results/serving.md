@@ -6,9 +6,9 @@
 
 ## 경로
 
-원시 행 → 공식 어휘로 코드 변환(`utils.data.df_to_dict`와 같은 조회) → 공식 텐서 배치(`MALDataset`과 같음) → 모델 → 공통 보정 (ii) 또는 그룹별 축소 보정 (iii)
+원시 행 → 공식 어휘로 코드 변환(`utils.data.df_to_dict`와 같은 조회) → 공식 텐서 배치(`MALDataset`과 같음) → 모델 → 공통 보정 또는 그룹별 축소 보정
 
-- 모델은 연구 E의 `train-17` 체크포인트(시드 2026)와 그 보정기 (iii)입니다. `train-19` 모델은 구조와 텐서 크기가 같습니다.
+- 모델은 `train-17`까지 학습한 체크포인트(시드 2026)와 그 그룹별 축소 보정기입니다. `train-19` 모델은 구조와 텐서 크기가 같습니다.
 - 코드는 [cvr/serving.py](../../cvr/serving.py)에 있습니다.
   - `Server.predict(rows)`: 행마다 그 행의 사용자 정보를 씁니다.
   - `Server.predict_request(user_row, candidates)`: 한 사용자의 후보들을 한 번에 점수화합니다.
@@ -18,7 +18,7 @@
 
 | 확인 | BASE | MoAE | 기준 |
 |---|---|---|---|
-| 한 행씩 서빙한 원시 확률 vs 평가 예측 (V2 2,999행, 희소 그룹 1,195행 포함) | 2.7e-7 | 1.8e-6 | 1e-5 |
+| 한 행씩 서빙한 원시 확률 vs 평가 예측 (검증 자료 2,999행, 희소 그룹 1,195행 포함) | 2.7e-7 | 1.8e-6 | 1e-5 |
 | 같은 행을 배치로 서빙한 원시 확률 vs 평가 예측 | 1.0e-7 | 2.1e-7 | 1e-6 |
 | 보정 확률 vs 평가 예측에 같은 보정기를 적용한 값 | 2.9e-7 | 1.6e-6 | 1e-5 |
 | 공유 인코딩 vs 후보마다 인코딩 (요청 320개) | 0 | 0 | 1e-6 |
@@ -48,7 +48,7 @@
 
 - 세션은 20분 간격으로 세 번입니다. 세션마다 모델별로 클릭 10,000건과 요청 6,000개(두 경로에 3,000개씩)를 잽니다.
 - 경로별 요청 p99는 세션마다 요청 3,000개 중 가장 느린 30개 부근의 값입니다. 그래서 p99의 구간이 p50보다 넓습니다.
-- 요청의 사용자는 V2에서 서로 다른 클릭 행을 뽑아 정했습니다(측정한 요청 6,000개에 고유 사용자 5,866명). 후보 100개는 V2 행 20,000개에서 뽑습니다. V2의 실제 행으로 만든 합성 요청입니다.
+- 요청의 사용자는 검증 자료(`train-19`)에서 서로 다른 클릭 행을 뽑아 정했습니다(측정한 요청 6,000개에 고유 사용자 5,866명). 후보 100개는 검증 자료의 행 20,000개에서 뽑습니다. 실제 행으로 만든 합성 요청입니다.
 - 두 모델은 블록 단위로 ABBA 순서로 번갈아 잽니다. 두 경로는 블록 안에서 요청마다 번갈아 잽니다.
 - 구간은 블록 단위 부트스트랩으로 구했습니다. 측정 규약은 [DESIGN.md](../DESIGN.md)의 §18.12.1에 있습니다.
 - 기록은 [records/serving_summary_linux.json](records/serving_summary_linux.json)과 일치 검사 [records/serving_check_linux.json](records/serving_check_linux.json)입니다. 측정 코드는 커밋 `a15ffd4`의 파일과 해시가 같습니다.
@@ -93,9 +93,9 @@
 
 ```bash
 uv run pytest -q tests/test_pymal_run.py -k serving              # 원자료 없이: 공식 텐서 배치, 신규 입력, 공유 인코딩
-PYTHONPATH=. uv run python scripts/serving_bench.py prepare           # 측정 행과 평가 예측을 한 번 고정 (V2와 평가 예측 필요)
+PYTHONPATH=. uv run python scripts/serving_bench.py prepare           # 측정 행과 평가 예측을 한 번 고정 (검증 자료와 평가 예측 필요)
 bash scripts/serving_sessions.sh linux                            # 측정할 서버에서: 일치 검사, 20분 간격 세션 3개, 요약
 PYTHONPATH=. uv run python scripts/serving_bench.py render linux      # 위 표
 ```
 
-서버에는 `runs/e_study/serving_v3/`의 행 파일과 계획 파일, 체크포인트 2개와 실행 기록, 보정기 2개, 그룹 통계를 복사합니다. 어휘는 `python3 scripts/fetch_mac.py vocabs`로 받습니다.
+서버에는 `runs/eval/serving/`의 행 파일과 계획 파일, 체크포인트 2개와 실행 기록, 보정기 2개, 그룹 통계를 복사합니다. 어휘는 `python3 scripts/fetch_mac.py vocabs`로 받습니다.

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import pymal_run as R
+from . import pymal_run
 from .serving import Server
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "model"
@@ -38,7 +38,7 @@ class RequestError(ValueError):
 
 
 def columns() -> tuple[list[str], list[str]]:
-    D, _ = R.official()
+    D, _ = pymal_run.official()
     return D.USER_COLS[1:] + D.SEQ_COLS, D.AD_COLS + D.MM_COLS
 
 
@@ -48,7 +48,7 @@ def _number(v) -> bool:
 
 def validate(request: dict) -> None:
     """Raise RequestError naming the first field that is missing or has the wrong type or length."""
-    D, _ = R.official()
+    D, _ = pymal_run.official()
     if not isinstance(request, dict) or not isinstance(request.get("user"), dict):
         raise RequestError('a request is {"user": {...}, "candidates": [{...}, ...]}')
     cands = request.get("candidates")
@@ -88,7 +88,7 @@ def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -
     voc = Path(vocabs) if vocabs else (bundle / cfg["vocabs"] if cfg.get("vocabs") else None)
     if voc is None:
         raise SystemExit(f"{bundle} keeps no vocabularies: pass --vocabs (python3 scripts/fetch_mac.py vocabs)")
-    D, _ = R.official()
+    D, _ = pymal_run.official()
     calibrated = cfg.get("calibrator") is not None
     codes = json.loads((bundle / "group_codes.json").read_text()) if calibrated else {}
     server = Server.from_parts(
@@ -135,14 +135,16 @@ def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: boo
 
     A calibrator only fits the checkpoint whose predictions it was trained on (train-17). Exporting any other
     checkpoint requires calibrated=False."""
-    from . import evaluation as Q
+    from . import evaluation
 
-    run = json.loads((Q.RUNS / rid / "run.json").read_text())
-    ckpt = (Q.RUNS / rid / f"model_after_{Path(after).stem}.pt").resolve()
+    run = json.loads((evaluation.RUNS / rid / "run.json").read_text())
+    ckpt = (evaluation.RUNS / rid / f"model_after_{Path(after).stem}.pt").resolve()
     sha = run["checkpoints"][after]["sha256"]
-    if R.sha256(ckpt) != sha:
+    if pymal_run.sha256(ckpt) != sha:
         raise SystemExit(f"{ckpt} differs from its run record")
-    fitted = Q.prediction_file("research", Q.CKPT, Q.checkpoint_sha(rid), Q.V1).with_suffix(".json")
+    fitted = evaluation.prediction_file(
+        "research", evaluation.CKPT, evaluation.checkpoint_sha(rid), evaluation.V1
+    ).with_suffix(".json")
     fitted_sha = json.loads(fitted.read_text())["checkpoint_sha256"] if fitted.exists() else None
     if calibrated and fitted_sha != sha:
         raise SystemExit(
@@ -153,11 +155,11 @@ def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: boo
     out.mkdir(parents=True, exist_ok=False)
     source = {"study": "E", "run": rid, "trained_through": after}
     if calibrated:
-        shutil.copy(Q.calibrator_path(rid, "iii", "main"), out / "calibrator.npz")
-        (out / "group_codes.json").write_text(json.dumps(Q.token_codes()))
+        shutil.copy(evaluation.calibrator_path(rid, "iii", "main"), out / "calibrator.npz")
+        (out / "group_codes.json").write_text(json.dumps(evaluation.token_codes()))
         source |= {
-            "calibrator_fitted_on": f"{Q.V1} predictions of checkpoint {fitted_sha[:12]}",
-            "lambda_chosen_on": Q.V2,
+            "calibrator_fitted_on": f"{evaluation.V1} predictions of checkpoint {fitted_sha[:12]}",
+            "lambda_chosen_on": evaluation.V2,
         }
     cfg = {
         "args": run["args"],

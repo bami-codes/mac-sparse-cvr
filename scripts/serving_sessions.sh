@@ -8,7 +8,7 @@
 set -euo pipefail
 name=$1
 gap=${GAP_S:-1200}
-dir=runs/e_study/serving_v3/sessions
+dir=runs/eval/serving/sessions
 export PYTHONPATH=.
 mkdir -p "$dir"
 count() {  # "<sessions recorded> <valid sessions>" of this machine (no ls or grep failure when there is none yet)
@@ -20,7 +20,7 @@ count() {  # "<sessions recorded> <valid sessions>" of this machine (no ls or gr
   done
   echo "$n $v"
 }
-[ -f "runs/e_study/serving_v3/check_${name}.json" ] || uv run python scripts/serving_bench.py check "$name" > /dev/null
+[ -f "runs/eval/serving/check_${name}.json" ] || uv run python scripts/serving_bench.py check "$name" > /dev/null
 echo "$(date '+%H:%M:%S') check $name passed"
 read -r done valid < <(count)
 while [ "$valid" -lt 3 ] && [ "$done" -lt 6 ]; do
