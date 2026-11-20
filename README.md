@@ -146,7 +146,7 @@ LogLoss로 고른 보정은 공통 보정보다 그룹 평균 LogLoss를 낮췄�
 | [scripts/runpod.py](scripts/runpod.py), `scripts/pod_*` | GPU 포드 운영(예산 상한, 수명, 체크포인트 회수와 해시 대조) |
 
 ```bash
-uv run pytest -q                               # 단위 테스트 175개, 약 1분, 원자료 없이 합성 자료로
+uv run pytest -q                               # 단위 테스트 178개, 약 1분, 원자료 없이 합성 자료로
 uv run pytest -q -m e2e                        # 앞선 실험의 모든 명령과 포드 학습 대기열을 끝까지, 약 2분
 uvx ruff check . && uvx ruff format --check .  # CI와 같은 린트와 형식 검사
 ```
