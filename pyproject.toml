@@ -3,6 +3,7 @@ name = "sparse-cvr"
 version = "0.1.0"
 description = "CVR prediction, calibration and low-latency serving for sparse ad groups on the MAC benchmark"
 requires-python = ">=3.11,<3.12"
+license = "Apache-2.0"
 dependencies = [
     "numpy>=1.26",
     "polars>=1.0",

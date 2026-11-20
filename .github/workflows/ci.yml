@@ -21,3 +21,5 @@ jobs:
         run: uv sync --frozen
       - name: Tests (synthetic data, no MAC download)
         run: uv run pytest -q
+      - name: End-to-end (every command on synthetic files)
+        run: uv run pytest -q -m e2e
