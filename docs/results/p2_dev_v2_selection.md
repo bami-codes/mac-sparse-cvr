@@ -1,6 +1,6 @@
 # Results: p2_train00_02 (V2 = selection data, not a test)
 
-- commit `ee19ebd`
+- commit `0ecd2b3`
 - rows: {'train': 11608164, 'v1': 4054643, 'v2': 4090475}, vocab `94ab75eba1db5c01`, smoke user % = None
 - data: train: train-00.parquet, train-01.parquet, train-02.parquet; v1: train-03.parquet; v2: train-04.parquet
 - **G1 groups**: `ad_feat1` with training clicks ≥ 500 and training positives < 20 (selected on training files only): 949 groups, 8.94% of training clicks

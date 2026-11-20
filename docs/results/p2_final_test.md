@@ -1,6 +1,6 @@
 # Final evaluation (test): train-12.parquet
 
-- evaluation code `e009a7e`
+- evaluation code `aea0370`
 - freeze.json sha256 `2e5bcd85c5fe68a0`, eval file sha256 `bc88690125f6defd`, rows 3544371
 - primary: M2both (ii) vs M2 (ii) on G1 macro LogLoss (equal weight over G1 groups), lower is better
 - **diff = -0.000145, 95% CI [-0.000292, +0.000010], per seed pair [-0.000166, -0.000104, -0.000165] → success: False**

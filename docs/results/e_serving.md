@@ -51,7 +51,7 @@
 - 요청마다 다른 사용자를 쓰고, 후보 100개는 V2 행 20,000개에서 뽑는다. 요청은 V2의 실제 행으로 만든 합성 요청이다.
 - 모델은 블록 단위로 ABBA 순서로 번갈아 잰다. 두 경로는 블록 안에서 요청마다 번갈아 잰다.
 - 구간은 블록 단위 부트스트랩으로 구했다. 측정 규약은 [DESIGN.md](../DESIGN.md)의 §18.12.1에 있다.
-- 기록: [records/serving_summary_linux.json](records/serving_summary_linux.json), 일치 검사 [records/serving_check_linux.json](records/serving_check_linux.json). 측정 코드는 커밋 `7506fd0`의 파일과 해시가 같다.
+- 기록: [records/serving_summary_linux.json](records/serving_summary_linux.json), 일치 검사 [records/serving_check_linux.json](records/serving_check_linux.json). 측정 코드는 커밋 `a15ffd4`의 파일과 해시가 같다.
 
 | 모델 | 경로 | p50 | p99 |
 |---|---|---|---|

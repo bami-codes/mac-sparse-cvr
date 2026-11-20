@@ -11,7 +11,9 @@
 | `v2_dryrun_q2.json` | `runs/e_study/frozen/dryrun_q2.json` | 공식 테스트 전 V2 예행: 재현한 값의 수, V2 GAUC | README의 검증 절차, 모델 선택 표 |
 | `serving_check_linux.json` | `runs/e_study/serving_v3/check_linux.json` | 서빙 확률과 평가 예측의 최대 차이, 허용 오차 | [e_serving.md](../e_serving.md) 정확성 |
 | `serving_summary_linux.json` | `runs/e_study/serving_v3/summary.json`의 `linux` | 세션별·경로별 지연 분포와 구간, 장비 정보 | e_serving.md 지연 |
+| `commit_map.tsv` | – | 기록이 가리키는 커밋 번호와 공개 저장소 커밋 번호의 대응 | 아래 설명 |
 
 - 지표와 구간의 계산 코드: [cvr/study_e_eval.py](../../../cvr/study_e_eval.py), [cvr/final_eval_e.py](../../../cvr/final_eval_e.py), [scripts/serving_e.py](../../../scripts/serving_e.py).
-- 기록 안의 `code_fingerprint`, `code_sha256`은 실행 당시 코드 파일의 해시다. 이후 린트와 형식을 정리한 커밋이 있어 현재 파일의 해시와는 다를 수 있다. 공식 테스트의 평가 코드는 커밋 `593f03f`, 서빙 측정 코드는 커밋 `7506fd0`의 파일과 해시가 같다.
+- 기록 안의 `code_fingerprint`, `code_sha256`은 실행 당시 코드 파일의 해시다. 이후 린트와 형식을 정리한 커밋이 있어 현재 파일의 해시와는 다를 수 있다. 공식 테스트의 평가 코드는 커밋 `0f3a36e`, 서빙 측정 코드는 커밋 `a15ffd4`의 파일과 해시가 같다.
 - 시간 단위는 ms다.
+- 공개 전에 커밋 작성자 이메일만 바꿨기 때문에 커밋 번호가 달라졌다. 소스 트리, 날짜, 메시지는 그대로다(커밋 137개 모두 트리 해시가 같음). 문서는 공개 저장소의 커밋 번호를 쓰고, JSON 기록 안의 `git.commit` 같은 값은 실행 당시 번호 그대로 둔다. 둘의 대응은 `commit_map.tsv`에 있다.

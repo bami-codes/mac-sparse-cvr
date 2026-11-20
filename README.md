@@ -1,5 +1,7 @@
 # 전환이 드문 광고 그룹을 위한 CVR 예측과 저지연 후보 점수화
 
+[![CI](https://github.com/bami-codes/mac-sparse-cvr/actions/workflows/ci.yml/badge.svg)](https://github.com/bami-codes/mac-sparse-cvr/actions/workflows/ci.yml)
+
 광고 전환율(CVR) 모델의 확률은 클릭은 많아도 전환이 드문 광고 그룹에서 쉽게 어긋난다. 이 저장소는 Alimama의 공개 데이터셋 [MAC](https://huggingface.co/datasets/alimamaTech/MAC)([논문](https://arxiv.org/abs/2603.02184))과 논문의 공식 모델로 세 가지를 한다. 공식 모델을 전체 규모로 재현하고, 전환이 드문 그룹의 확률 오차를 재서 보정하고, 한 사용자의 광고 후보 100개를 CPU 코어 하나로 수 ms 안에 점수화하는 예측기를 만든다.
 
 ## 한눈에

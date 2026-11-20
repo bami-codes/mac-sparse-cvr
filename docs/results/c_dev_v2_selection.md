@@ -1,6 +1,6 @@
 # Study C development run: c_dev_train08_10 (V2 = selection data, not a test)
 
-- commit `2d04928`
+- commit `ba554db`
 - rows {'train': 10499793, 'v1': 3445808, 'v2': 3544371}, vocab `83ebe08d2eae1073`, smoke user % None
 - domains `context_feat1` (training rows only): small = share < 1% and clicks ≥ 3000: **22** (8.65% of training clicks, 5567 positives); tiny 5; large 11
 - time 3294.8 s ({'vocab_features': 55.7, 'groups': 9.0, 'gbdt': 844.1, 'nn': 1782.2, 'calibration': 226.2, 'selection': 377.6, 'total': 3294.8}), peak memory 9.33 GB

@@ -1,6 +1,6 @@
 # Study C final evaluation (dryrun): train-12.parquet
 
-- evaluation code `4e03dea`
+- evaluation code `74960f7`
 - freeze.json `32011a9a6b716a91`; files {'train-12.parquet': 'bc88690125f6defd5208b6106d473fceb16c613b3da2f9049a7c8e2527bbecb1'}; rows 3544371 [3544371]
 - primary: G-shared (iii-d) - G-int (iii-d), lambda chosen on V2 per family on small-domain macro LogLoss (equal weight over small domains), lower is better
 - **difference -0.000018, 95% CI [-0.000145, +0.000105], per seed pair [-4.9e-05, 3.7e-05, -4.2e-05] -> tier: not_confirmed**

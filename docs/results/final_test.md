@@ -1,6 +1,6 @@
 # Final evaluation (test): test.parquet
 
-- evaluation code `fa22c11`
+- evaluation code `eeeb0d4`
 - freeze.json sha256 `66f0b7e8b933dff0`, eval file sha256 `c67dbee7bb83aedd`, rows 4064648
 - primary: M2 family (3 seed(s)): iii_lam100 vs (ii) global Platt on G1 macro LogLoss (equal weight over G1 groups), lower is better
 - **diff = -0.000100, 95% CI [-0.000154, -0.000049], per seed pair [-9.8e-05, -0.000103, -9.8e-05] → success: True**
