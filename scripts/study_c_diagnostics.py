@@ -95,10 +95,10 @@ def calib(run: Path) -> dict:
                 per[f"{name}|lam{lam:g}"] = {"old": a, "exact": b, "exact_minus_old": b - a}
             old_lam_scores[fam][lam], new_lam_scores[fam][lam] = float(np.mean(old_s)), float(np.mean(new_s))
     run_scores = sel["candidate_scores"]
-    old_lam = {f: min(lambdas, key=lambda l: old_lam_scores[f][l]) for f in families}
+    old_lam = {f: min(lambdas, key=lambda x: old_lam_scores[f][x]) for f in families}
     old_scores = {f: old_lam_scores[f][old_lam[f]] for f in D.PREFERENCE}
     # independent re-selection from the exact scores (same rules as cvr/study_c.py), compared with the run
-    new_lam = {f: min(lambdas, key=lambda l: new_lam_scores[f][l]) for f in families}
+    new_lam = {f: min(lambdas, key=lambda x: new_lam_scores[f][x]) for f in families}
     new_scores = {f: new_lam_scores[f][new_lam[f]] for f in D.PREFERENCE}
     new_cand = D.choose_candidate(new_scores)
     stored_lam = {f: float(v) for f, v in sel["lambda_iiid"].items()}
@@ -118,8 +118,8 @@ def calib(run: Path) -> dict:
              "global_platt_slope": {"min": min(slopes.values()), "max": max(slopes.values()),
                                     "below_MIN_SLOPE": sorted(n for n, a in slopes.items() if a < MIN_SLOPE)},
              "exact_minus_old_small_macro": {"max_abs_single_seed": float(np.max(np.abs(diffs))),
-                                             "max_abs_seed_mean": max(abs(new_lam_scores[f][l] - old_lam_scores[f][l])
-                                                                      for f in families for l in lambdas)},
+                                             "max_abs_seed_mean": max(abs(new_lam_scores[f][x] - old_lam_scores[f][x])
+                                                                      for f in families for x in lambdas)},
              "candidate_with_old_solver": D.choose_candidate(old_scores), "lambda_with_old_solver": old_lam,
              "candidate_recomputed_exact": new_cand, "lambda_recomputed_exact": new_lam,
              "candidate_stored": sel["candidate"], "lambda_stored": stored_lam,
@@ -138,7 +138,7 @@ def star(run: Path) -> dict:
         path = next((run / "models").glob(f"N-star_s{s}_e*.json")).with_suffix("")
         pn = load_md_model(path).net.pn
         ids = pn.global_dims.clone()
-        g_mu, g_var = pn.global_stats()
+        _g_mu, g_var = pn.global_stats()
         with torch.no_grad():
             var_d = pn._var(pn.dom_mean, pn.dom_msq)
             updated = pn.dom_updates > 0

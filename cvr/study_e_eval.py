@@ -254,8 +254,8 @@ def calibrate(choice_path: Path) -> dict:
         c = choice[model]
         return float(np.mean([rows[f"{run_id(model, c['lr'], c['lamda'], s)}|{name}"][path[0]][path[1]] for s in SEEDS]))
 
-    lam = {m: {meth: {"main": min(LAMBDAS, key=lambda l: seed_mean(m, f"{meth}_lam{l:g}")),
-                      "aggregate": min(LAMBDAS, key=lambda l: seed_mean(m, f"{meth}_lam{l:g}", ("G1", "poisson_mean")))}
+    lam = {m: {meth: {"main": min(LAMBDAS, key=lambda x: seed_mean(m, f"{meth}_lam{x:g}")),
+                      "aggregate": min(LAMBDAS, key=lambda x: seed_mean(m, f"{meth}_lam{x:g}", ("G1", "poisson_mean")))}
                for meth in METHODS} for m in choice}
     for rid, (glob, fits) in fitted.items():  # the chosen calibrators, saved for the test
         model = rid.split("_")[0]

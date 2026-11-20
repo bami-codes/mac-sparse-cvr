@@ -46,7 +46,7 @@ def test_pad_steps_do_not_change_output():
 
 def test_mean_pooling_is_average_over_valid_steps():
     net = _net("mean")
-    other, target, seq, mm, num = _batch()
+    _other, _target, seq, mm, _num = _batch()
     k = net.key_proj(torch.cat([e(seq[..., i]) for i, e in enumerate(net.id_emb)] + [mm], dim=-1))
     valid = (seq[..., 0] != MISSING).float()
     expected = (k * valid.unsqueeze(-1)).sum(1) / valid.sum(1, keepdim=True).clamp(min=1)

@@ -110,6 +110,7 @@ def test_predictions_in_another_row_order_are_refused(tmp_path, monkeypatch):
 # ------------------------------------------------------------------ choose -> calibrate -> freeze -> dry run -> test
 def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
     from sklearn.metrics import roc_auc_score
+
     from cvr import final_eval_e as F
     tok, base, y, user = frame(20_000, 9)
     test = tmp / "test" / "test.parquet"

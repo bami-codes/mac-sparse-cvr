@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import device_compare as C  # noqa: E402
+import device_compare as C
 
 
 def pair():

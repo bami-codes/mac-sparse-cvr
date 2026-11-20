@@ -5,10 +5,21 @@ import pytest
 import torch
 from torch import nn
 
-from cvr.mddata import MDArrays
 from cvr.checks import NN_SINGLE_VS_BATCH_TOL
-from cvr.mdnet import (PN_EPS, PN_MIN_ROWS, MDModel, MDNet, PartitionedNorm, accumulate_steps, domain_batches,
-                       load_md_model, make_optimizers, save_md_model, train_step)
+from cvr.mddata import MDArrays
+from cvr.mdnet import (
+    PN_EPS,
+    PN_MIN_ROWS,
+    MDModel,
+    MDNet,
+    PartitionedNorm,
+    accumulate_steps,
+    domain_batches,
+    load_md_model,
+    make_optimizers,
+    save_md_model,
+    train_step,
+)
 from cvr.schema import MISSING, UNKNOWN
 
 CAT_SIZES = [7, 10, 20]  # column 0 is the domain: codes 2..5 have training rows; 0 (UNKNOWN), 1 and 6 have none

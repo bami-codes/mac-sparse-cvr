@@ -96,7 +96,8 @@ def run(jobs: list[dict], gpus: int, extra: list[str] | None = None) -> None:
             j = pending.pop(0)
             st = state(j)
             (RUNS / j["id"]).mkdir(parents=True, exist_ok=True)
-            log = open(RUNS / f"{j['id']}.log", "a")
+            # the log stays open as the job's stdout until the job ends
+            log = open(RUNS / f"{j['id']}.log", "a")  # noqa: SIM115
             log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {st} on GPU {g}\n")
             log.flush()
             env = os.environ | {"CUDA_VISIBLE_DEVICES": str(g)}

@@ -55,7 +55,7 @@ def encode_m3(raw: pl.DataFrame, feats: pl.DataFrame, id_vocab: dict[str, pl.Dat
     tgt_cols, seq_cols, coverage = [], [], {}
     for tgt, seq in SEQ_PAIRS:
         v = id_vocab[tgt]
-        enc = lambda e: e.replace_strict(v["value"], v["code"], default=UNKNOWN, return_dtype=pl.Int32)  # noqa: E731
+        enc = lambda e, v=v: e.replace_strict(v["value"], v["code"], default=UNKNOWN, return_dtype=pl.Int32)  # noqa: E731
         tgt_cols.append(raw.select(enc(pl.col(tgt)))[tgt].to_numpy())
         s = raw.select(enc(pl.col(seq).explode()))[seq].to_numpy().reshape(n, SEQ_LEN)
         seq_cols.append(s)

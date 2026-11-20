@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import lightgbm
@@ -23,18 +23,18 @@ import scipy
 import sklearn
 
 from . import artifacts as A
-from .artifacts import load_stacking, save_stacking
 from . import groups as G
 from . import metrics as M
 from . import vocab as V
-from .checks import RELOAD_TOL, require_close, require_finite_probs
+from .artifacts import load_stacking, save_stacking
 from .calibration import FreqAware, GlobalPlatt, GroupShrunkPlatt, load_calibrators, save_calibrators
+from .checks import RELOAD_TOL, require_close, require_finite_probs
 from .features import featurize, read_raw
-from .models import GBDT, LogReg, SmoothedRate
 from .m3data import ID_COLS, OTHER_CATS, concat_arrays, count_ids, encode_m3, save_arrays
+from .models import GBDT, LogReg, SmoothedRate
 from .schema import CAT_INPUTS, GROUP_KEY, NUM_INPUTS, SEQ_PAIRS, SHOP_KEY, VOCAB_COLS
-from .sysinfo import peak_rss_gb
 from .stacking import AUX_INPUTS, TE_INPUTS, fit_stacking
+from .sysinfo import peak_rss_gb
 
 ROLES = ["train", "v1", "v2"]
 RELOAD_ROWS = 50_000  # V2 rows used to compare in-memory vs reloaded predictions
@@ -91,7 +91,7 @@ def main(config_path: str) -> Path:
     t0 = time.time()
     git_at_start = git_state()  # recorded before any work, so later edits do not leak into provenance
     cfg = tomllib.loads(Path(config_path).read_text())
-    run_dir = Path("runs") / cfg["name"] / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = Path("runs") / cfg["name"] / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True)
     (run_dir / "config.toml").write_text(Path(config_path).read_text())
     timings: dict[str, float] = {}
@@ -322,7 +322,7 @@ def main(config_path: str) -> Path:
         base = min(sc["candidates"], key=lambda f: seed_mean(f, "ii"))
     else:
         base = min(fams, key=lambda f: seed_mean(f, "raw"))
-    lam = min(lambdas, key=lambda l: seed_mean(base, f"iii_lam{l:g}"))
+    lam = min(lambdas, key=lambda x: seed_mean(base, f"iii_lam{x:g}"))
     method = min([f"iii_lam{lam:g}", "iv"], key=lambda s: seed_mean(base, s))
     if sc.get("mode") == "model_variant":
         ref = sc["reference"]
@@ -335,7 +335,7 @@ def main(config_path: str) -> Path:
         "selected_on": "V2 primary metric (G1 macro LogLoss), averaged over base-model seeds",
         "base_candidates": list(fams), "base_model": base, "lambda_iii": lam, "calibration_method": method,
         "seed_means": {f"{f}|{s}": seed_mean(f, s) for f in fams
-                       for s in ["raw", "ii", "iv"] + [f"iii_lam{l:g}" for l in lambdas]},
+                       for s in ["raw", "ii", "iv"] + [f"iii_lam{x:g}" for x in lambdas]},
         "groups": group_summary["definition"], "vocab_fingerprint": V.fingerprint(vocab),
         "id_vocab_fingerprint": V.fingerprint(id_vocab) if use_m3 else None,
         "lgb_params": lgb_params, "m3": m3c or None, "primary": primary_cmp,
@@ -438,7 +438,7 @@ def render_markdown(out: dict, seeds: list[int], lambdas: list[float]) -> str:
                 "M2aux": [f"M2aux_s{s}" for s in seeds], "M2te": [f"M2te_s{s}" for s in seeds],
                 "M2both": [f"M2both_s{s}" for s in seeds],
                 "M3_attn": [f"M3_attn_s{s}" for s in seeds], "M3_mean": [f"M3_mean_s{s}" for s in seeds]}
-    suffixes = ["raw", "ii"] + [f"iii_lam{l:g}" for l in lambdas] + ["iv"]
+    suffixes = ["raw", "ii"] + [f"iii_lam{x:g}" for x in lambdas] + ["iv"]
     for fam, names in families.items():
         for suf in suffixes:
             keys = [f"{n}|{suf}" for n in names if f"{n}|{suf}" in rows]

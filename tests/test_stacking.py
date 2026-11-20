@@ -24,7 +24,7 @@ def test_users_stay_in_one_fold():
 
 def test_out_of_fold_group_rate_does_not_see_own_labels():
     df = _frame()
-    out, models, info = fit_stacking(df, {}, 0, 3, 10, 5, use_aux=False, use_te=True)
+    out, models, _info = fit_stacking(df, {}, 0, 3, 10, 5, use_aux=False, use_te=True)
     own = out.filter(pl.col("ad_feat1") == 7)
     # group 7 never appears outside fold 0, so its OOF rate is the out-of-fold prior, not ~1.0
     assert own["te_ad_feat1"].max() < 0.5

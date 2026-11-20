@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from synthetic_mac import make_file, make_world, write_official_vocabs  # noqa: E402
+from synthetic_mac import make_file, make_world, write_official_vocabs
 
-from cvr import pymal_run as R  # noqa: E402
+from cvr import pymal_run as R
 
 REPO = Path(__file__).resolve().parents[1]
 

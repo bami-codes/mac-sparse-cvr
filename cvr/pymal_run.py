@@ -115,7 +115,7 @@ def preprocess(mac: Path, cache: Path, files: list[str]) -> dict:
         os.makedirs(out.parent, exist_ok=True)
         with open(out, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        meta = {"source": name, "source_sha256": sha256(src), "cache_sha256": sha256(out), "rows": int(len(df))}
+        meta = {"source": name, "source_sha256": sha256(src), "cache_sha256": sha256(out), "rows": len(df)}
         out.with_name(out.name + ".json").write_text(json.dumps(meta, indent=2))
         rec["files"][name] = meta | {"seconds": round(time.time() - t1, 1), "cache_bytes": out.stat().st_size,
                                      "peak_rss_gb_so_far": peak_rss_gb(), "container_peak_gb": container_peak_memory_gb()}
@@ -326,7 +326,7 @@ def train(a) -> Path:
             state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "schedule": schedule.state_dict(),
                      "steps": steps, "next_file": idx + 1, "rng_cpu": torch.get_rng_state(),
                      "rng_cuda": torch.cuda.get_rng_state(device) if device.type == "cuda" else None}
-            atomic_write(out / "resume.pt", lambda p: torch.save(state, p))
+            atomic_write(out / "resume.pt", lambda p, s=state: torch.save(s, p))
         rec["steps"] = steps
         rec["learning_rates_now"] = [g["lr"] for g in optimizer.param_groups]  # [embedding table, other]
         atomic_write(out / "progress.json", lambda p: p.write_text(json.dumps(rec, indent=2, default=str)))

@@ -99,7 +99,7 @@ def test_input_problems_are_refused_before_the_single_run_is_claimed(setup, tmp_
     with pytest.raises(CheckFailed, match="does not exist"):  # must not use up the single run
         F.evaluate(run, [files[0], tmp_path / "missing" / "train-14.parquet"], "test")
     renamed = _holdout(tmp_path / "dev", {"train-13.parquet": b"development data", "train-14.parquet": OFFICIAL["train-14.parquet"]})
-    with pytest.raises(CheckFailed, match="bytes|SHA-256"):  # development data under a holdout name
+    with pytest.raises(CheckFailed, match=r"bytes|SHA-256"):  # development data under a holdout name
         F.evaluate(run, renamed, "test")
     same_size = _holdout(tmp_path / "dev2", {"train-13.parquet": b"official day 1X", "train-14.parquet": OFFICIAL["train-14.parquet"]})
     with pytest.raises(CheckFailed, match="SHA-256"):
@@ -250,8 +250,8 @@ def test_at_most_three_latency_attempts_and_the_same_rule_as_the_measuring_scrip
     import copy
 
     import scripts.latency_c as L
-    assert (F.LATENCY_MAX_ATTEMPTS, F.LATENCY_REQUESTS, F.ACCEPT_OTHER_CPU, F.LATENCY_PROTOCOL_VERSION) == (
-        L.MAX_ATTEMPTS, L.REQUESTS, L.ACCEPT_OTHER_CPU, L.PROTOCOL["version"])
+    assert (
+        L.MAX_ATTEMPTS, L.REQUESTS, L.ACCEPT_OTHER_CPU, L.PROTOCOL["version"]) == (F.LATENCY_MAX_ATTEMPTS, F.LATENCY_REQUESTS, F.ACCEPT_OTHER_CPU, F.LATENCY_PROTOCOL_VERSION)
     run, sel, rep = _provenance_run(tmp_path)
     busy = {"load_average": [5.0] * 3, "cpu_count": 10, "other_repo_python": [], "other_cpu_percent": 460.0}
     ok = rep["families"]["G-int"]["attempts"][0]

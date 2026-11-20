@@ -14,7 +14,7 @@ import json
 import sys
 import time
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -84,10 +84,10 @@ def run_setting(name: str, fams: dict, data: dict, eval_mask: dict, groups: dict
 
         sel = {"main": {}, "aggregate": {}}
         for method in ("iiid", "iii0"):
-            sel["main"][method] = min(LAMBDAS, key=lambda l: seed_metric("v2", method, l, "macro"))
-            sel["aggregate"][method] = min(LAMBDAS, key=lambda l: seed_metric("v2", method, l, "poisson"))
-        v2_table = {f"{m}|lam{l:g}": {k: seed_metric("v2", m, l, k) for k in ("macro", "click", "poisson", "pooled_O_over_E")}
-                    for m in ("iiid", "iii0") for l in LAMBDAS} | {
+            sel["main"][method] = min(LAMBDAS, key=lambda x: seed_metric("v2", method, x, "macro"))
+            sel["aggregate"][method] = min(LAMBDAS, key=lambda x: seed_metric("v2", method, x, "poisson"))
+        v2_table = {f"{m}|lam{x:g}": {k: seed_metric("v2", m, x, k) for k in ("macro", "click", "poisson", "pooled_O_over_E")}
+                    for m in ("iiid", "iii0") for x in LAMBDAS} | {
             "ii": {k: seed_metric("v2", "ii", None, k) for k in ("macro", "click", "poisson", "pooled_O_over_E")}}
 
         def preds(method: str, rule: str = "main") -> list[np.ndarray]:
@@ -257,7 +257,7 @@ def main(run_c: str, run_1: str, out_root: str) -> None:
     r = {"git": {"commit": git, "dirty_files": dirty}, "runs": {"C": run_c, "1": run_1},
          "checks": {"C": mc, "1": m1}, "settings": {"C": sc, "1": s1}, "verdict": verdict(sc["G-int"]),
          "seconds": round(time.time() - t0, 1)}
-    out = Path(out_root) / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = Path(out_root) / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out.mkdir(parents=True)
     (out / "results.json").write_text(json.dumps(r, indent=2, default=str))
     (out / "results.md").write_text(render(r))

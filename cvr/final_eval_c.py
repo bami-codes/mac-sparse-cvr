@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from datetime import UTC
 from pathlib import Path
 
 import numpy as np
@@ -39,8 +40,15 @@ import polars as pl
 from . import domain_eval as D
 from . import groups as G
 from .artifacts import load_gbdt
-from .checks import (NN_SINGLE_VS_BATCH_TOL, NUM_TOL, PRED_TOL, CheckFailed, require_close, require_commit,
-                     require_finite_probs)
+from .checks import (
+    NN_SINGLE_VS_BATCH_TOL,
+    NUM_TOL,
+    PRED_TOL,
+    CheckFailed,
+    require_close,
+    require_commit,
+    require_finite_probs,
+)
 from .domain_models import load_domain_calibrators, load_gbdt_offset
 from .features import featurize, read_raw
 from .mddata import DOM_COL, encode_md, load_md, save_md
@@ -96,7 +104,7 @@ def expect(run: Path) -> dict:
     if out.exists():
         raise CheckFailed(f"{out} already exists")
     import urllib.request
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     with urllib.request.urlopen(HF_TREE, timeout=60) as r:
         items = json.loads(r.read())
@@ -107,7 +115,7 @@ def expect(run: Path) -> dict:
             raise CheckFailed(f"{name} not found once in {HF_TREE}")
         files[name] = {"size": int(hit[0]["size"]), "sha256": hit[0]["lfs"]["oid"]}
     root = Path(json.loads((run / "results.json").read_text())["meta"]["data"]["v2"][0]["file"]).parent
-    rec = {"source": HF_TREE, "fetched_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    rec = {"source": HF_TREE, "fetched_utc": datetime.now(UTC).isoformat(timespec="seconds"),
            "files": files, "local_copy_present_when_recorded": {n: (root / n).exists() for n in HOLDOUT}}
     out.write_text(json.dumps(rec, indent=2))
     return rec
@@ -344,8 +352,8 @@ def claim_test(run: Path) -> Path:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         raise CheckFailed(f"{lock} exists: another process holds or used the single run") from None
-    from datetime import datetime, timezone
-    os.write(fd, json.dumps({"pid": os.getpid(), "claimed_utc": datetime.now(timezone.utc).isoformat()}).encode())
+    from datetime import datetime
+    os.write(fd, json.dumps({"pid": os.getpid(), "claimed_utc": datetime.now(UTC).isoformat()}).encode())
     os.close(fd)
     return lock
 

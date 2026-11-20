@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 API = "https://api.runpod.io/v2"
@@ -85,7 +85,7 @@ def spent(led: dict, at: float | None = None) -> float:
 
 
 def stamp(t: float | None) -> str | None:
-    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if t else None
+    return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%d %H:%M UTC") if t else None
 
 
 # ------------------------------------------------------------------ commands

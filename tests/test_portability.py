@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, "scripts")
-import fetch_mac as F  # noqa: E402
+import fetch_mac as F
 
-from cvr import sysinfo  # noqa: E402
+from cvr import sysinfo
 
 
 def test_peak_memory_units_follow_the_os(monkeypatch):

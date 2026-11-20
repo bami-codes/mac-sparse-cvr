@@ -197,7 +197,7 @@ def main(argv: list[str]) -> None:
             continue
         try:
             out = predict(server, json.loads(line), a.calibration)
-        except Exception as e:  # noqa: BLE001 - a bad request gets an error line, the rest keep being served
+        except Exception as e:
             out = {"error": f"{type(e).__name__}: {e}"}
         print(json.dumps(out), flush=True)
 

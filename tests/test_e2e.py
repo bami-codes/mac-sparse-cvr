@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from synthetic_mac import make_mac_tree  # noqa: E402
+from synthetic_mac import make_mac_tree
 
 pytestmark = pytest.mark.e2e
 REPO = Path(__file__).resolve().parents[1]

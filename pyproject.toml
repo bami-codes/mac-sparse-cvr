@@ -1,7 +1,7 @@
 [project]
 name = "sparse-cvr"
 version = "0.1.0"
-description = "Sparse-group CVR prediction and conversion-signal analysis on the MAC benchmark"
+description = "CVR prediction, calibration and low-latency serving for sparse ad groups on the MAC benchmark"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "numpy>=1.26",
@@ -25,3 +25,30 @@ pythonpath = ["."]
 testpaths = ["tests"]  # runs/ may hold review snapshots with their own copies of the tests
 markers = ["e2e: every command of both studies on synthetic files, a few minutes (uv run pytest -m e2e)"]
 addopts = "-m 'not e2e'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "SIM", "RUF"]
+ignore = [
+    "E501",    # long lines: code is wrapped by ruff format; long strings and comments are allowed
+    "B905",    # zip(strict=): some zips truncate on purpose, so it is decided per call, not globally
+    "RUF001", "RUF002", "RUF003",  # typographic minus and multiplication signs in Korean output are intended
+    "RUF005",  # list concatenation style
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]    # imports after sys.path setup for the synthetic data helpers
+"scripts/*" = ["E402"]
+# helpers defined inside a loop and called in the same iteration (each case reviewed)
+"cvr/final_eval.py" = ["B023"]
+"cvr/pipeline.py" = ["B023"]
+"scripts/calibration_data_study.py" = ["B023"]
+"scripts/study_d.py" = ["B023"]
+"tests/test_calibration_exact.py" = ["B023"]
+"tests/test_m3data.py" = ["B023"]
+"tests/test_study_d.py" = ["B023"]
+"cvr/domain_eval.py" = ["E741"]  # O and E are the observed and expected counts, as in the formulas

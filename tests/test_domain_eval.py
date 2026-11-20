@@ -94,7 +94,7 @@ def test_users_seen_in_both_test_files_are_one_cluster():
 
 
 def test_leave_one_domain_out_matches_manual_removal():
-    y, pa, pb, dom, cls, users = _eval_data()
+    y, pa, pb, dom, cls, _users = _eval_data()
     out = D.leave_one_domain_out(y, pa, pb, dom, cls)
     small = cls == "small"
     for removed in (3, 4, 5):

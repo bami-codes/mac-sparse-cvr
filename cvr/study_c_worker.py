@@ -26,7 +26,6 @@ from .checks import RELOAD_TOL, require_close, require_finite_probs
 from .mddata import load_md
 from .mdnet import MDModel, load_md_model, save_md_model
 
-
 PREDICT_BATCH = 16384
 
 

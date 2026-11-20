@@ -25,9 +25,9 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from synthetic_mac import PAD, make_file, make_world, write_official_vocabs  # noqa: E402
+from synthetic_mac import PAD, make_file, make_world, write_official_vocabs
 
-from cvr import pymal_run as R  # noqa: E402
+from cvr import pymal_run as R
 
 TRAIN = ["train-00.parquet", "train-01.parquet", "train-02.parquet"]
 MOAE = ["--model", "MoAE", "--lr", "0.003", "--lamda", "0.3", "--aux_views", "first", "mta", "linear", "cartesian",
@@ -57,12 +57,12 @@ def ours(tree, out: Path, files: list[str], ckpt_after: list[str]) -> Path:
 
 
 def test_the_runner_trains_exactly_like_the_official_run_py(tree, tmp_path, monkeypatch):
-    root, mac = tree
+    root, _mac = tree
     out = ours(tree, tmp_path / "ours", TRAIN, [TRAIN[-1]])
     our_loss = np.concatenate([np.load(out / f"loss_{Path(n).stem}.npy") for n in TRAIN])
     our_state = torch.load(out / "model_after_train-02.pt")
 
-    D, U = R.official()
+    _D, _U = R.official()
     import utils.trainer as T
     monkeypatch.setattr(T, "TRAIN_DATA", TRAIN)
 
@@ -110,7 +110,7 @@ def test_predictions_keep_the_row_order_and_match_a_direct_forward_pass(tree, tm
     rec = R.predict(predict_args(mac, tmp_path / "pred", [ckpt], "train-02.parquet"))[str(ckpt)]
     z = np.load(tmp_path / "pred" / f"{ckpt.stem}_{R.sha256(ckpt)[:12]}" / "train-02.npz")
 
-    D, U = R.official()
+    D, _U = R.official()
     import pickle
     with open(mac / "cached" / "train-02.pkl", "rb") as f:
         ds = D.MALDataset(pickle.load(f))

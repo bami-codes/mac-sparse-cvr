@@ -79,8 +79,8 @@ def _init(out: str, seeds: list[int]) -> None:
 def subsample(frac: float, rep: int) -> np.ndarray:
     if frac >= 1.0:
         return np.ones(_S["u1"].size, bool)
-    rng = np.random.default_rng([SUB_SEED, rep, int(round(frac * 1000))])
-    pick = rng.choice(_S["users"], size=int(round(frac * _S["users"].size)), replace=False)
+    rng = np.random.default_rng([SUB_SEED, rep, round(frac * 1000)])
+    pick = rng.choice(_S["users"], size=round(frac * _S["users"].size), replace=False)
     return np.isin(_S["u1"], pick)
 
 

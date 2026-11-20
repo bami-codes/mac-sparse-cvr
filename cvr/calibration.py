@@ -162,7 +162,8 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
         # start inside the bound: if the global slope is below MIN_SLOPE, a zero offset is already infeasible
         x = np.array([max(0.0, lo), 0.0])
         f = obj(zg, yg, x)
-        for it in range(max_iter):
+        # `it` is read after the loop for the iteration count
+        for it in range(max_iter):  # noqa: B007
             g, H = grad_hess(zg, yg, x)
             pg, on_bound = projected(x, g)
             if np.abs(pg).max() < tol:
@@ -227,7 +228,8 @@ def fit_group_intercept_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, 
         rows = order[bounds[k]:bounds[k + 1]]
         s0, yg = base.a * z[rows] + base.b, y[rows].astype(float)
         x, f = 0.0, obj(s0, yg, 0.0)
-        for it in range(max_iter):
+        # `it` is read after the loop for the iteration count
+        for it in range(max_iter):  # noqa: B007
             q = expit(s0 + x)
             g = float((q - yg).sum() + 2 * lam * x)
             if abs(g) < tol:

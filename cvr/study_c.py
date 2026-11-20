@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import lightgbm
@@ -29,8 +29,14 @@ from . import vocab as V
 from .artifacts import load_gbdt, save_gbdt
 from .calibration import GlobalPlatt, fit_group_shrunk_exact
 from .checks import RELOAD_TOL, require_close, require_finite_probs
-from .domain_models import (G_SHARED_INPUTS, GBDTOffset, load_domain_calibrators, load_gbdt_offset,
-                            save_domain_calibrators, save_gbdt_offset)
+from .domain_models import (
+    G_SHARED_INPUTS,
+    GBDTOffset,
+    load_domain_calibrators,
+    load_gbdt_offset,
+    save_domain_calibrators,
+    save_gbdt_offset,
+)
 from .features import featurize, read_raw
 from .mddata import DOM_COL, concat_md, encode_md, save_md
 from .models import GBDT
@@ -58,7 +64,7 @@ def main(config_path: str) -> Path:
     t0 = time.time()
     git_at_start = git_state()
     cfg = tomllib.loads(Path(config_path).read_text())
-    run_dir = Path("runs") / cfg["name"] / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = Path("runs") / cfg["name"] / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True)
     (run_dir / "config.toml").write_text(Path(config_path).read_text())
     timings: dict[str, float] = {}
@@ -223,7 +229,7 @@ def main(config_path: str) -> Path:
     def seed_mean(fam: str, suffix: str, path=("small", "macro_logloss")) -> float:
         return float(np.mean([rows[f"{n}|{suffix}"][path[0]][path[1]] for n in family_seeds(fam, seeds)]))
 
-    lam_of = {fam: min(lambdas, key=lambda l: seed_mean(fam, f"iiid_lam{l:g}")) for fam in families}
+    lam_of = {fam: min(lambdas, key=lambda x: seed_mean(fam, f"iiid_lam{x:g}")) for fam in families}
     scores = {fam: seed_mean(fam, f"iiid_lam{lam_of[fam]:g}") for fam in D.PREFERENCE}
     cand = D.choose_candidate(scores)
     ctrl = D.INT_OF[cand]

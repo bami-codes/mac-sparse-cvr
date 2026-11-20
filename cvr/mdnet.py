@@ -49,6 +49,7 @@ Run this module in a process that does not use LightGBM (see cvr/m3_worker.py fo
 """
 
 import copy
+import itertools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -201,7 +202,7 @@ class MDNet(nn.Module):
         d_in = dim * len(self.in_cols) + n_num
         dims = [d_in, *hidden, 1]
         if variant in ("star", "star_nopn"):
-            self.layers = nn.ModuleList([StarLinear(n_dom, a, b, sparse) for a, b in zip(dims[:-1], dims[1:])])
+            self.layers = nn.ModuleList([StarLinear(n_dom, a, b, sparse) for a, b in itertools.pairwise(dims)])
             self.pn = PartitionedNorm(n_dom, d_in, sparse) if variant == "star" else None
             if self.pn is not None:
                 start = self.in_cols.index(dom_col) * dim
@@ -210,7 +211,7 @@ class MDNet(nn.Module):
             self.aux = nn.Sequential(nn.Linear(dim, aux_hidden), nn.ReLU(), nn.Linear(aux_hidden, 1))
         else:
             body = []
-            for a, b in zip(dims[:-2], dims[1:-1]):
+            for a, b in itertools.pairwise(dims[:-1]):  # hidden layers; the output layer follows
                 body += [nn.Linear(a, b), nn.ReLU()]
             self.body = nn.Sequential(*body)
             self.out = nn.Linear(dims[-2], 1)
