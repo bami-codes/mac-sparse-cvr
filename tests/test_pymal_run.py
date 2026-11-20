@@ -30,8 +30,21 @@ from synthetic_mac import PAD, make_file, make_world, write_official_vocabs
 from cvr import pymal_run as R
 
 TRAIN = ["train-00.parquet", "train-01.parquet", "train-02.parquet"]
-MOAE = ["--model", "MoAE", "--lr", "0.003", "--lamda", "0.3", "--aux_views", "first", "mta", "linear", "cartesian",
-        "--batch_size", "256"]
+MOAE = [
+    "--model",
+    "MoAE",
+    "--lr",
+    "0.003",
+    "--lamda",
+    "0.3",
+    "--aux_views",
+    "first",
+    "mta",
+    "linear",
+    "cartesian",
+    "--batch_size",
+    "256",
+]
 
 
 @pytest.fixture(scope="module")
@@ -50,9 +63,26 @@ def tree(tmp_path_factory):
 
 def ours(tree, out: Path, files: list[str], ckpt_after: list[str]) -> Path:
     _, mac = tree
-    a = R.parser().parse_args(["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(out),
-                               "--device", "cpu", "--num_workers", "0", *MOAE, "--train_files", *files,
-                               "--ckpt_after", *ckpt_after])
+    a = R.parser().parse_args(
+        [
+            "train",
+            "--mac",
+            str(mac),
+            "--cache",
+            str(mac / "cached"),
+            "--out",
+            str(out),
+            "--device",
+            "cpu",
+            "--num_workers",
+            "0",
+            *MOAE,
+            "--train_files",
+            *files,
+            "--ckpt_after",
+            *ckpt_after,
+        ]
+    )
     return R.train(a)
 
 
@@ -64,20 +94,43 @@ def test_the_runner_trains_exactly_like_the_official_run_py(tree, tmp_path, monk
 
     _D, _U = R.official()
     import utils.trainer as T
+
     monkeypatch.setattr(T, "TRAIN_DATA", TRAIN)
 
     def cpu(args):
         return tuple("cpu" if str(x).startswith("cuda") else x for x in args)
+
     tensor_to, module_to = torch.Tensor.to, torch.nn.Module.to
     monkeypatch.setattr(torch.Tensor, "to", lambda self, *a, **k: tensor_to(self, *cpu(a), **k))
     monkeypatch.setattr(torch.nn.Module, "to", lambda self, *a, **k: module_to(self, *cpu(a), **k))
     scalars = []
     board = types.ModuleType("torch.utils.tensorboard")
-    board.SummaryWriter = lambda *a, **k: types.SimpleNamespace(add_scalar=lambda tag, v, step: scalars.append((tag, v)))
+    board.SummaryWriter = lambda *a, **k: types.SimpleNamespace(
+        add_scalar=lambda tag, v, step: scalars.append((tag, v))
+    )
     monkeypatch.setitem(sys.modules, "torch.utils.tensorboard", board)
-    monkeypatch.setattr(sys, "argv", ["run.py", "--path", str(root), "--model", "MoAE", "--lr", "0.003",
-                                      "--lamda", "0.3", "--aux_views", "first", "mta", "linear", "cartesian",
-                                      "--batch_size", "256"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--path",
+            str(root),
+            "--model",
+            "MoAE",
+            "--lr",
+            "0.003",
+            "--lamda",
+            "0.3",
+            "--aux_views",
+            "first",
+            "mta",
+            "linear",
+            "cartesian",
+            "--batch_size",
+            "256",
+        ],
+    )
     # not run as __main__: macOS DataLoader workers start by spawn and re-run the main module, and run.py has no
     # __main__ guard, so every worker would start the whole training again (the test hung that way)
     g = runpy.run_path(str(R.PYMAL / "run.py"), run_name="pymal_official_run")  # trains, then prints test metrics
@@ -104,6 +157,7 @@ def test_predictions_keep_the_row_order_and_match_a_direct_forward_pass(tree, tm
     from sklearn.metrics import roc_auc_score
 
     from cvr.metrics import gauc
+
     _, mac = tree
     run = ours(tree, tmp_path / "run", TRAIN[:2], ["train-01.parquet"])
     ckpt = run / "model_after_train-01.pt"
@@ -112,6 +166,7 @@ def test_predictions_keep_the_row_order_and_match_a_direct_forward_pass(tree, tm
 
     D, _U = R.official()
     import pickle
+
     with open(mac / "cached" / "train-02.pkl", "rb") as f:
         ds = D.MALDataset(pickle.load(f))
     vocab_user = json.loads((mac / "vocabs" / "user_id.json").read_text())
@@ -135,9 +190,23 @@ def test_predictions_keep_the_row_order_and_match_a_direct_forward_pass(tree, tm
 
 
 def predict_args(mac: Path, out: Path, ckpts: list[Path], *rest: str) -> argparse.Namespace:
-    return R.parser().parse_args(["predict", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(out),
-                                  "--device", "cpu", "--num_workers", "0", *[x for c in ckpts for x in ("--ckpt", str(c))],
-                                  *rest])
+    return R.parser().parse_args(
+        [
+            "predict",
+            "--mac",
+            str(mac),
+            "--cache",
+            str(mac / "cached"),
+            "--out",
+            str(out),
+            "--device",
+            "cpu",
+            "--num_workers",
+            "0",
+            *[x for c in ckpts for x in ("--ckpt", str(c))],
+            *rest,
+        ]
+    )
 
 
 def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_listed(tree, tmp_path):
@@ -154,16 +223,22 @@ def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_lis
     manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0)], "official_test_sha256": test_sha}))
     with pytest.raises(ValueError, match="not listed"):
         R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))
-    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha}))
+    manifest.write_text(
+        json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha})
+    )
     with pytest.raises(ValueError, match="exactly the 2 frozen checkpoints"):  # a subset must not claim the run
         R.predict(predict_args(mac, out, [c0], "--official_test", str(manifest), "test.parquet"))
     with pytest.raises(ValueError, match="exactly the 2 frozen checkpoints"):  # the same checkpoint twice
         R.predict(predict_args(mac, out, [c0, c0], "--official_test", str(manifest), "test.parquet"))
-    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": "0" * 64}))
+    manifest.write_text(
+        json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": "0" * 64})
+    )
     with pytest.raises(ValueError, match="official test file named"):
         R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))
     assert not list(tmp_path.glob("*.lock"))  # every refusal above leaves the evaluation unused
-    manifest.write_text(json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha}))
+    manifest.write_text(
+        json.dumps({"checkpoints_sha256": [R.sha256(c0), R.sha256(c1)], "official_test_sha256": test_sha})
+    )
     R.predict(predict_args(mac, out, [c0, c1], "--official_test", str(manifest), "test.parquet"))  # both seeds at once
     assert json.loads((tmp_path / "freeze_q2.official_test_status.json").read_text())["state"] == "done"
     with pytest.raises(ValueError, match="already used"):  # one evaluation per manifest
@@ -191,9 +266,23 @@ def test_a_stopped_run_resumed_from_its_last_file_equals_the_uninterrupted_run(t
     _, mac = tree
     full = ours(tree, tmp_path / "full", TRAIN, ["train-01.parquet", "train-02.parquet"])
     base = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--device", "cpu", "--num_workers", "0"]
-    R.train(R.parser().parse_args(base + ["--out", str(tmp_path / "cut"), *MOAE, "--train_files", *TRAIN,
-                                          "--ckpt_after", "train-01.parquet", "train-02.parquet",
-                                          "--stop_after", "train-01.parquet"]))
+    R.train(
+        R.parser().parse_args(
+            base
+            + [
+                "--out",
+                str(tmp_path / "cut"),
+                *MOAE,
+                "--train_files",
+                *TRAIN,
+                "--ckpt_after",
+                "train-01.parquet",
+                "train-02.parquet",
+                "--stop_after",
+                "train-01.parquet",
+            ]
+        )
+    )
     cut = tmp_path / "cut"
     assert (cut / "resume.pt").exists() and not (cut / "run.json").exists()
     with pytest.raises(ValueError, match="keeps its training settings"):
@@ -210,8 +299,9 @@ def test_a_stopped_run_resumed_from_its_last_file_equals_the_uninterrupted_run(t
 def test_the_pilot_mode_keeps_no_labels_or_metric(tree, tmp_path):
     _, mac = tree
     run = ours(tree, tmp_path / "run", TRAIN[:1], ["train-00.parquet"])
-    rec = R.predict(predict_args(mac, tmp_path / "pred", [run / "model_after_train-00.pt"], "--no_metrics",
-                                 "train-00.parquet"))
+    rec = R.predict(
+        predict_args(mac, tmp_path / "pred", [run / "model_after_train-00.pt"], "--no_metrics", "train-00.parquet")
+    )
     r = next(iter(rec.values()))["train-00.parquet"]
     assert "auc" not in r and r["rows_per_second"] > 0
     z = np.load(next((tmp_path / "pred").rglob("train-00.npz")))
@@ -237,10 +327,38 @@ def test_the_vendored_official_code_is_unmodified():
 
 def test_a_diverging_run_stops_and_is_recorded(tree, tmp_path):
     _, mac = tree
-    a = R.parser().parse_args(["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(tmp_path / "big"),
-                               "--device", "cpu", "--num_workers", "0", "--model", "MoAE", "--lr", "1e6", "--lamda", "0.3",
-                               "--aux_views", "first", "mta", "linear", "cartesian", "--batch_size", "256",
-                               "--train_files", *TRAIN, "--ckpt_after", TRAIN[-1]])
+    a = R.parser().parse_args(
+        [
+            "train",
+            "--mac",
+            str(mac),
+            "--cache",
+            str(mac / "cached"),
+            "--out",
+            str(tmp_path / "big"),
+            "--device",
+            "cpu",
+            "--num_workers",
+            "0",
+            "--model",
+            "MoAE",
+            "--lr",
+            "1e6",
+            "--lamda",
+            "0.3",
+            "--aux_views",
+            "first",
+            "mta",
+            "linear",
+            "cartesian",
+            "--batch_size",
+            "256",
+            "--train_files",
+            *TRAIN,
+            "--ckpt_after",
+            TRAIN[-1],
+        ]
+    )
     out = R.train(a)
     rec = json.loads((out / "run.json").read_text())
     assert rec["diverged"]["step"] >= 1 and not rec["checkpoints"]  # no checkpoint of a diverged run
@@ -260,14 +378,36 @@ def g1_file(tree, tmp_path) -> Path:
 
 def list_sha(groups: Path) -> str:
     import hashlib
+
     return hashlib.sha256("\n".join(sorted(json.loads(groups.read_text())["G1"])).encode()).hexdigest()
 
 
 def weighted(tree, out: Path, groups: Path, w: str, files=TRAIN, stop=None, sha=None) -> Path:
     _, mac = tree
-    args = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(out), "--device", "cpu",
-            "--num_workers", "0", *MOAE, "--train_files", *files, "--ckpt_after", files[-1], "--g1_weight", w,
-            "--weight_groups", str(groups), "--weight_groups_sha256", sha or list_sha(groups)]
+    args = [
+        "train",
+        "--mac",
+        str(mac),
+        "--cache",
+        str(mac / "cached"),
+        "--out",
+        str(out),
+        "--device",
+        "cpu",
+        "--num_workers",
+        "0",
+        *MOAE,
+        "--train_files",
+        *files,
+        "--ckpt_after",
+        files[-1],
+        "--g1_weight",
+        w,
+        "--weight_groups",
+        str(groups),
+        "--weight_groups_sha256",
+        sha or list_sha(groups),
+    ]
     return R.train(R.parser().parse_args(args + (["--stop_after", stop] if stop else [])))
 
 
@@ -290,10 +430,15 @@ def test_weight_two_is_applied_per_click_and_normalized_to_mean_one(tree, tmp_pa
     assert not all(torch.equal(sa[k], sb[k]) for k in sa)
     rec = json.loads((b / "run.json").read_text())["group_weighting"]
     toks = set(json.loads(groups.read_text())["G1"])
-    col = [t for n in TRAIN for t in pq.read_table(mac / "train" / n, columns=["ad_feat1"]).column("ad_feat1").to_pylist()]
+    col = [
+        t for n in TRAIN for t in pq.read_table(mac / "train" / n, columns=["ad_feat1"]).column("ad_feat1").to_pylist()
+    ]
     share = sum(t in toks for t in col) / len(col)
     assert rec["g1_rows"] == sum(t in toks for t in col) and abs(rec["g1_share"] - share) < 1e-15
-    assert abs(share * rec["w_g1"] + (1 - share) * rec["w_other"] - 1) < 1e-12 and abs(rec["w_g1"] / rec["w_other"] - 2) < 1e-12
+    assert (
+        abs(share * rec["w_g1"] + (1 - share) * rec["w_other"] - 1) < 1e-12
+        and abs(rec["w_g1"] / rec["w_other"] - 2) < 1e-12
+    )
 
 
 def test_the_weighted_main_loss_weights_each_click_before_the_mean():
@@ -312,8 +457,22 @@ def test_the_weighted_main_loss_weights_each_click_before_the_mean():
 def test_a_run_recorded_before_amendment_3_still_resumes(tree, tmp_path):
     _, mac = tree
     base = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--device", "cpu", "--num_workers", "0"]
-    R.train(R.parser().parse_args(base + ["--out", str(tmp_path / "old"), *MOAE, "--train_files", *TRAIN,
-                                          "--ckpt_after", TRAIN[-1], "--stop_after", TRAIN[0]]))
+    R.train(
+        R.parser().parse_args(
+            base
+            + [
+                "--out",
+                str(tmp_path / "old"),
+                *MOAE,
+                "--train_files",
+                *TRAIN,
+                "--ckpt_after",
+                TRAIN[-1],
+                "--stop_after",
+                TRAIN[0],
+            ]
+        )
+    )
     prog = tmp_path / "old" / "progress.json"
     rec = json.loads(prog.read_text())
     for k in R.NEW_SETTINGS:
@@ -350,6 +509,7 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     from cvr import study_e_eval as Q
     from cvr.calibration import GlobalPlatt, fit_group_shrunk_exact
     from cvr.domain_models import save_domain_calibrators
+
     _, mac = tree
     run = ours(tree, tmp_path / "run", TRAIN[:1], ["train-00.parquet"])
     ckpt = run / "model_after_train-00.pt"
@@ -366,11 +526,15 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     codes.pop(unseen)  # this group stands for one absent from the training statistics: its rows are group -1
     with open(mac / "cached" / "train-01.pkl", "rb") as f:
         ds = D.MALDataset(pickle.load(f))
-    model, _, _ = R.build(argparse.Namespace(**json.loads((run / "run.json").read_text())["args"]), vocabs, torch.device("cpu"))
+    model, _, _ = R.build(
+        argparse.Namespace(**json.loads((run / "run.json").read_text())["args"]), vocabs, torch.device("cpu")
+    )
     model.load_state_dict(torch.load(ckpt))
     model.eval()
     with torch.no_grad():
-        p_batch = model(ds.static_user[:, 1:], ds.static_ad, ds.mm_arr, ds.seq_arr)["last"][:, 1].numpy().astype(np.float64)
+        p_batch = (
+            model(ds.static_user[:, 1:], ds.static_ad, ds.mm_arr, ds.seq_arr)["last"][:, 1].numpy().astype(np.float64)
+        )
     y = np.asarray(ds.data["last"])
     g = np.array([codes.get(t, -1) for t in table.column("ad_feat1").to_pylist()])
     glob = GlobalPlatt.fit(p_batch, y)
@@ -382,7 +546,7 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     idx = [0, 7, 99, 500, len(rows) - 1]
     user, ad, mm, seq = server.tensors([rows[i] for i in idx])
     assert torch.equal(user[:, 1:], ds.static_user[idx, 1:]) and torch.equal(ad, ds.static_ad[idx])  # official mapping
-    assert torch.equal(seq, ds.seq_arr[idx]) and torch.equal(mm, ds.mm_arr[idx])          # and layout
+    assert torch.equal(seq, ds.seq_arr[idx]) and torch.equal(mm, ds.mm_arr[idx])  # and layout
     one = np.array([server.raw([rows[i]])[0] for i in idx])  # one row at a time, as served
     assert np.abs(one - p_batch[idx]).max() <= 1e-6
     q = np.array([server.predict([rows[i]])[0] for i in idx])
@@ -399,7 +563,9 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     u_row = r | {"ad_feat1": unseen}
     assert np.allclose(server.calibrate(server.raw([u_row]), [u_row]), gs.predict(server.raw([u_row]), np.array([-1])))
     assert -1 in gs.group_ids  # the pooled unseen group has its own fitted coefficients, not the global mapping
-    never = r | {"ad_feat1": "never-seen-group"}  # also absent from the vocabulary: PAD for the model, -1 for calibration
+    never = r | {
+        "ad_feat1": "never-seen-group"
+    }  # also absent from the vocabulary: PAD for the model, -1 for calibration
     assert server.calibrate(p1, [never])[0] == gs.predict(p1, np.array([-1]))[0]
 
     # one request: the user's features and history encoded once give the same probabilities as one row per candidate

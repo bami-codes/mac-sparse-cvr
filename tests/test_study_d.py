@@ -29,8 +29,11 @@ def test_intercept_only_solver_matches_a_one_dimensional_reference():
         z = logit(p)
         for k, v in enumerate(gs.group_ids):
             s0, yg = base.a * z[g == v] + base.b, y[g == v]
-            ref = minimize_scalar(lambda x: np.logaddexp(0.0, s0 + x).sum() - (yg * (s0 + x)).sum() + lam * x * x,
-                                  bracket=(-3, 3), tol=1e-14).x
+            ref = minimize_scalar(
+                lambda x: np.logaddexp(0.0, s0 + x).sum() - (yg * (s0 + x)).sum() + lam * x * x,
+                bracket=(-3, 3),
+                tol=1e-14,
+            ).x
             assert gs.db[k] == pytest.approx(ref, abs=1e-6)
         k = np.searchsorted(gs.group_ids, g)
         assert np.allclose(gs.predict(p, g), expit(base.a * z + base.b + gs.db[k]), rtol=0, atol=1e-15)
@@ -86,13 +89,24 @@ def test_study_d_verdict_requires_the_preregistered_seeds():
     import scripts.study_d as S
 
     def comp(seeds, pois):
-        return {"comparisons": {"iii0 - iiid": {
-            "point": {"macro": 1e-4, "poisson": float(np.mean(pois)) if pois else 0.0},
-            "ci95": {"macro": [5e-5, 2e-4], "poisson": [-2.0, -0.5]},
-            "per_pair": {"poisson": list(pois), "macro": [1e-4] * len(pois)}, "per_pair_seeds": list(seeds)}}}
+        return {
+            "comparisons": {
+                "iii0 - iiid": {
+                    "point": {"macro": 1e-4, "poisson": float(np.mean(pois)) if pois else 0.0},
+                    "ci95": {"macro": [5e-5, 2e-4], "poisson": [-2.0, -0.5]},
+                    "per_pair": {"poisson": list(pois), "macro": [1e-4] * len(pois)},
+                    "per_pair_seeds": list(seeds),
+                }
+            }
+        }
+
     v = S.verdict(comp([2026, 2027, 2028], [-1.9, -1.8, -1.7]))
     assert v["group_count_error_reduced"] is True and v["logloss_gain_retained"] is False
-    for seeds, pois in (([], []), ([2026], [-1.9]), ([2026, 2026, 2026], [-1.9, -1.9, -1.9])):  # no seeds, one seed, a repeated seed
+    for seeds, pois in (
+        ([], []),
+        ([2026], [-1.9]),
+        ([2026, 2026, 2026], [-1.9, -1.9, -1.9]),
+    ):  # no seeds, one seed, a repeated seed
         with pytest.raises(ValueError, match="seed pairs"):
             S.verdict(comp(seeds, pois))
     with pytest.raises(ValueError, match="non-finite"):

@@ -36,8 +36,13 @@ def labels(run: Path, role: str) -> np.ndarray:
     from cvr.features import read_raw
 
     meta = json.loads((run / "results.json").read_text())["meta"]
-    parts = [read_raw(Path(x["file"]), tuple(x["buckets"]) if x["buckets"] else None, meta["smoke_user_pct"],
-                      columns=[TARGET])[TARGET].to_numpy() > 0 for x in meta["data"][role]]
+    parts = [
+        read_raw(
+            Path(x["file"]), tuple(x["buckets"]) if x["buckets"] else None, meta["smoke_user_pct"], columns=[TARGET]
+        )[TARGET].to_numpy()
+        > 0
+        for x in meta["data"][role]
+    ]
     y = np.concatenate(parts).astype(np.int8)
     if y.size != meta["rows"][role]:
         raise ValueError(f"{role}: {y.size} labels for {meta['rows'][role]} rows")
@@ -68,7 +73,9 @@ def calib(run: Path) -> dict:
     stats = D.domain_stats(train)
     dom = {r: np.asarray(load_md(run / "nn_data" / r).cat[:, DOM_COL]) for r in ("v1", "v2")}
     y = {r: labels(run, r) for r in ("v1", "v2")}
-    cls2 = D.domain_class(pl.DataFrame({DOMAIN_KEY: dom["v2"]}), stats, cfg_dom["small_share"], cfg_dom["small_min_clicks"])
+    cls2 = D.domain_class(
+        pl.DataFrame({DOMAIN_KEY: dom["v2"]}), stats, cfg_dom["small_share"], cfg_dom["small_min_clicks"]
+    )
     small = cls2 == "small"
 
     def small_macro(p2: np.ndarray) -> float:
@@ -113,17 +120,30 @@ def calib(run: Path) -> dict:
     if problems:
         raise RuntimeError("the run's selection is not reproduced: " + "; ".join(problems))
     diffs = [v["exact_minus_old"] for v in per.values()]
-    part1 = {"lambdas": lambdas,
-             "exact_reproduces_run_scores_max_abs": score_gap,
-             "global_platt_slope": {"min": min(slopes.values()), "max": max(slopes.values()),
-                                    "below_MIN_SLOPE": sorted(n for n, a in slopes.items() if a < MIN_SLOPE)},
-             "exact_minus_old_small_macro": {"max_abs_single_seed": float(np.max(np.abs(diffs))),
-                                             "max_abs_seed_mean": max(abs(new_lam_scores[f][x] - old_lam_scores[f][x])
-                                                                      for f in families for x in lambdas)},
-             "candidate_with_old_solver": D.choose_candidate(old_scores), "lambda_with_old_solver": old_lam,
-             "candidate_recomputed_exact": new_cand, "lambda_recomputed_exact": new_lam,
-             "candidate_stored": sel["candidate"], "lambda_stored": stored_lam,
-             "old_scores": old_scores, "exact_scores": run_scores, "per_fit": per}
+    part1 = {
+        "lambdas": lambdas,
+        "exact_reproduces_run_scores_max_abs": score_gap,
+        "global_platt_slope": {
+            "min": min(slopes.values()),
+            "max": max(slopes.values()),
+            "below_MIN_SLOPE": sorted(n for n, a in slopes.items() if a < MIN_SLOPE),
+        },
+        "exact_minus_old_small_macro": {
+            "max_abs_single_seed": float(np.max(np.abs(diffs))),
+            "max_abs_seed_mean": max(
+                abs(new_lam_scores[f][x] - old_lam_scores[f][x]) for f in families for x in lambdas
+            ),
+        },
+        "candidate_with_old_solver": D.choose_candidate(old_scores),
+        "lambda_with_old_solver": old_lam,
+        "candidate_recomputed_exact": new_cand,
+        "lambda_recomputed_exact": new_lam,
+        "candidate_stored": sel["candidate"],
+        "lambda_stored": stored_lam,
+        "old_scores": old_scores,
+        "exact_scores": run_scores,
+        "per_fit": per,
+    }
     return part1
 
 
@@ -143,11 +163,13 @@ def star(run: Path) -> dict:
             var_d = pn._var(pn.dom_mean, pn.dom_msq)
             updated = pn.dom_updates > 0
             would_own = (var_d >= PN_REL_VAR * g_var) & ids & updated.unsqueeze(1)
-        part2[f"N-star_s{s}"] = {"domains_with_statistics": int(updated.sum()), "id_dims": int(ids.sum()),
-                                 "pairs_checked": int(updated.sum() * ids.sum()),
-                                 "pairs_that_would_use_own_statistics_under_the_old_rule": int(would_own.sum()),
-                                 "max_ratio_domain_var_to_global_var_on_id_dims":
-                                     float((var_d[updated][:, ids] / g_var[ids]).max())}
+        part2[f"N-star_s{s}"] = {
+            "domains_with_statistics": int(updated.sum()),
+            "id_dims": int(ids.sum()),
+            "pairs_checked": int(updated.sum() * ids.sum()),
+            "pairs_that_would_use_own_statistics_under_the_old_rule": int(would_own.sum()),
+            "max_ratio_domain_var_to_global_var_on_id_dims": float((var_d[updated][:, ids] / g_var[ids]).max()),
+        }
     return part2
 
 

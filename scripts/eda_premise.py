@@ -16,9 +16,23 @@ import polars as pl
 
 LABELS = ["last", "first", "linear", "mta"]
 SCALAR = [
-    "user_id", "user_feat0", "user_feat1", "user_feat2", "user_feat3", "user_feat4", "user_feat5",
-    "context_feat0", "context_feat1", "context_feat2", "context_feat3",
-    "ad_feat0", "ad_feat1", "ad_feat2", "ad_feat3", "ad_feat4", "ad_feat5",
+    "user_id",
+    "user_feat0",
+    "user_feat1",
+    "user_feat2",
+    "user_feat3",
+    "user_feat4",
+    "user_feat5",
+    "context_feat0",
+    "context_feat1",
+    "context_feat2",
+    "context_feat3",
+    "ad_feat0",
+    "ad_feat1",
+    "ad_feat2",
+    "ad_feat3",
+    "ad_feat4",
+    "ad_feat5",
 ]
 SEQ = ["ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq"]
 PAD = "dbee74ee5fbf"  # [추정] padding/missing hash token, see E5 diagnostics
@@ -52,9 +66,16 @@ def main(src: str, out: str) -> None:
         g = df.group_by(key).agg(pl.col(val).n_unique().alias("k"))
         return g.select((pl.col("k") == 1).mean()).item()
 
-    pairs = [("ad_feat0", "ad_feat1"), ("ad_feat0", "ad_feat2"), ("ad_feat0", "ad_feat3"),
-             ("ad_feat0", "ad_feat4"), ("ad_feat1", "ad_feat3"), ("ad_feat1", "ad_feat4"),
-             ("ad_feat2", "ad_feat1"), ("ad_feat1", "ad_feat2")]
+    pairs = [
+        ("ad_feat0", "ad_feat1"),
+        ("ad_feat0", "ad_feat2"),
+        ("ad_feat0", "ad_feat3"),
+        ("ad_feat0", "ad_feat4"),
+        ("ad_feat1", "ad_feat3"),
+        ("ad_feat1", "ad_feat4"),
+        ("ad_feat2", "ad_feat1"),
+        ("ad_feat1", "ad_feat2"),
+    ]
     report["E2_share_of_keys_with_single_value"] = {f"{a}->{b}": share_single(a, b) for a, b in pairs}
 
     # E5: sequence lengths and mm score summaries
@@ -62,15 +83,16 @@ def main(src: str, out: str) -> None:
     e5: dict = {
         "seq_len_quantiles": {f"{c}_q{q}": lens[c].quantile(q) for c in lens.columns for q in [0.0, 0.5, 1.0]},
         "seq_len_equal_across_cols_share": lens.select(
-            (pl.col("ad_feat0_seq") == pl.col("ad_feat1_seq")).mean()).item(),
+            (pl.col("ad_feat0_seq") == pl.col("ad_feat1_seq")).mean()
+        ).item(),
     }
     # padding diagnostics: a pad token would dominate positions and fill whole rows
     for c in SEQ:
-        top = (df.select(pl.col(c).explode().value_counts(sort=True)).unnest(c).head(3))
+        top = df.select(pl.col(c).explode().value_counts(sort=True)).unnest(c).head(3)
         e5[f"{c}_top_tokens_share_of_positions"] = [
-            {"token": r[c], "share": r["count"] / (n * 20)} for r in top.to_dicts()]
-        e5[f"{c}_rows_single_unique_token_share"] = df.select(
-            (pl.col(c).list.n_unique() == 1).mean()).item()
+            {"token": r[c], "share": r["count"] / (n * 20)} for r in top.to_dicts()
+        ]
+        e5[f"{c}_rows_single_unique_token_share"] = df.select((pl.col(c).list.n_unique() == 1).mean()).item()
     for c in MM:
         flat = df.select(pl.col(c).explode())[c]
         e5[f"{c}_zero_share_of_positions"] = (flat == 0).mean()
@@ -81,16 +103,22 @@ def main(src: str, out: str) -> None:
     idx = df.with_row_index("rid").select(["rid", "ad_feat0", "ad_feat1", "ad_feat2"] + SEQ)
     feats = []
     for tgt, seq in [("ad_feat0", "ad_feat0_seq"), ("ad_feat1", "ad_feat1_seq"), ("ad_feat2", "ad_feat2_seq")]:
-        m = (idx.select(["rid", tgt, seq]).explode(seq)
-             .group_by("rid").agg(((pl.col(seq) == pl.col(tgt)) & (pl.col(seq) != PAD) & (pl.col(tgt) != PAD))
-                                  .sum().alias(f"match_{tgt}")))
+        m = (
+            idx.select(["rid", tgt, seq])
+            .explode(seq)
+            .group_by("rid")
+            .agg(
+                ((pl.col(seq) == pl.col(tgt)) & (pl.col(seq) != PAD) & (pl.col(tgt) != PAD)).sum().alias(f"match_{tgt}")
+            )
+        )
         feats.append(m)
-    report["E6_2_target_is_pad_share"] = {t: df.select((pl.col(t) == PAD).mean()).item()
-                                          for t in ["ad_feat0", "ad_feat1", "ad_feat2"]}
-    report["E5_pad_in_scalar_columns_share"] = {c: df.select((pl.col(c) == PAD).mean()).item()
-                                                for c in SCALAR if df[c].dtype == pl.String}
-    mm = df.with_row_index("rid").select(
-        ["rid"] + [pl.col(c).list.max().alias(f"{c}_max") for c in MM])
+    report["E6_2_target_is_pad_share"] = {
+        t: df.select((pl.col(t) == PAD).mean()).item() for t in ["ad_feat0", "ad_feat1", "ad_feat2"]
+    }
+    report["E5_pad_in_scalar_columns_share"] = {
+        c: df.select((pl.col(c) == PAD).mean()).item() for c in SCALAR if df[c].dtype == pl.String
+    }
+    mm = df.with_row_index("rid").select(["rid"] + [pl.col(c).list.max().alias(f"{c}_max") for c in MM])
     enriched = df.with_row_index("rid").select(["rid", "y", "ad_feat1"])
     for m in feats + [mm]:
         enriched = enriched.join(m, on="rid", how="left")
@@ -104,26 +132,33 @@ def main(src: str, out: str) -> None:
             "cvr_if_0": enriched.filter(pl.col(c) == 0)["y"].mean(),
         }
     for c in [f"{x}_max" for x in MM]:
-        q = enriched.select(pl.col(c).qcut(5, labels=[f"q{i}" for i in range(1, 6)],
-                                           allow_duplicates=True).alias("bin"), "y")
-        e62[c] = {"cvr_by_quintile": q.group_by("bin").agg(pl.col("y").mean()).sort("bin").to_dicts(),
-                  "null_share": enriched[c].null_count() / n}
+        q = enriched.select(
+            pl.col(c).qcut(5, labels=[f"q{i}" for i in range(1, 6)], allow_duplicates=True).alias("bin"), "y"
+        )
+        e62[c] = {
+            "cvr_by_quintile": q.group_by("bin").agg(pl.col("y").mean()).sort("bin").to_dicts(),
+            "null_share": enriched[c].null_count() / n,
+        }
     report["E6_2_history_signal"] = e62
 
     # E6.1: sparse but evaluable groups (one file only; multi-file counts will be larger)
     # missing-token group is reported separately and excluded from sparse-group candidates
     miss = df.filter(pl.col("ad_feat1") == PAD)
-    report["E6_1_missing_group"] = {"clicks": miss.height, "click_share": miss.height / n,
-                                    "positives_by_label": {c: miss.select((pl.col(c) > 0).sum()).item()
-                                                           for c in LABELS}}
-    g = (df.filter(pl.col("ad_feat1") != PAD)
-         .group_by("ad_feat1").agg(pl.len().alias("clicks"), pl.col("y").sum().alias("pos")))
+    report["E6_1_missing_group"] = {
+        "clicks": miss.height,
+        "click_share": miss.height / n,
+        "positives_by_label": {c: miss.select((pl.col(c) > 0).sum()).item() for c in LABELS},
+    }
+    g = (
+        df.filter(pl.col("ad_feat1") != PAD)
+        .group_by("ad_feat1")
+        .agg(pl.len().alias("clicks"), pl.col("y").sum().alias("pos"))
+    )
     grid = {}
     for n_min in [200, 500, 1000, 2000]:
         for c_min in [10, 20, 50]:
             sel = g.filter((pl.col("clicks") >= n_min) & (pl.col("pos") < c_min))
-            grid[f"n_min={n_min},c_min={c_min}"] = {
-                "groups": sel.height, "click_share": sel["clicks"].sum() / n}
+            grid[f"n_min={n_min},c_min={c_min}"] = {"groups": sel.height, "click_share": sel["clicks"].sum() / n}
     report["E6_1_ad_feat1_groups"] = {
         "n_groups": g.height,
         "clicks_quantiles": {q: g["clicks"].quantile(q) for q in [0.5, 0.9, 0.99]},

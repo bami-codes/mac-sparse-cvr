@@ -34,9 +34,16 @@ def train_stats(files: list[Path], key: str) -> pl.DataFrame:
     parts = []
     for f in files:
         t = pq.read_table(f, columns=[key, "last"])
-        parts.append(pl.from_arrow(t).group_by(key).agg(pl.len().alias("clicks"), (pl.col("last") > 0).sum().alias("pos")))
-    return (pl.concat(parts).group_by(key).agg(pl.col("clicks").sum(), pl.col("pos").sum())
-            .with_columns(pl.col("clicks").cast(pl.Int64), pl.col("pos").cast(pl.Int64)).sort(key))
+        parts.append(
+            pl.from_arrow(t).group_by(key).agg(pl.len().alias("clicks"), (pl.col("last") > 0).sum().alias("pos"))
+        )
+    return (
+        pl.concat(parts)
+        .group_by(key)
+        .agg(pl.col("clicks").sum(), pl.col("pos").sum())
+        .with_columns(pl.col("clicks").cast(pl.Int64), pl.col("pos").cast(pl.Int64))
+        .sort(key)
+    )
 
 
 def first_study_g1() -> set[str] | None:
@@ -66,30 +73,52 @@ def groups() -> dict:
     comp = known.filter((pl.col("clicks") >= n_min) & (pl.col("pos") >= c_min))
     g1_abs = known.filter((pl.col("clicks") >= G1_BASE["n_min"]) & (pl.col("pos") < G1_BASE["c_min"]))
     ctx = train_stats(files, "context_feat1").with_columns((pl.col("clicks") / rows).alias("share"))
-    small = ctx.filter((pl.col("share") < SMALL_SHARE) & (pl.col("clicks") >= small_min) & (pl.col("context_feat1") != PAD))
+    small = ctx.filter(
+        (pl.col("share") < SMALL_SHARE) & (pl.col("clicks") >= small_min) & (pl.col("context_feat1") != PAD)
+    )
 
     first = first_study_g1()
-    lists = {"G1": g1["ad_feat1"].to_list(), "C": comp["ad_feat1"].to_list(), "G1_abs500_20": g1_abs["ad_feat1"].to_list(),
-             "small_context": small["context_feat1"].to_list()}
+    lists = {
+        "G1": g1["ad_feat1"].to_list(),
+        "C": comp["ad_feat1"].to_list(),
+        "G1_abs500_20": g1_abs["ad_feat1"].to_list(),
+        "small_context": small["context_feat1"].to_list(),
+    }
     rec = {
-        "training_files": TRAIN, "training_rows": rows, "positive_rule": "last > 0", "missing_token": PAD,
+        "training_files": TRAIN,
+        "training_rows": rows,
+        "positive_rule": "last > 0",
+        "missing_token": PAD,
         "definitions": {
             "G1": f"ad_feat1 with training clicks >= {n_min} and positives < {c_min} (first study's 500 / 20 scaled by "
-                  f"{scale_g1:.3f} = {rows} / {BASE_ROWS_G1} training rows)",
+            f"{scale_g1:.3f} = {rows} / {BASE_ROWS_G1} training rows)",
             "C": f"ad_feat1 with training clicks >= {n_min} and positives >= {c_min} (same clicks condition, not G1)",
             "G1_abs500_20": "sensitivity: the first study's thresholds unscaled (clicks >= 500, positives < 20)",
             "small_context": f"context_feat1 with training share < {SMALL_SHARE:.0%} and clicks >= {small_min} (study C's "
-                             f"3,000 scaled by {scale_c:.3f})"},
+            f"3,000 scaled by {scale_c:.3f})",
+        },
         "thresholds": {"n_min": n_min, "c_min": c_min, "c_dense": c_dense, "small_min_clicks": small_min},
         "counts": {k: len(v) for k, v in lists.items()},
-        "train_click_share": {"G1": float(g1["clicks"].sum() / rows), "C": float(comp["clicks"].sum() / rows),
-                              "G1_abs500_20": float(g1_abs["clicks"].sum() / rows),
-                              "small_context": float(small["clicks"].sum() / rows),
-                              "missing_ad_feat1": float(ad.filter(pl.col("ad_feat1") == PAD)["clicks"].sum() / rows)},
-        "train_positives": {"G1": int(g1["pos"].sum()), "C": int(comp["pos"].sum()), "small_context": int(small["pos"].sum())},
-        "overlap_with_first_study_G1": None if first is None else {
-            "first_study_groups": len(first), "in_new_G1": len(first & set(lists["G1"])),
-            "in_new_C": len(first & set(lists["C"])), "below_new_click_minimum": len(first - set(lists["G1"]) - set(lists["C"]))},
+        "train_click_share": {
+            "G1": float(g1["clicks"].sum() / rows),
+            "C": float(comp["clicks"].sum() / rows),
+            "G1_abs500_20": float(g1_abs["clicks"].sum() / rows),
+            "small_context": float(small["clicks"].sum() / rows),
+            "missing_ad_feat1": float(ad.filter(pl.col("ad_feat1") == PAD)["clicks"].sum() / rows),
+        },
+        "train_positives": {
+            "G1": int(g1["pos"].sum()),
+            "C": int(comp["pos"].sum()),
+            "small_context": int(small["pos"].sum()),
+        },
+        "overlap_with_first_study_G1": None
+        if first is None
+        else {
+            "first_study_groups": len(first),
+            "in_new_G1": len(first & set(lists["G1"])),
+            "in_new_C": len(first & set(lists["C"])),
+            "below_new_click_minimum": len(first - set(lists["G1"]) - set(lists["C"])),
+        },
         "sha256": {k: sha_of(v) for k, v in lists.items()},
     }
     OUT.mkdir(parents=True, exist_ok=True)
@@ -99,8 +128,11 @@ def groups() -> dict:
     ad.write_parquet(OUT / "train_stats_ad_feat1.parquet")
     ctx.write_parquet(OUT / "train_stats_context_feat1.parquet")
     (OUT / "group_lists.json").write_text(json.dumps(lists))
-    dest.write_text(json.dumps(rec | {"group_lists_sha256": hashlib.sha256((OUT / "group_lists.json").read_bytes()).hexdigest()},
-                               indent=2))
+    dest.write_text(
+        json.dumps(
+            rec | {"group_lists_sha256": hashlib.sha256((OUT / "group_lists.json").read_bytes()).hexdigest()}, indent=2
+        )
+    )
     return rec
 
 

@@ -92,8 +92,11 @@ def test_download_resumes_after_a_stall_and_restarts_if_the_range_is_ignored(tmp
 def test_fetch_writes_the_sha256_sidecar(tmp_path, monkeypatch):
     content = b"vocab"
     monkeypatch.setattr(F, "DEST", tmp_path)
-    monkeypatch.setattr(F, "download", lambda rel, dest, size: (dest.parent.mkdir(parents=True, exist_ok=True),
-                                                               dest.write_bytes(content)))
+    monkeypatch.setattr(
+        F,
+        "download",
+        lambda rel, dest, size: (dest.parent.mkdir(parents=True, exist_ok=True), dest.write_bytes(content)),
+    )
     (tmp_path / "vocabs").mkdir()
     probe = tmp_path / "probe"
     probe.write_bytes(content)

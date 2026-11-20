@@ -42,8 +42,9 @@ def _data(seed=0):
 
 def _fit(variant, epochs=1, seed=1, **kw):
     a, y = _data()
-    return MDModel.fit(a, y, CAT_SIZES, DOM_COL, variant, seed=seed, dim=4, epochs=epochs, batch=256, lr=3e-3,
-                       threads=1, **kw)
+    return MDModel.fit(
+        a, y, CAT_SIZES, DOM_COL, variant, seed=seed, dim=4, epochs=epochs, batch=256, lr=3e-3, threads=1, **kw
+    )
 
 
 def _rows_with_domain(d, k=50, seed=3):
@@ -99,8 +100,10 @@ def test_domain_never_updated_uses_global_statistics_at_evaluation():
 # ---------------------------------------------------------------- 2. unseen domains after training
 def _shared_path(net, cat, num):
     """The shared network written out by hand: the domain input is the zero (UNKNOWN) vector, no domain term."""
-    parts = [torch.zeros(cat.shape[0], net.emb[i].embedding_dim) if i == DOM_COL else net.emb[i](cat[:, i])
-             for i in net.in_cols]
+    parts = [
+        torch.zeros(cat.shape[0], net.emb[i].embedding_dim) if i == DOM_COL else net.emb[i](cat[:, i])
+        for i in net.in_cols
+    ]
     x = torch.cat(parts + [num], dim=-1)
     if net.variant in ("int", "shared", "head"):
         return net.out(net.body(x)).squeeze(-1)
@@ -164,8 +167,7 @@ def _isolation(variant, sparse):
 
     def batch(d):
         idx = np.flatnonzero(a.cat[:, DOM_COL] == d)[:300]
-        return (torch.as_tensor(a.cat[idx], dtype=torch.long), torch.as_tensor(a.num[idx]),
-                torch.as_tensor(y[idx]))
+        return (torch.as_tensor(a.cat[idx], dtype=torch.long), torch.as_tensor(a.num[idx]), torch.as_tensor(y[idx]))
 
     A, B = 2, 3
     train_step(net, opts, *batch(A), loss_fn)
@@ -233,6 +235,7 @@ def test_star_mixed_evaluation_batch_equals_per_domain_evaluation():
     # Exact on macOS arm64; on a Linux x86 GPU pod the batch-size-dependent float32 matmul kernels differ by up to
     # 7.5e-9 (measured). Statistics leaking across rows in evaluation would differ by ~1e-2, far above 1e-6.
     from cvr.checks import NN_SINGLE_VS_BATCH_TOL
+
     m = _fit("star")[0]
     a, _ = _data()
     full = m.predict(a)
@@ -274,8 +277,7 @@ def _data_constant_features(seed=0):
 
 def _fit_constant(variant):
     a, y = _data_constant_features()
-    return a, MDModel.fit(a, y, CAT_SIZES, DOM_COL, variant, seed=1, dim=4, epochs=1, batch=1024, lr=3e-3,
-                          threads=1)[0]
+    return a, MDModel.fit(a, y, CAT_SIZES, DOM_COL, variant, seed=1, dim=4, epochs=1, batch=1024, lr=3e-3, threads=1)[0]
 
 
 def test_pn_dimension_constant_in_a_domain_falls_back_to_the_global_statistics():
@@ -364,6 +366,7 @@ def _star_with_equal_domains():
 
 def test_star_step_does_not_depend_on_which_code_each_domain_has():
     import copy
+
     base = _star_with_equal_domains()
     nets = {"a2b3": copy.deepcopy(base), "a3b2": copy.deepcopy(base)}
     batches = {"a2b3": _two_domain_step(2, 3), "a3b2": _two_domain_step(3, 2)}
@@ -389,6 +392,7 @@ def net_num_start(net):
 
 def test_reload_check_rows_keep_every_prediction_batch_identical():
     from cvr.study_c_worker import PREDICT_BATCH, same_batch_rows
+
     assert PREDICT_BATCH == 16384
     assert same_batch_rows(50_000, 4_000_000) == 49_152  # 3 full batches, no shorter last batch
     assert same_batch_rows(50_000, 10_000) == 10_000  # one batch either way
@@ -399,11 +403,12 @@ def test_reload_check_rows_keep_every_prediction_batch_identical():
 # ---------------------------------------------------------------- counterexample: training vs evaluation rule
 def test_domain_id_embedding_dimensions_always_use_the_global_statistics():
     import copy
+
     m = _fit("star", epochs=2)[1]
     net, pn = m.net, m.net.pn
     dim = net.emb[DOM_COL].embedding_dim
     start = net.in_cols.index(DOM_COL) * dim
-    assert pn.global_dims.sum() == dim and pn.global_dims[start:start + dim].all()
+    assert pn.global_dims.sum() == dim and pn.global_dims[start : start + dim].all()
     sub = _rows_with_domain(2, k=300)
     cat, num = m.tensors(sub, slice(None))
     ids = slice(start, start + dim)

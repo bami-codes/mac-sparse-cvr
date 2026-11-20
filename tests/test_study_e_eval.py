@@ -34,7 +34,9 @@ def write_case(tmp: Path, monkeypatch, shuffle_v2: bool = False) -> Path:
     monkeypatch.setattr(E, "OUT", out)
     monkeypatch.setattr(E, "DATA", data)
     monkeypatch.setattr(Q, "RUNS", runs)
-    pl.DataFrame({"ad_feat1": TOKENS, "clicks": [5000] * 30, "pos": [1] * 30}).write_parquet(out / "train_stats_ad_feat1.parquet")
+    pl.DataFrame({"ad_feat1": TOKENS, "clicks": [5000] * 30, "pos": [1] * 30}).write_parquet(
+        out / "train_stats_ad_feat1.parquet"
+    )
     (out / "group_lists.json").write_text(json.dumps({"G1": G1, "C": C}))
     (out / "groups.json").write_text(json.dumps({"group_lists_sha256": "x"}))
     files = {}
@@ -49,8 +51,13 @@ def write_case(tmp: Path, monkeypatch, shuffle_v2: bool = False) -> Path:
         for s in Q.SEEDS:
             rid = Q.run_id(model, 0.003, 0.3, s)
             (runs / rid).mkdir(parents=True)
-            ck17, ck19 = hashlib.sha256(f"17{rid}".encode()).hexdigest(), hashlib.sha256(f"19{rid}".encode()).hexdigest()
-            cks = {"train-17.parquet": {"sha256": ck17}} | ({} if model == Q.WEIGHTED else {"train-19.parquet": {"sha256": ck19}})
+            ck17, ck19 = (
+                hashlib.sha256(f"17{rid}".encode()).hexdigest(),
+                hashlib.sha256(f"19{rid}".encode()).hexdigest(),
+            )
+            cks = {"train-17.parquet": {"sha256": ck17}} | (
+                {} if model == Q.WEIGHTED else {"train-19.parquet": {"sha256": ck19}}
+            )
             (runs / rid / "run.json").write_text(json.dumps({"checkpoints": cks}))  # the weighted runs stop at train-17
             d = runs / "research" / f"{Q.CKPT}_{ck17[:12]}"
             d.mkdir(parents=True)
@@ -60,7 +67,13 @@ def write_case(tmp: Path, monkeypatch, shuffle_v2: bool = False) -> Path:
                 yy = y.copy()
                 if shuffle_v2 and name == Q.V2:
                     yy = yy[::-1].copy()  # predictions saved in another row order
-                np.savez(d / f"{Path(name).stem}.npz", p_last=p.astype(np.float32), y_last=yy, user=user, row=np.arange(y.size))
+                np.savez(
+                    d / f"{Path(name).stem}.npz",
+                    p_last=p.astype(np.float32),
+                    y_last=yy,
+                    user=user,
+                    row=np.arange(y.size),
+                )
                 sha = hashlib.sha256((d / f"{Path(name).stem}.npz").read_bytes()).hexdigest()
                 (d / f"{Path(name).stem}.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": ck17}))
     path = tmp / "choice.json"
@@ -84,8 +97,11 @@ def test_calibration_choice_bootstrap_and_q3(tmp_path, monkeypatch):
     assert len(list((tmp_path / "e_study" / "q2" / "calibrators").glob("*.npz"))) == 9 * 2 * 2  # runs x methods x rules
     q4 = rec["v2_bootstrap"]
     assert q4["Q4: weighted ii - plain ii"]["diff"] < 0  # less G1 bias in the weighted model before group calibration
-    assert {"Q4: weighted iii - plain iii", "Q4 guard: weighted iii - plain iii, all clicks",
-            "Q4 guard: weighted iii - plain iii, G1 Poisson deviance"} <= set(q4)
+    assert {
+        "Q4: weighted iii - plain iii",
+        "Q4 guard: weighted iii - plain iii, all clicks",
+        "Q4 guard: weighted iii - plain iii, G1 Poisson deviance",
+    } <= set(q4)
     d = rec["v2_bootstrap"]["Q3 ii: (MoAE - BASE) on G1 minus on C"]
     assert abs(d["did"] - (d["diff_set_1"] - d["diff_set_2"])) < 1e-12
     assert d["ci95"][0] <= d["did"] <= d["ci95"][1]
@@ -97,8 +113,9 @@ def test_did_point_equals_two_group_reports():
     a, b = expit(base + 0.3), expit(base - 0.2)
     r = Q.did_bootstrap(y, [a], [b], g, user, np.arange(10), np.arange(10, 30), reps=50, seed=0)
     m1, m2 = g < 10, g >= 10
-    want = ((M.group_report(y[m1], a[m1], g[m1])["macro_logloss"] - M.group_report(y[m1], b[m1], g[m1])["macro_logloss"])
-            - (M.group_report(y[m2], a[m2], g[m2])["macro_logloss"] - M.group_report(y[m2], b[m2], g[m2])["macro_logloss"]))
+    want = (
+        M.group_report(y[m1], a[m1], g[m1])["macro_logloss"] - M.group_report(y[m1], b[m1], g[m1])["macro_logloss"]
+    ) - (M.group_report(y[m2], a[m2], g[m2])["macro_logloss"] - M.group_report(y[m2], b[m2], g[m2])["macro_logloss"])
     assert abs(r["did"] - want) < 1e-12
 
 
@@ -112,6 +129,7 @@ def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
     from sklearn.metrics import roc_auc_score
 
     from cvr import final_eval_e as F
+
     tok, base, y, user = frame(20_000, 9)
     test = tmp / "test" / "test.parquet"
     test.parent.mkdir()
@@ -130,7 +148,9 @@ def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
             d = Q.prediction_file("research", Q.CKPT, ck17, "test.parquet").parent
             np.savez(d / "test.npz", p_last=p.astype(np.float32), y_last=y, user=user, row=np.arange(y.size))
             sha = hashlib.sha256((d / "test.npz").read_bytes()).hexdigest()
-            (d / "test.json").write_text(json.dumps({"sha256": sha, "checkpoint_sha256": ck17, "source_sha256": test_sha}))
+            (d / "test.json").write_text(
+                json.dumps({"sha256": sha, "checkpoint_sha256": ck17, "source_sha256": test_sha})
+            )
             if model == Q.WEIGHTED:  # Q1 reproduces the paper's two models only
                 continue
             ck19 = Q.checkpoint_sha(rid, "train-19.parquet")
@@ -138,10 +158,17 @@ def add_test_and_records(tmp: Path, monkeypatch, choice_path: Path):
             d1.mkdir(parents=True)
             q = np.clip(p * 0.9, 1e-6, 1 - 1e-6).astype(np.float32)
             np.savez(d1 / "test.npz", p_last=q, y_last=y, user=user, row=np.arange(y.size))
-            (d1 / "test.json").write_text(json.dumps({
-                "sha256": hashlib.sha256((d1 / "test.npz").read_bytes()).hexdigest(),
-                "checkpoint_sha256": ck19, "source_sha256": test_sha,
-                "auc": float(roc_auc_score(y, q)), "gauc": M.gauc(y, q.astype(np.float64), user)["gauc"]}))
+            (d1 / "test.json").write_text(
+                json.dumps(
+                    {
+                        "sha256": hashlib.sha256((d1 / "test.npz").read_bytes()).hexdigest(),
+                        "checkpoint_sha256": ck19,
+                        "source_sha256": test_sha,
+                        "auc": float(roc_auc_score(y, q)),
+                        "gauc": M.gauc(y, q.astype(np.float64), user)["gauc"],
+                    }
+                )
+            )
     return F
 
 
@@ -170,7 +197,9 @@ def test_choose_freeze_dryrun_and_one_test_per_question(tmp_path, monkeypatch):
     assert not list((E.OUT / "frozen").glob("evaluation_*.lock"))
     done_predicting(F)
     r = F.test("q2")
-    assert set(r["verdict"]["conditions"]) == {"diff<0", "ci_upper<0", "all_pairs<0"} and r["primary"]["seed_pairs"] == 3
+    assert (
+        set(r["verdict"]["conditions"]) == {"diff<0", "ci_upper<0", "all_pairs<0"} and r["primary"]["seed_pairs"] == 3
+    )
     assert set(r["q4"]["hold"]) == {"all_click_logloss_worse", "g1_poisson_worse"}
     frozen = json.loads((E.OUT / "frozen" / "freeze_q2.json").read_text())
     assert len(frozen["checkpoints_sha256"]) == 9  # Q2 and Q4 in one claim
@@ -179,7 +208,10 @@ def test_choose_freeze_dryrun_and_one_test_per_question(tmp_path, monkeypatch):
         F.test("q2")
     q1 = F.test("q1")
     assert set(q1["summary"]) == {"MoAE", "BASE"} and q1["summary"]["MoAE"]["judgement"]["auc"] in (
-        "reproduced", "close", "not reproduced")
+        "reproduced",
+        "close",
+        "not reproduced",
+    )
 
 
 def test_a_changed_calibrator_stops_the_dry_run(tmp_path, monkeypatch):
@@ -197,23 +229,37 @@ def test_a_changed_calibrator_stops_the_dry_run(tmp_path, monkeypatch):
 def grid_rows(**over):
     """Summary rows for the full planned grid, every run validated at GAUC 0.70 unless overridden by id."""
     from cvr import final_eval_e as F
+
     rows = []
     for j in F.planned_grid():
-        r = {k: j[k] for k in ("id", "model", "lr", "lamda", "seed")} | {"state": "done", "val_gauc": 0.70, "val_auc": 0.80}
+        r = {k: j[k] for k in ("id", "model", "lr", "lamda", "seed")} | {
+            "state": "done",
+            "val_gauc": 0.70,
+            "val_auc": 0.80,
+        }
         rows.append(r | over.get(j["id"], {}))
     return rows
 
 
 def test_the_choice_rule_breaks_ties_by_auc_then_the_published_values(tmp_path, monkeypatch):
     from cvr import final_eval_e as F
+
     monkeypatch.setattr(E, "OUT", tmp_path)
-    rows = grid_rows(**{
-        "MoAE_lr0.004_lam0.1_s2026": {"val_gauc": 0.76, "val_auc": 0.86},
-        "MoAE_lr0.0035_lam0.3_s2026": {"val_gauc": 0.7600000004, "val_auc": 0.87},
-        "MoAE_lr0.003_lam0.3_s2026": {"val_gauc": 0.7600000002, "val_auc": 0.87},
-        "MoAE_lr0.04_lam0.3_s2026": {"state": "diverged", "val_gauc": None, "val_auc": None, "diverged": {"loss": "nan"}},
-        "BASE_lr0.003_lam0.3_s2026": {"val_gauc": 0.74, "val_auc": 0.85},
-        "BASE_lr0.0004_lam0.3_s2026": {"val_gauc": 0.75, "val_auc": 0.84}})
+    rows = grid_rows(
+        **{
+            "MoAE_lr0.004_lam0.1_s2026": {"val_gauc": 0.76, "val_auc": 0.86},
+            "MoAE_lr0.0035_lam0.3_s2026": {"val_gauc": 0.7600000004, "val_auc": 0.87},
+            "MoAE_lr0.003_lam0.3_s2026": {"val_gauc": 0.7600000002, "val_auc": 0.87},
+            "MoAE_lr0.04_lam0.3_s2026": {
+                "state": "diverged",
+                "val_gauc": None,
+                "val_auc": None,
+                "diverged": {"loss": "nan"},
+            },
+            "BASE_lr0.003_lam0.3_s2026": {"val_gauc": 0.74, "val_auc": 0.85},
+            "BASE_lr0.0004_lam0.3_s2026": {"val_gauc": 0.75, "val_auc": 0.84},
+        }
+    )
     s = tmp_path / "summary.jsonl"
     s.write_text("\n".join(json.dumps(r) for r in rows))
     out = F.choose(s)
@@ -229,6 +275,7 @@ def test_the_choice_rule_breaks_ties_by_auc_then_the_published_values(tmp_path, 
 @pytest.mark.parametrize("case", ["missing", "duplicate", "failed", "unvalidated", "settings", "finite_stop"])
 def test_the_settings_are_chosen_only_from_the_complete_grid(tmp_path, monkeypatch, case):
     from cvr import final_eval_e as F
+
     monkeypatch.setattr(E, "OUT", tmp_path)
     rows = grid_rows()
     if case == "missing":  # one MoAE and one BASE row must not be enough to choose
@@ -269,7 +316,11 @@ def test_the_dry_run_reproduces_every_seed_pair(tmp_path, monkeypatch):
     Q.calibrate(path)
     sel_path = E.OUT / "q2" / "selection.json"
     sel = json.loads(sel_path.read_text())
-    sel["v2_bootstrap"]["Q4: weighted iii - plain iii"]["per_pair_diff"] = [123.0, 123.0, 123.0]  # the mean alone would pass
+    sel["v2_bootstrap"]["Q4: weighted iii - plain iii"]["per_pair_diff"] = [
+        123.0,
+        123.0,
+        123.0,
+    ]  # the mean alone would pass
     sel_path.write_text(json.dumps(sel))
     F.freeze()
     with pytest.raises(F.CheckFailed, match="seed pair"):
@@ -297,8 +348,13 @@ def test_the_click_weighted_difference_of_differences_equals_its_definition():
     a, b = expit(base + 0.3), expit(base - 0.2)
     r = Q.did_click_bootstrap(y, [a], [b], g, user, np.arange(10), np.arange(10, 30), reps=50, seed=0)
     m1, m2 = g < 10, g >= 10
-    want = (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean()) - (M.bce(y[m2], a[m2]).mean() - M.bce(y[m2], b[m2]).mean())
-    assert abs(r["did"] - want) < 1e-12 and abs(r["diff_set_1"] - (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean())) < 1e-12
+    want = (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean()) - (
+        M.bce(y[m2], a[m2]).mean() - M.bce(y[m2], b[m2]).mean()
+    )
+    assert (
+        abs(r["did"] - want) < 1e-12
+        and abs(r["diff_set_1"] - (M.bce(y[m1], a[m1]).mean() - M.bce(y[m1], b[m1]).mean())) < 1e-12
+    )
 
 
 @pytest.mark.parametrize("case", ["q1_no_gauc", "q2_no_p_last", "q2_nan"])

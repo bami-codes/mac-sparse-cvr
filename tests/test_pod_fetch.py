@@ -29,7 +29,7 @@ def test_all_fifteen_checkpoints_are_copied_and_verified(tmp_path):
         d = pod / "runs" / "e_runs" / rid
         d.mkdir(parents=True)
         cks = {}
-        for k in ((17,) if rid.startswith("MoAE-g1w2") else (17, 19)):
+        for k in (17,) if rid.startswith("MoAE-g1w2") else (17, 19):
             blob = f"{rid}-{k}".encode() * 1000
             (d / f"model_after_train-{k}.pt").write_bytes(blob)
             cks[f"train-{k}.parquet"] = {"sha256": hashlib.sha256(blob).hexdigest()}
@@ -38,7 +38,13 @@ def test_all_fifteen_checkpoints_are_copied_and_verified(tmp_path):
             (work / "runs" / "e_runs" / rid).mkdir(parents=True)
             (work / "runs" / "e_runs" / rid / "run.json").write_text((d / "run.json").read_text())
     env = os.environ | {"PATH": f"{bin_}:{os.environ['PATH']}", "FAKE_POD": str(pod), "POD": "-p 1 root@pod"}
-    p = subprocess.run(["bash", str(REPO / "scripts" / "pod_fetch.sh"), "checkpoints"], cwd=work, env=env,
-                       capture_output=True, text=True, timeout=120)
+    p = subprocess.run(
+        ["bash", str(REPO / "scripts" / "pod_fetch.sh"), "checkpoints"],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert p.returncode == 0, p.stdout + p.stderr
     assert p.stdout.count("OK  ") == 15 and "BAD" not in p.stdout

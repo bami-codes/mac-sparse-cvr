@@ -26,8 +26,9 @@ def make_raw(rows: list[dict]) -> pl.DataFrame:
         out["ad_feat0"].append(r["item"])
         out["ad_feat1"].append(r["cat"])
         out["ad_feat2"].append(r["shop"])
-        for c in ["ad_feat3", "ad_feat4", "ad_feat5", "context_feat1", "context_feat2", "context_feat3"] + \
-                [f"user_feat{i}" for i in range(6)]:
+        for c in ["ad_feat3", "ad_feat4", "ad_feat5", "context_feat1", "context_feat2", "context_feat3"] + [
+            f"user_feat{i}" for i in range(6)
+        ]:
             out[c].append("v1")
         for j, c in enumerate(["ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq"]):
             out[c].append([s if s == PAD else s[j] for s in seq])
@@ -44,8 +45,7 @@ TRAIN = [
     {"user": "00000000000c", "item": "i1", "cat": "c2", "shop": "s1", "seq": []},  # empty history
 ]
 VALID = [  # "i9" / "c9" / "s9" appear only here
-    {"user": "00000000000d", "item": "i9", "cat": "c1", "shop": "s9",
-     "seq": [("i9", "c9", "s9"), ("i1", "c1", "s1")]},
+    {"user": "00000000000d", "item": "i9", "cat": "c1", "shop": "s9", "seq": [("i9", "c9", "s9"), ("i1", "c1", "s1")]},
 ]
 
 

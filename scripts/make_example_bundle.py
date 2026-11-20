@@ -37,6 +37,7 @@ LAMBDA = 100.0  # fixed for the example (the benchmark models choose it on a lat
 
 def build(out: Path, rows: int = 20000) -> dict:
     import torch
+
     with tempfile.TemporaryDirectory() as tmp:
         mac = Path(tmp) / "data"
         world = make_world(seed=7, n_users=400, n_items=200)
@@ -44,10 +45,35 @@ def build(out: Path, rows: int = 20000) -> dict:
             make_file(world, mac / "train" / name, seed=10 + i, rows=rows)
         write_official_vocabs(mac)
         R.preprocess(mac, mac / "cached", [*TRAIN, CALIB])
-        a = R.parser().parse_args(["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--out", str(Path(tmp) / "run"),
-                                   "--device", "cpu", "--num_workers", "0", "--model", "BASE", "--lr", "0.003",
-                                   "--batch_size", "256", "--seed", "2026", "--schedule_rows", str(rows * len(TRAIN)),
-                                   "--train_files", *TRAIN, "--ckpt_after", TRAIN[-1]])
+        a = R.parser().parse_args(
+            [
+                "train",
+                "--mac",
+                str(mac),
+                "--cache",
+                str(mac / "cached"),
+                "--out",
+                str(Path(tmp) / "run"),
+                "--device",
+                "cpu",
+                "--num_workers",
+                "0",
+                "--model",
+                "BASE",
+                "--lr",
+                "0.003",
+                "--batch_size",
+                "256",
+                "--seed",
+                "2026",
+                "--schedule_rows",
+                str(rows * len(TRAIN)),
+                "--train_files",
+                *TRAIN,
+                "--ckpt_after",
+                TRAIN[-1],
+            ]
+        )
         run = R.train(a)
         args = json.loads((run / "run.json").read_text())["args"]
         ckpt = run / f"model_after_{Path(TRAIN[-1]).stem}.pt"
@@ -60,17 +86,27 @@ def build(out: Path, rows: int = 20000) -> dict:
         with open(mac / "cached" / CALIB.replace(".parquet", ".pkl"), "rb") as f:
             ds = D.MALDataset(pickle.load(f))
         with torch.no_grad():
-            p = model(ds.static_user[:, 1:], ds.static_ad, ds.mm_arr, ds.seq_arr)[args["main_view"]][:, 1].numpy().astype(np.float64)
+            p = (
+                model(ds.static_user[:, 1:], ds.static_ad, ds.mm_arr, ds.seq_arr)[args["main_view"]][:, 1]
+                .numpy()
+                .astype(np.float64)
+            )
         y = np.asarray(ds.data["last"])
         train_tokens = set()
         for name in TRAIN:
-            train_tokens |= set(pq.read_table(mac / "train" / name, columns=["ad_feat1"]).column("ad_feat1").to_pylist())
+            train_tokens |= set(
+                pq.read_table(mac / "train" / name, columns=["ad_feat1"]).column("ad_feat1").to_pylist()
+            )
         codes = {t: i for i, t in enumerate(sorted(train_tokens))}
         calib = pq.read_table(mac / "train" / CALIB)
         g = np.array([codes.get(t, -1) for t in calib.column("ad_feat1").to_pylist()])
         from sklearn.metrics import roc_auc_score
-        quality = {"auc_on_calibration_file": round(float(roc_auc_score(y, p)), 4),
-                   "positive_rate": round(float(y.mean()), 4), "mean_prediction": round(float(p.mean()), 4)}
+
+        quality = {
+            "auc_on_calibration_file": round(float(roc_auc_score(y, p)), 4),
+            "positive_rate": round(float(y.mean()), 4),
+            "mean_prediction": round(float(p.mean()), 4),
+        }
         glob = GlobalPlatt.fit(p, y)
         gs, _ = fit_group_shrunk_exact(p, y, g, glob, LAMBDA)
         # the bundle
@@ -82,10 +118,21 @@ def build(out: Path, rows: int = 20000) -> dict:
         shutil.copytree(mac / "vocabs", model_dir / "vocabs")
         save_domain_calibrators(glob, gs, model_dir / "calibrator.npz")
         (model_dir / "group_codes.json").write_text(json.dumps(codes))
-        cfg = {"args": args, "checkpoint": "model.pt", "checkpoint_sha256": R.sha256(model_dir / "model.pt"),
-               "calibrator": "calibrator.npz", "calibration": "iii", "vocabs": "vocabs",
-               "source": {"data": "synthetic (tests/synthetic_mac.py, seed 7)", "trained_on": TRAIN,
-                          "calibrator_fitted_on": CALIB, "lambda": LAMBDA} | quality}
+        cfg = {
+            "args": args,
+            "checkpoint": "model.pt",
+            "checkpoint_sha256": R.sha256(model_dir / "model.pt"),
+            "calibrator": "calibrator.npz",
+            "calibration": "iii",
+            "vocabs": "vocabs",
+            "source": {
+                "data": "synthetic (tests/synthetic_mac.py, seed 7)",
+                "trained_on": TRAIN,
+                "calibrator_fitted_on": CALIB,
+                "lambda": LAMBDA,
+            }
+            | quality,
+        }
         (model_dir / "config.json").write_text(json.dumps(cfg, indent=2))
         # a request: one user of the calibration file with three of that user's rows as candidates
         users = calib.column("user_id").to_pylist()

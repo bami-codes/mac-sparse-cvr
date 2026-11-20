@@ -31,6 +31,7 @@ def user_fold(df: pl.DataFrame, k: int) -> np.ndarray:
 @dataclass
 class StackingModels:
     """Full-training fits used for every non-training row (V1, V2, test, serving)."""
+
     aux: GBDT | None
     te: dict[str, SmoothedRate]
     counts: dict[str, pl.DataFrame]
@@ -47,29 +48,57 @@ class StackingModels:
         return df.with_columns(cols)
 
 
-def fit_stacking(train: pl.DataFrame, lgb_params: dict, aux_seed: int, folds: int, num_boost_round: int,
-                 early_stopping_rounds: int, use_aux: bool, use_te: bool, aux_label: str = AUX_LABEL,
-                 aux_col: str = "aux_mta") -> tuple[pl.DataFrame, StackingModels, dict]:
+def fit_stacking(
+    train: pl.DataFrame,
+    lgb_params: dict,
+    aux_seed: int,
+    folds: int,
+    num_boost_round: int,
+    early_stopping_rounds: int,
+    use_aux: bool,
+    use_te: bool,
+    aux_label: str = AUX_LABEL,
+    aux_col: str = "aux_mta",
+) -> tuple[pl.DataFrame, StackingModels, dict]:
     """Returns (train with out-of-fold extra columns, full-training models, info).
 
     aux_label / aux_col default to the second study's mta model. The control of docs/DESIGN.md §15.2 builds the
     same out-of-fold input from the main label ("y") under the column name "aux_last"."""
     fold = user_fold(train, folds)
-    info: dict = {"folds": folds, "aux_label": aux_label if use_aux else None, "aux_col": aux_col, "aux_seed": aux_seed,
-                  "fold_rows": np.bincount(fold, minlength=folds).tolist()}
+    info: dict = {
+        "folds": folds,
+        "aux_label": aux_label if use_aux else None,
+        "aux_col": aux_col,
+        "aux_seed": aux_seed,
+        "fold_rows": np.bincount(fold, minlength=folds).tolist(),
+    }
     extra: dict[str, np.ndarray] = {}
     aux_full, te_full, counts = None, {}, {}
     if use_aux:
         oof = np.empty(train.height)
         rounds = []
         for f in range(folds):
-            m = GBDT.fit(train.filter(pl.Series(fold != f)), lgb_params, aux_seed, num_boost_round,
-                         early_stopping_rounds, CAT_INPUTS + NUM_INPUTS, label=aux_label)
+            m = GBDT.fit(
+                train.filter(pl.Series(fold != f)),
+                lgb_params,
+                aux_seed,
+                num_boost_round,
+                early_stopping_rounds,
+                CAT_INPUTS + NUM_INPUTS,
+                label=aux_label,
+            )
             oof[fold == f] = m.predict(train.filter(pl.Series(fold == f)))
             rounds.append(m.rounds)
         extra[aux_col] = oof
-        aux_full = GBDT.fit(train, lgb_params, aux_seed, num_boost_round, early_stopping_rounds,
-                            CAT_INPUTS + NUM_INPUTS, label=aux_label)
+        aux_full = GBDT.fit(
+            train,
+            lgb_params,
+            aux_seed,
+            num_boost_round,
+            early_stopping_rounds,
+            CAT_INPUTS + NUM_INPUTS,
+            label=aux_label,
+        )
         info["aux_rounds"] = {"folds": rounds, "full": aux_full.rounds}
         info["aux_label_rate"] = float(train[aux_label].mean())
     if use_te:

@@ -57,13 +57,17 @@ def main(src: str, out: str) -> None:
     for device in ["cpu"] + (["mps"] if torch.backends.mps.is_available() else []):
         sub = np.arange(min(a_tr.n, 60 * 4096))
         from cvr.nn import M3Arrays
+
         a_sub = M3Arrays(a_tr.other[sub], a_tr.target[sub], a_tr.seq[sub], a_tr.mm[sub], a_tr.num[sub])
         t1 = time.time()
         M3Model.fit(a_sub, y_tr[sub], other_sizes, id_sizes, "attn", seed=0, device=device, threads=4)
         if device == "mps":
             torch.mps.synchronize()
-        speed[device] = {"steps": int(np.ceil(sub.size / 4096)), "seconds": round(time.time() - t1, 2),
-                         "ms_per_step": round(1000 * (time.time() - t1) / np.ceil(sub.size / 4096), 1)}
+        speed[device] = {
+            "steps": int(np.ceil(sub.size / 4096)),
+            "seconds": round(time.time() - t1, 2),
+            "ms_per_step": round(1000 * (time.time() - t1) / np.ceil(sub.size / 4096), 1),
+        }
     report["speed_attn_batch4096"] = speed
 
     # rough holdout comparison, 1 epoch on CPU, 2 seeds per variant
@@ -73,9 +77,13 @@ def main(src: str, out: str) -> None:
             t1 = time.time()
             m = M3Model.fit(a_tr, y_tr, other_sizes, id_sizes, pooling, seed=seed, device="cpu", threads=4)
             p = m.predict(a_ho)
-            res[f"{pooling}_s{seed}"] = {"logloss": log_loss(y_ho, p), "auc": roc_auc_score(y_ho, p),
-                                        "O_over_E": float(y_ho.sum() / p.sum()), "seconds": round(time.time() - t1, 1),
-                                        "info": m.info}
+            res[f"{pooling}_s{seed}"] = {
+                "logloss": log_loss(y_ho, p),
+                "auc": roc_auc_score(y_ho, p),
+                "O_over_E": float(y_ho.sum() / p.sum()),
+                "seconds": round(time.time() - t1, 1),
+                "info": m.info,
+            }
     report["holdout_1rowgroup"] = res
     report["note"] = "one row group of one file, users split 70/30; feasibility only, not a study result"
     report["peak_rss_gb"] = round(rss_gb(), 2)

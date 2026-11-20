@@ -18,13 +18,20 @@ TOL = 1e-5
 def compare(gpu: dict, cpu: dict) -> dict:
     gcols, ccols = {k for k in gpu if k.startswith("p_")}, {k for k in cpu if k.startswith("p_")}
     cols = sorted(gcols & ccols)  # a column missing on one side is a failure, recorded below, not a crash
-    same_rows = (gcols == ccols and np.array_equal(gpu["user"], cpu["user"])
-                 and np.array_equal(gpu["y_last"], cpu["y_last"]))
+    same_rows = (
+        gcols == ccols and np.array_equal(gpu["user"], cpu["user"]) and np.array_equal(gpu["y_last"], cpu["y_last"])
+    )
     diff = {k: float(np.abs(np.asarray(gpu[k], np.float64) - np.asarray(cpu[k], np.float64)).max()) for k in cols}
     finite = {k: bool(np.isfinite(gpu[k]).all() and np.isfinite(cpu[k]).all()) for k in cols}
     ok = bool(same_rows and cols and all(finite[k] and np.isfinite(diff[k]) and diff[k] <= TOL for k in cols))
-    return {"rows": int(np.asarray(gpu["p_last"]).size), "same_rows_and_labels": bool(same_rows), "max_abs_diff": diff,
-            "all_finite": finite, "tolerance": TOL, "passed": ok}
+    return {
+        "rows": int(np.asarray(gpu["p_last"]).size),
+        "same_rows_and_labels": bool(same_rows),
+        "max_abs_diff": diff,
+        "all_finite": finite,
+        "tolerance": TOL,
+        "passed": ok,
+    }
 
 
 if __name__ == "__main__":

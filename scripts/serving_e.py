@@ -88,12 +88,28 @@ def prepare() -> dict:
     pq.write_table(read_rows(v2, need, ServerE.columns()), DIR / "rows.parquet")
     _, y2 = Q.file_columns(Q.V2, codes)
     saved = {f"p_{m}": Q.predictions(rid, Q.V2, y2)["p"][check] for m, rid in runs().items()}
-    np.savez(DIR / "plan.npz", check=check, clicks=clicks, pool=pool, owners=owners, cand=cand,
-             check_group=np.array([codes.get(tokens[i], -1) for i in check]), **saved)
-    meta = {"seed": SEED, "source": str(v2), "source_rows": int(n), "rows": int(need.size), "runs": runs(),
-            "rows_sha256": R.sha256(DIR / "rows.parquet"), "plan_sha256": R.sha256(DIR / "plan.npz"),
-            "check_rows": int(check.size), "sparse_check_rows": int(np.isin(check, sparse).sum()),
-            "read_seconds": round(time.time() - t0, 1)}
+    np.savez(
+        DIR / "plan.npz",
+        check=check,
+        clicks=clicks,
+        pool=pool,
+        owners=owners,
+        cand=cand,
+        check_group=np.array([codes.get(tokens[i], -1) for i in check]),
+        **saved,
+    )
+    meta = {
+        "seed": SEED,
+        "source": str(v2),
+        "source_rows": int(n),
+        "rows": int(need.size),
+        "runs": runs(),
+        "rows_sha256": R.sha256(DIR / "rows.parquet"),
+        "plan_sha256": R.sha256(DIR / "plan.npz"),
+        "check_rows": int(check.size),
+        "sparse_check_rows": int(np.isin(check, sparse).sum()),
+        "read_seconds": round(time.time() - t0, 1),
+    }
     (DIR / "meta.json").write_text(json.dumps(meta, indent=2))
     return meta
 
@@ -112,16 +128,20 @@ def servers(meta: dict) -> dict:
     D, _ = R.official()
     vocabs = D.get_vocabs("data/raw/mac/vocabs")
     codes = Q.token_codes()
-    return {m: ServerE(rid, Q.RUNS / rid / "model_after_train-17.pt", vocabs, codes, threads=1)
-            for m, rid in meta["runs"].items()}
+    return {
+        m: ServerE(rid, Q.RUNS / rid / "model_after_train-17.pt", vocabs, codes, threads=1)
+        for m, rid in meta["runs"].items()
+    }
 
 
 def requests_of(plan: dict, rows: dict) -> list[tuple[dict, list[dict]]]:
     D, _ = R.official()
     user_cols = D.USER_COLS + D.SEQ_COLS
     pool = [rows[int(i)] for i in plan["pool"]]
-    return [({c: rows[int(o)][c] for c in user_cols}, [pool[j] for j in plan["cand"][k]])
-            for k, o in enumerate(plan["owners"])]
+    return [
+        ({c: rows[int(o)][c] for c in user_cols}, [pool[j] for j in plan["cand"][k]])
+        for k, o in enumerate(plan["owners"])
+    ]
 
 
 def code_version() -> dict:
@@ -129,16 +149,24 @@ def code_version() -> dict:
     gets a copy without .git: its files are compared with the commit's by these hashes)."""
     git = subprocess.run(["git", "rev-parse", "HEAD"], check=False, capture_output=True, text=True)
     dirty = subprocess.run(["git", "status", "--porcelain", "--", *CODE], check=False, capture_output=True, text=True)
-    return {"files_sha256": {f: R.sha256(Path(f)) for f in CODE},
-            "git_commit": git.stdout.strip() if git.returncode == 0 else None,
-            "code_uncommitted": bool(dirty.stdout.strip()) if git.returncode == 0 else None}
+    return {
+        "files_sha256": {f: R.sha256(Path(f)) for f in CODE},
+        "git_commit": git.stdout.strip() if git.returncode == 0 else None,
+        "code_uncommitted": bool(dirty.stdout.strip()) if git.returncode == 0 else None,
+    }
 
 
 def machine() -> dict:
     import torch
-    return {"cpu": cpu_name(), "platform": platform.platform(), "python": platform.python_version(),
-            "torch": torch.__version__, "torch_threads": torch.get_num_threads(),
-            "torch_interop_threads": torch.get_num_interop_threads()}
+
+    return {
+        "cpu": cpu_name(),
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "torch": torch.__version__,
+        "torch_threads": torch.get_num_threads(),
+        "torch_interop_threads": torch.get_num_interop_threads(),
+    }
 
 
 def check(name: str) -> dict:
@@ -148,21 +176,32 @@ def check(name: str) -> dict:
     served_rows = [rows[int(i)] for i in plan["check"]]
     out = {"name": name, "machine": machine(), "code": code_version(), "models": {}}
     row_tol = NN_SINGLE_VS_BATCH_TOL if name == SAVED_ON else CROSS_MACHINE_ROW_TOL
-    tols = {"max_abs_diff_raw": row_tol, "max_abs_diff_calibrated": row_tol,
-            "max_abs_diff_batch_raw": NN_SINGLE_VS_BATCH_TOL, "max_abs_diff_shared_vs_per_row": NN_SINGLE_VS_BATCH_TOL}
+    tols = {
+        "max_abs_diff_raw": row_tol,
+        "max_abs_diff_calibrated": row_tol,
+        "max_abs_diff_batch_raw": NN_SINGLE_VS_BATCH_TOL,
+        "max_abs_diff_shared_vs_per_row": NN_SINGLE_VS_BATCH_TOL,
+    }
     for m, server in srv.items():
         saved = plan[f"p_{m}"]
         raw = np.array([server.raw([r])[0] for r in served_rows])
         cal = np.array([server.predict([r])[0] for r in served_rows])
         batch = server.raw(served_rows)
         _, ref = Q.load_calibrated(meta["runs"][m], "iii", "main", saved, plan["check_group"])
-        d_req = max(float(np.abs(server.predict([c | o for c in cs]) - server.predict_request(o, cs)).max())
-                    for o, cs in reqs)
-        res = {"max_abs_diff_raw": float(np.abs(raw - saved).max()), "max_abs_diff_calibrated": float(np.abs(cal - ref).max()),
-               "max_abs_diff_batch_raw": float(np.abs(batch - saved).max()),
-               "rows_raw_above_1e-6": int((np.abs(raw - saved) > NN_SINGLE_VS_BATCH_TOL).sum()),
-               "max_abs_diff_shared_vs_per_row": d_req, "rows": int(raw.size), "requests": len(reqs),
-               "tolerances": tols, "oov": dict(server.oov)}
+        d_req = max(
+            float(np.abs(server.predict([c | o for c in cs]) - server.predict_request(o, cs)).max()) for o, cs in reqs
+        )
+        res = {
+            "max_abs_diff_raw": float(np.abs(raw - saved).max()),
+            "max_abs_diff_calibrated": float(np.abs(cal - ref).max()),
+            "max_abs_diff_batch_raw": float(np.abs(batch - saved).max()),
+            "rows_raw_above_1e-6": int((np.abs(raw - saved) > NN_SINGLE_VS_BATCH_TOL).sum()),
+            "max_abs_diff_shared_vs_per_row": d_req,
+            "rows": int(raw.size),
+            "requests": len(reqs),
+            "tolerances": tols,
+            "oov": dict(server.oov),
+        }
         out["models"][m] = res
         bad = [k for k, t in tols.items() if not (np.isfinite(res[k]) and res[k] <= t)]
         if bad:
@@ -173,6 +212,7 @@ def check(name: str) -> dict:
 
 def session(name: str) -> dict:
     import torch
+
     dest = DIR / "sessions" / f"{name}.json"
     if dest.exists() or dest.with_suffix(".npz").exists():
         raise CheckFailed(f"{dest} exists: a session is never measured again under the same name")
@@ -221,14 +261,32 @@ def session(name: str) -> dict:
     (DIR / "sessions").mkdir(parents=True, exist_ok=True)
     np.savez(DIR / "sessions" / f"{name}.npz", **{k: np.asarray(v, dtype=np.int64) for k, v in rec.items()})
     passed = float(np.mean([b["passed"] for b in blocks]))
-    out = {"name": name, "machine": machine() | prio, "code": code_version(), "peak_rss_gb": peak_rss_gb(),
-           "seconds": round(time.time() - t_start, 1), "env_start": env_start, "env_end": env_end, "blocks": blocks,
-           "gate_pass_share": passed, "valid": bool(passed >= L.VALID_SESSION_PASS_SHARE),
-           "oov": {m: dict(s.oov) for m, s in srv.items()},
-           "protocol": {"seed": SEED, "clicks": CLICKS, "click_block": CLICK_BLOCK, "requests": REQUESTS,
-                        "request_block": REQ_BLOCK, "candidates": CANDIDATES, "pool": POOL,
-                        "warmup_clicks": CLICK_WARMUP, "warmup_requests": REQ_WARMUP,
-                        "gate_other_cpu": L.GATE_OTHER_CPU, "gate_max_wait_s": L.GATE_MAX_WAIT_S}}
+    out = {
+        "name": name,
+        "machine": machine() | prio,
+        "code": code_version(),
+        "peak_rss_gb": peak_rss_gb(),
+        "seconds": round(time.time() - t_start, 1),
+        "env_start": env_start,
+        "env_end": env_end,
+        "blocks": blocks,
+        "gate_pass_share": passed,
+        "valid": bool(passed >= L.VALID_SESSION_PASS_SHARE),
+        "oov": {m: dict(s.oov) for m, s in srv.items()},
+        "protocol": {
+            "seed": SEED,
+            "clicks": CLICKS,
+            "click_block": CLICK_BLOCK,
+            "requests": REQUESTS,
+            "request_block": REQ_BLOCK,
+            "candidates": CANDIDATES,
+            "pool": POOL,
+            "warmup_clicks": CLICK_WARMUP,
+            "warmup_requests": REQ_WARMUP,
+            "gate_other_cpu": L.GATE_OTHER_CPU,
+            "gate_max_wait_s": L.GATE_MAX_WAIT_S,
+        },
+    }
     dest.write_text(json.dumps(out, indent=1))
     return {k: out[k] for k in ("name", "seconds", "gate_pass_share", "valid", "peak_rss_gb")}
 
@@ -255,15 +313,24 @@ def summary() -> dict:
     for mach, ss in by_machine.items():
         valid = [s for s in ss if s["valid"]][:SESSIONS_PER_MACHINE]  # the first three valid sessions
         an = {s["name"]: analyse(s["name"]) for s in valid}
-        res = {"sessions": [s["name"] for s in ss], "used": [s["name"] for s in valid],
-               "complete": len(valid) == SESSIONS_PER_MACHINE,
-               "code_sha256": sorted({json.dumps(s.get("code", {}).get("files_sha256"), sort_keys=True) for s in valid}),
-               "invalid": [s["name"] for s in ss if not s["valid"]], "machine": (valid or ss)[0]["machine"],
-               "gate_pass_share": {s["name"]: s["gate_pass_share"] for s in ss}, "per_session": an}
+        res = {
+            "sessions": [s["name"] for s in ss],
+            "used": [s["name"] for s in valid],
+            "complete": len(valid) == SESSIONS_PER_MACHINE,
+            "code_sha256": sorted({json.dumps(s.get("code", {}).get("files_sha256"), sort_keys=True) for s in valid}),
+            "invalid": [s["name"] for s in ss if not s["valid"]],
+            "machine": (valid or ss)[0]["machine"],
+            "gate_pass_share": {s["name"]: s["gate_pass_share"] for s in ss},
+            "per_session": an,
+        }
         if len(valid) == SESSIONS_PER_MACHINE:
             first = an[valid[0]["name"]]
-            res["stability"] = {f"{k} {q}": L.stability([an[s["name"]][k]["wall"][q] for s in valid])
-                                for k in first if "/" not in k for q in ("p50", "p99")}
+            res["stability"] = {
+                f"{k} {q}": L.stability([an[s["name"]][k]["wall"][q] for s in valid])
+                for k in first
+                if "/" not in k
+                for q in ("p50", "p99")
+            }
             res["stability"] |= {k: L.stability([an[s["name"]][k]["ratio"] for s in valid]) for k in first if "/" in k}
             res["effect"] = {k: L.effect([an[s["name"]][k]["ci95"] for s in valid]) for k in first if "/" in k}
         out[mach] = res
@@ -277,8 +344,11 @@ def render(machine: str) -> str:
     if not r.get("complete"):
         raise CheckFailed(f"{machine}: {len(r['used'])} valid sessions, three are needed")
     st, names = r["stability"], r["used"]
-    paths = {"click": "클릭 한 건", "request per_row": "요청 (후보 100개), 후보마다 인코딩",
-             "request shared": "요청 (후보 100개), 사용자 공유 인코딩"}
+    paths = {
+        "click": "클릭 한 건",
+        "request per_row": "요청 (후보 100개), 후보마다 인코딩",
+        "request shared": "요청 (후보 100개), 사용자 공유 인코딩",
+    }
 
     def span(v: dict) -> str:
         return f"{v['median']:.2f} ({min(v['sessions']):.2f}–{max(v['sessions']):.2f})"
@@ -288,8 +358,13 @@ def render(machine: str) -> str:
         for k, label in paths.items():
             out.append(f"| {model} | {label} | {span(st[f'{model} {k} p50'])} | {span(st[f'{model} {k} p99'])} |")
     worst = max(v["max_over_min"] for k, v in st.items() if "/" not in k)
-    out += ["", f"세 세션의 중앙값(범위), ms. 모든 값이 세 세션 사이에서 {worst:.2f}배 안이다.", "",
-            "| 모델 | 공유 ÷ 후보마다, p50 | 공유 ÷ 후보마다, p99 |", "|---|---|---|"]
+    out += [
+        "",
+        f"세 세션의 중앙값(범위), ms. 모든 값이 세 세션 사이에서 {worst:.2f}배 안이다.",
+        "",
+        "| 모델 | 공유 ÷ 후보마다, p50 | 공유 ÷ 후보마다, p99 |",
+        "|---|---|---|",
+    ]
     for model in L.MODELS:
         cells = []
         for q in ("p50", "p99"):
@@ -302,12 +377,18 @@ def render(machine: str) -> str:
     for model in L.MODELS:
         for k, label in paths.items():
             ds = [r["per_session"][n][f"{model} {k}"] for n in names]
-            cells = [f"{np.median([d['stages_p50'][x] for d in ds]):.2f} / {np.median([d['stages_p99'][x] for d in ds]):.2f}"
-                     for x in ("encode", "model", "calibrate")]
+            cells = [
+                f"{np.median([d['stages_p50'][x] for d in ds]):.2f} / {np.median([d['stages_p99'][x] for d in ds]):.2f}"
+                for x in ("encode", "model", "calibrate")
+            ]
             out.append(f"| {model} | {label} | {' | '.join(cells)} |")
-    switched = [r["per_session"][n][f"{m} {k}"]["share_context_switched"] for n in names for m in L.MODELS for k in paths]
-    note = (f"단계별 p50 / p99, ms (세 세션의 중앙값). 측정 중 문맥 전환이 일어난 요청은 경로마다 "
-            f"{min(switched):.1%}–{max(switched):.1%}였다.")
+    switched = [
+        r["per_session"][n][f"{m} {k}"]["share_context_switched"] for n in names for m in L.MODELS for k in paths
+    ]
+    note = (
+        f"단계별 p50 / p99, ms (세 세션의 중앙값). 측정 중 문맥 전환이 일어난 요청은 경로마다 "
+        f"{min(switched):.1%}–{max(switched):.1%}였다."
+    )
     out += ["", note]
     return "\n".join(out)
 

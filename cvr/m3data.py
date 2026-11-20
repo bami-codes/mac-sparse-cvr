@@ -27,8 +27,9 @@ def count_ids(raw: pl.DataFrame, counts: dict | None = None) -> dict[str, pl.Dat
     for tgt, seq in SEQ_PAIRS:
         both = pl.concat([raw.select(pl.col(tgt).alias("v")), raw.select(pl.col(seq).explode().alias("v"))])
         vc = both.group_by("v").agg(pl.len().alias("n")).rename({"v": "value"})
-        counts[tgt] = vc if tgt not in counts else (
-            pl.concat([counts[tgt], vc]).group_by("value").agg(pl.col("n").sum()))
+        counts[tgt] = (
+            vc if tgt not in counts else (pl.concat([counts[tgt], vc]).group_by("value").agg(pl.col("n").sum()))
+        )
     return counts
 
 
@@ -49,7 +50,9 @@ class M3Arrays:
 def encode_m3(raw: pl.DataFrame, feats: pl.DataFrame, id_vocab: dict[str, pl.DataFrame]) -> M3Arrays:
     """`raw` is the raw frame of one file; `feats` is its featurize() output (same row order)."""
     n = raw.height
-    lens = raw.select([pl.col(s).list.len().alias(s) for _, s in SEQ_PAIRS] + [pl.col(m).list.len().alias(m) for m in MM_COLS])
+    lens = raw.select(
+        [pl.col(s).list.len().alias(s) for _, s in SEQ_PAIRS] + [pl.col(m).list.len().alias(m) for m in MM_COLS]
+    )
     if not (lens.to_numpy() == SEQ_LEN).all():
         raise ValueError("expected every purchase sequence to have length 20")
     tgt_cols, seq_cols, coverage = [], [], {}
@@ -60,20 +63,26 @@ def encode_m3(raw: pl.DataFrame, feats: pl.DataFrame, id_vocab: dict[str, pl.Dat
         s = raw.select(enc(pl.col(seq).explode()))[seq].to_numpy().reshape(n, SEQ_LEN)
         seq_cols.append(s)
         real = s != MISSING
-        coverage[tgt] = {"target_unknown_share": float((tgt_cols[-1] == UNKNOWN).mean()),
-                         "seq_unknown_share_of_nonpad": float((s[real] == UNKNOWN).mean()) if real.any() else None}
+        coverage[tgt] = {
+            "target_unknown_share": float((tgt_cols[-1] == UNKNOWN).mean()),
+            "seq_unknown_share_of_nonpad": float((s[real] == UNKNOWN).mean()) if real.any() else None,
+        }
     mm = np.stack([raw.select(pl.col(m).explode())[m].to_numpy().reshape(n, SEQ_LEN) for m in MM_COLS], axis=-1)
-    return M3Arrays(other=feats.select(OTHER_CATS).to_numpy().astype(np.int32),
-                    target=np.stack(tgt_cols, axis=1).astype(np.int32),
-                    seq=np.stack(seq_cols, axis=-1).astype(np.int32),
-                    mm=mm.astype(np.float32),
-                    num=feats.select(NUM_INPUTS).to_numpy().astype(np.float32),
-                    coverage=coverage)
+    return M3Arrays(
+        other=feats.select(OTHER_CATS).to_numpy().astype(np.int32),
+        target=np.stack(tgt_cols, axis=1).astype(np.int32),
+        seq=np.stack(seq_cols, axis=-1).astype(np.int32),
+        mm=mm.astype(np.float32),
+        num=feats.select(NUM_INPUTS).to_numpy().astype(np.float32),
+        coverage=coverage,
+    )
 
 
 def concat_arrays(parts: list[M3Arrays]) -> M3Arrays:
-    return M3Arrays(*(np.concatenate([getattr(p, f) for p in parts]) for f in ("other", "target", "seq", "mm", "num")),
-                    coverage={"per_file": [p.coverage for p in parts]})
+    return M3Arrays(
+        *(np.concatenate([getattr(p, f) for p in parts]) for f in ("other", "target", "seq", "mm", "num")),
+        coverage={"per_file": [p.coverage for p in parts]},
+    )
 
 
 # ---------------------------------------------------------------- network

@@ -65,15 +65,13 @@ class GroupShrunkPlatt:
             # binary cross-entropy written with logaddexp for numerical stability
             loss = np.logaddexp(0.0, s).sum() - (y * s).sum() + lam * (da @ da + db @ db)
             r = expit(s) - y
-            grad = np.concatenate([np.bincount(gi, r * z, G) + 2 * lam * da,
-                                   np.bincount(gi, r, G) + 2 * lam * db])
+            grad = np.concatenate([np.bincount(gi, r * z, G) + 2 * lam * da, np.bincount(gi, r, G) + 2 * lam * db])
             return loss, grad
 
         # a + da_g > 0 is enforced with bounds so the mapping stays increasing in every group
         # (then within-group AUC cannot change); intercept offsets are unbounded.
         bounds = [(-base.a + MIN_SLOPE, None)] * G + [(None, None)] * G
-        res = minimize(f, np.zeros(2 * G), jac=True, method="L-BFGS-B", bounds=bounds,
-                       options={"maxiter": 1000})
+        res = minimize(f, np.zeros(2 * G), jac=True, method="L-BFGS-B", bounds=bounds, options={"maxiter": 1000})
         da, db = res.x[:G], res.x[G:]
         return cls(base.a, base.b, lam, gid, da, db, int((base.a + da <= 0).sum()), bool(res.success))
 
@@ -106,10 +104,10 @@ class FreqAware:
         return expit(self._x(p, train_clicks) @ self.w + self.w0)
 
 
-def save_calibrators(glob: GlobalPlatt, gs: GroupShrunkPlatt, fa: FreqAware, group_clicks: pl.DataFrame,
-                     path: Path) -> None:
-    np.savez(path, a=glob.a, b=glob.b, lam=gs.lam, group_ids=gs.group_ids, da=gs.da, db=gs.db,
-             fa_w=fa.w, fa_w0=fa.w0)
+def save_calibrators(
+    glob: GlobalPlatt, gs: GroupShrunkPlatt, fa: FreqAware, group_clicks: pl.DataFrame, path: Path
+) -> None:
+    np.savez(path, a=glob.a, b=glob.b, lam=gs.lam, group_ids=gs.group_ids, da=gs.da, db=gs.db, fa_w=fa.w, fa_w0=fa.w0)
     group_clicks.write_parquet(path.with_suffix(".group_clicks.parquet"))
 
 
@@ -122,8 +120,15 @@ def load_calibrators(path: Path) -> tuple[GlobalPlatt, GroupShrunkPlatt, FreqAwa
 
 
 # ------------------------------------------------------------------------------------------------ exact (iii) solver
-def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, base: GlobalPlatt, lam: float,
-                           tol: float = 1e-9, max_iter: int = 100) -> tuple[GroupShrunkPlatt, dict]:
+def fit_group_shrunk_exact(
+    p: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    base: GlobalPlatt,
+    lam: float,
+    tol: float = 1e-9,
+    max_iter: int = 100,
+) -> tuple[GroupShrunkPlatt, dict]:
     """Same objective as GroupShrunkPlatt.fit, solved exactly, one group at a time.
 
     With the global (a, b) and lam fixed, the objective splits into one convex two-parameter problem per group:
@@ -157,7 +162,7 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
         return (np.array([0.0, g[1]]) if on_bound else g), on_bound
 
     for k in range(gid.size):
-        rows = order[bounds[k]:bounds[k + 1]]
+        rows = order[bounds[k] : bounds[k + 1]]
         zg, yg = z[rows], y[rows].astype(float)
         # start inside the bound: if the global slope is below MIN_SLOPE, a zero offset is already infeasible
         x = np.array([max(0.0, lo), 0.0])
@@ -202,13 +207,29 @@ def fit_group_shrunk_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, bas
         at_bound += int(x[0] <= lo + 1e-15)
         da[k], db[k] = x
     below = int((base.a + da < MIN_SLOPE - 1e-12).sum())
-    gs = GroupShrunkPlatt(base.a, base.b, lam, gid, da, db, int((base.a + da <= 0).sum()), bool(worst < tol and below == 0))
-    return gs, {"solver": "per-group Newton", "max_projected_gradient": worst, "max_iterations": iters,
-                "groups_at_slope_bound": at_bound, "slopes_below_bound": below, "global_slope": base.a, "tol": tol}
+    gs = GroupShrunkPlatt(
+        base.a, base.b, lam, gid, da, db, int((base.a + da <= 0).sum()), bool(worst < tol and below == 0)
+    )
+    return gs, {
+        "solver": "per-group Newton",
+        "max_projected_gradient": worst,
+        "max_iterations": iters,
+        "groups_at_slope_bound": at_bound,
+        "slopes_below_bound": below,
+        "global_slope": base.a,
+        "tol": tol,
+    }
 
 
-def fit_group_intercept_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, base: GlobalPlatt, lam: float,
-                              tol: float = 1e-9, max_iter: int = 100) -> tuple[GroupShrunkPlatt, dict]:
+def fit_group_intercept_exact(
+    p: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    base: GlobalPlatt,
+    lam: float,
+    tol: float = 1e-9,
+    max_iter: int = 100,
+) -> tuple[GroupShrunkPlatt, dict]:
     """(iii-0): only the group intercept moves,
         logit p' = a·logit p + (b + db_g),   penalty lam·db_g^2   (the slope stays the global a).
     One convex 1-parameter problem per group, solved by Newton's method with a backtracking line search; stops
@@ -225,7 +246,7 @@ def fit_group_intercept_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, 
         return float(np.logaddexp(0.0, s).sum() - (yg * s).sum() + lam * x * x)
 
     for k in range(gid.size):
-        rows = order[bounds[k]:bounds[k + 1]]
+        rows = order[bounds[k] : bounds[k + 1]]
         s0, yg = base.a * z[rows] + base.b, y[rows].astype(float)
         x, f = 0.0, obj(s0, yg, 0.0)
         # `it` is read after the loop for the iteration count
@@ -250,7 +271,12 @@ def fit_group_intercept_exact(p: np.ndarray, y: np.ndarray, groups: np.ndarray, 
         iters = max(iters, it + 1)
         worst = max(worst, abs(float((expit(s0 + x) - yg).sum() + 2 * lam * x)))
         db[k] = x
-    gs = GroupShrunkPlatt(base.a, base.b, lam, gid, np.zeros(gid.size), db, int(base.a <= 0) * gid.size,
-                          bool(worst < tol))
-    return gs, {"solver": "per-group Newton, intercept only", "max_abs_gradient": worst, "max_iterations": iters,
-                "tol": tol}
+    gs = GroupShrunkPlatt(
+        base.a, base.b, lam, gid, np.zeros(gid.size), db, int(base.a <= 0) * gid.size, bool(worst < tol)
+    )
+    return gs, {
+        "solver": "per-group Newton, intercept only",
+        "max_abs_gradient": worst,
+        "max_iterations": iters,
+        "tol": tol,
+    }

@@ -11,8 +11,15 @@ def _frame():
     users = np.repeat([0, 10_000, 20_000, 30_000, 40_000, 50_000], 50)
     g1 = np.where(users == 0, 7, 2)  # group 7 exists only for the fold-0 user
     y = np.where(users == 0, 1, (np.arange(users.size) % 10 == 0)).astype(np.int8)  # group 7 always converts
-    return pl.DataFrame({"user_key": users, "ad_feat1": g1.astype(np.int32), "ad_feat2": np.full(users.size, 3, np.int32),
-                         "y": y, "label_mta": y})
+    return pl.DataFrame(
+        {
+            "user_key": users,
+            "ad_feat1": g1.astype(np.int32),
+            "ad_feat2": np.full(users.size, 3, np.int32),
+            "y": y,
+            "label_mta": y,
+        }
+    )
 
 
 def test_users_stay_in_one_fold():
@@ -60,8 +67,12 @@ def test_group_rate_fit_does_not_depend_on_row_order():
     from cvr.models import SmoothedRate
 
     rng = np.random.default_rng(0)
-    df = pl.DataFrame({"ad_feat1": rng.integers(0, 2_000, 50_000).astype(np.int32),
-                       "y": (rng.uniform(size=50_000) < 0.03).astype(np.int8)})
+    df = pl.DataFrame(
+        {
+            "ad_feat1": rng.integers(0, 2_000, 50_000).astype(np.int32),
+            "y": (rng.uniform(size=50_000) < 0.03).astype(np.int8),
+        }
+    )
     a = SmoothedRate.fit(df, "ad_feat1")
     for seed in range(3):
         b = SmoothedRate.fit(df.sample(fraction=1.0, shuffle=True, seed=seed), "ad_feat1")

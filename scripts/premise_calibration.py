@@ -26,27 +26,57 @@ from sklearn.metrics import log_loss, roc_auc_score
 
 PAD = "dbee74ee5fbf"  # [추정] padding/missing hash token (EDA E5)
 SEED = 2026
-CATS = ["user_feat0", "user_feat1", "user_feat2", "user_feat3", "user_feat4", "user_feat5",
-        "context_feat1", "context_feat2", "context_feat3", "ad_feat3", "ad_feat4", "ad_feat5", "ad_feat1"]
+CATS = [
+    "user_feat0",
+    "user_feat1",
+    "user_feat2",
+    "user_feat3",
+    "user_feat4",
+    "user_feat5",
+    "context_feat1",
+    "context_feat2",
+    "context_feat3",
+    "ad_feat3",
+    "ad_feat4",
+    "ad_feat5",
+    "ad_feat1",
+]
 SEQ_PAIRS = [("ad_feat0", "ad_feat0_seq"), ("ad_feat1", "ad_feat1_seq"), ("ad_feat2", "ad_feat2_seq")]
 MM = ["mm_feat0_seq", "mm_feat1_seq"]
 
 
 def build_features(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_row_index("rid")
-    out = df.select(["rid", "user_id", (pl.col("last") > 0).cast(pl.Int8).alias("y"),
-                     (pl.col("ad_feat1") == PAD).alias("is_missing")] + CATS)
+    out = df.select(
+        [
+            "rid",
+            "user_id",
+            (pl.col("last") > 0).cast(pl.Int8).alias("y"),
+            (pl.col("ad_feat1") == PAD).alias("is_missing"),
+        ]
+        + CATS
+    )
     for tgt, seq in SEQ_PAIRS:
-        m = (df.select(["rid", tgt, seq]).explode(seq)
-             .group_by("rid")
-             .agg(((pl.col(seq) == pl.col(tgt)) & (pl.col(seq) != PAD) & (pl.col(tgt) != PAD))
-                  .sum().alias(f"match_{tgt}")))
+        m = (
+            df.select(["rid", tgt, seq])
+            .explode(seq)
+            .group_by("rid")
+            .agg(
+                ((pl.col(seq) == pl.col(tgt)) & (pl.col(seq) != PAD) & (pl.col(tgt) != PAD)).sum().alias(f"match_{tgt}")
+            )
+        )
         out = out.join(m, on="rid", how="left")
-    out = out.join(df.select(["rid", (pl.col("ad_feat0_seq").list.n_unique() == 1)
-                              & (pl.col("ad_feat0_seq").list.first() == PAD)]).rename(
-        {"ad_feat0_seq": "hist_empty"}), on="rid", how="left")
-    mm = df.select(["rid"] + [e for c in MM for e in (
-        pl.col(c).list.max().alias(f"{c}_max"), pl.col(c).list.mean().alias(f"{c}_mean"))])
+    out = out.join(
+        df.select(
+            ["rid", (pl.col("ad_feat0_seq").list.n_unique() == 1) & (pl.col("ad_feat0_seq").list.first() == PAD)]
+        ).rename({"ad_feat0_seq": "hist_empty"}),
+        on="rid",
+        how="left",
+    )
+    mm = df.select(
+        ["rid"]
+        + [e for c in MM for e in (pl.col(c).list.max().alias(f"{c}_max"), pl.col(c).list.mean().alias(f"{c}_mean"))]
+    )
     out = out.join(mm, on="rid", how="left").sort("rid")
     # categorical string -> integer codes by sorted rank (deterministic; Categorical casting
     # can assign codes in thread-dependent order). Codes are per-file; fine for a within-file check.
@@ -91,9 +121,14 @@ def user_bootstrap_ratio(ho: pl.DataFrame, masks: dict, reps: int = 500, seed: i
         ug = rows.group_by("uidx").agg(pl.col("y").sum().alias("O"), pl.col("p").sum().alias("E"))
         idx = ug["uidx"].to_numpy()
         obs[idx, j], exp[idx, j] = ug["O"].to_numpy(), ug["E"].to_numpy()
-        out[name] = {"clicks": rows.height, "users": ug.height, "groups": rows["ad_feat1"].n_unique(),
-                     "observed": float(obs[:, j].sum()), "predicted": float(exp[:, j].sum()),
-                     "O_over_E": float(obs[:, j].sum() / exp[:, j].sum())}
+        out[name] = {
+            "clicks": rows.height,
+            "users": ug.height,
+            "groups": rows["ad_feat1"].n_unique(),
+            "observed": float(obs[:, j].sum()),
+            "predicted": float(exp[:, j].sum()),
+            "O_over_E": float(obs[:, j].sum() / exp[:, j].sum()),
+        }
     rng = np.random.default_rng(seed)
     samples = []
     for _ in range(reps):
@@ -107,8 +142,7 @@ def user_bootstrap_ratio(ho: pl.DataFrame, masks: dict, reps: int = 500, seed: i
 
 def main(src: str, out: str) -> None:
     t0 = time.time()
-    cols = list({c for c in CATS + ["user_id", "last", "ad_feat0", "ad_feat2"]
-                 + [s for _, s in SEQ_PAIRS] + MM})
+    cols = list({c for c in CATS + ["user_id", "last", "ad_feat0", "ad_feat2"] + [s for _, s in SEQ_PAIRS] + MM})
     feats = build_features(pl.read_parquet(src, columns=cols))
     t_feat = time.time() - t0
 
@@ -123,24 +157,42 @@ def main(src: str, out: str) -> None:
     y = feats["y"].to_numpy()
     cat_idx = [xcols.index(c) for c in CATS]
 
-    params = dict(objective="binary", learning_rate=0.05, num_leaves=63, min_data_in_leaf=200,
-                  feature_fraction=0.9, bagging_fraction=0.9, bagging_freq=1, seed=SEED,
-                  num_threads=8, deterministic=True, force_row_wise=True, verbose=-1)
+    params = dict(
+        objective="binary",
+        learning_rate=0.05,
+        num_leaves=63,
+        min_data_in_leaf=200,
+        feature_fraction=0.9,
+        bagging_fraction=0.9,
+        bagging_freq=1,
+        seed=SEED,
+        num_threads=8,
+        deterministic=True,
+        force_row_wise=True,
+        verbose=-1,
+    )
     dtr = lgb.Dataset(X[tr_mask], y[tr_mask], categorical_feature=cat_idx, free_raw_data=False)
     des = lgb.Dataset(X[es_mask], y[es_mask], categorical_feature=cat_idx, reference=dtr)
-    booster = lgb.train(params, dtr, num_boost_round=1000, valid_sets=[des],
-                        callbacks=[lgb.early_stopping(50, verbose=False)])
+    booster = lgb.train(
+        params, dtr, num_boost_round=1000, valid_sets=[des], callbacks=[lgb.early_stopping(50, verbose=False)]
+    )
     p = booster.predict(X[ho_mask], num_iteration=booster.best_iteration)
     t_train = time.time() - t0 - t_feat
 
     # Holdout rows with group statistics computed on the TRAIN users only (h < 60).
     # Groups are therefore selected on the 60% train split, not on the whole file.
-    train_stats = (feats.filter(pl.Series(tr_mask)).group_by("ad_feat1")
-                   .agg(pl.len().alias("tr_clicks"), pl.col("y").sum().alias("tr_pos")))
-    ho = (feats.filter(pl.Series(ho_mask)).select(["user_id", "ad_feat1", "is_missing", "y"])
-          .with_columns(pl.Series("p", p))
-          .join(train_stats, on="ad_feat1", how="left")
-          .with_columns(pl.col("tr_clicks", "tr_pos").fill_null(0)))
+    train_stats = (
+        feats.filter(pl.Series(tr_mask))
+        .group_by("ad_feat1")
+        .agg(pl.len().alias("tr_clicks"), pl.col("y").sum().alias("tr_pos"))
+    )
+    ho = (
+        feats.filter(pl.Series(ho_mask))
+        .select(["user_id", "ad_feat1", "is_missing", "y"])
+        .with_columns(pl.Series("p", p))
+        .join(train_stats, on="ad_feat1", how="left")
+        .with_columns(pl.col("tr_clicks", "tr_pos").fill_null(0))
+    )
 
     nm = ~pl.col("is_missing")
     tc, tp = pl.col("tr_clicks"), pl.col("tr_pos")
@@ -155,32 +207,45 @@ def main(src: str, out: str) -> None:
     }
 
     def per_group(mask: pl.Expr) -> pl.DataFrame:
-        return ho.filter(mask).group_by("ad_feat1").agg(
-            pl.col("y").sum().alias("O"), pl.col("p").sum().alias("E"),
-            (pl.col("p") * (1 - pl.col("p"))).sum().alias("V"), pl.len().alias("ho_clicks"))
+        return (
+            ho.filter(mask)
+            .group_by("ad_feat1")
+            .agg(
+                pl.col("y").sum().alias("O"),
+                pl.col("p").sum().alias("E"),
+                (pl.col("p") * (1 - pl.col("p"))).sum().alias("V"),
+                pl.len().alias("ho_clicks"),
+            )
+        )
 
     def overall(mask: np.ndarray) -> dict:
         yy, pp = y[ho_mask][mask], p[mask]
-        return {"rows": int(mask.sum()), "auc": roc_auc_score(yy, pp), "logloss": log_loss(yy, pp),
-                "O_over_E": float(yy.sum() / pp.sum())}
+        return {
+            "rows": int(mask.sum()),
+            "auc": roc_auc_score(yy, pp),
+            "logloss": log_loss(yy, pp),
+            "O_over_E": float(yy.sum() / pp.sum()),
+        }
 
     missing_np = ho["is_missing"].to_numpy()
-    boot_masks = bin_masks | {"missing_group": pl.col("is_missing"), "nonmissing_all": nm,
-                              "all_rows": pl.lit(True)}
+    boot_masks = bin_masks | {"missing_group": pl.col("is_missing"), "nonmissing_all": nm, "all_rows": pl.lit(True)}
     report = {
         "file": Path(src).name,
         "note": "within-file user-cluster split; premise check only, not the study protocol",
         "rows": {"train": int(tr_mask.sum()), "early_stop": int(es_mask.sum()), "holdout": int(ho_mask.sum())},
-        "lgb_params": params, "best_iteration": booster.best_iteration,
+        "lgb_params": params,
+        "best_iteration": booster.best_iteration,
         "holdout_overall": overall(np.ones_like(missing_np, dtype=bool)),
         "holdout_overall_nonmissing": overall(~missing_np),
         "group_calibration_by_bin": {
             k: group_calibration(per_group(m)) | {"clicks_share": per_group(m)["ho_clicks"].sum() / ho_mask.sum()}
-            for k, m in bin_masks.items()},
+            for k, m in bin_masks.items()
+        },
         "user_bootstrap_O_over_E": user_bootstrap_ratio(ho, boot_masks),
         "seconds": {"features": round(t_feat, 1), "train_predict": round(t_train, 1)},
-        "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                             * (1 if sys.platform == "darwin" else 1024) / 1e9, 2),  # bytes on macOS, KB on Linux
+        "peak_rss_gb": round(
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024) / 1e9, 2
+        ),  # bytes on macOS, KB on Linux
     }
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(json.dumps(report, indent=2, default=str))

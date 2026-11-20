@@ -124,8 +124,12 @@ seed = 20261117
 
 
 def git(ws: Path, *args: str) -> None:
-    subprocess.run(["git", "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false",
-                    *args], cwd=ws, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", *args],
+        cwd=ws,
+        check=True,
+        capture_output=True,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -146,7 +150,9 @@ def run(ws: Path, *args: str, ok: bool = True, env_extra: dict | None = None) ->
     env = os.environ | {"PYTHONPATH": str(REPO), "PYTHONHASHSEED": "0"} | (env_extra or {})
     p = subprocess.run([sys.executable, *args], cwd=ws, env=env, capture_output=True, text=True, timeout=3600)
     if ok and p.returncode != 0:
-        pytest.fail(f"{' '.join(args)} exited {p.returncode}\n--- stdout\n{p.stdout[-3000:]}\n--- stderr\n{p.stderr[-6000:]}")
+        pytest.fail(
+            f"{' '.join(args)} exited {p.returncode}\n--- stdout\n{p.stdout[-3000:]}\n--- stderr\n{p.stderr[-6000:]}"
+        )
     if not ok and p.returncode == 0:
         pytest.fail(f"{' '.join(args)} was expected to be refused\n{p.stdout[-3000:]}")
     return p
@@ -170,7 +176,10 @@ def test_study_c_end_to_end(ws: Path) -> None:
     assert res["meta"]["rows"] == {"train": 60_000, "v1": 20_000, "v2": 20_000}
     assert all(x["sha256"] for role in res["meta"]["data"].values() for x in role)  # sidecars were read
     assert (res["domains"]["small"]["domains"], res["domains"]["tiny"]["domains"]) == (6, 2)
-    assert sel["candidate"] in ("G-shared", "N-int", "N-shared", "N-head", "N-star") and sel["control"] in ("G-int", "N-int")
+    assert sel["candidate"] in ("G-shared", "N-int", "N-shared", "N-head", "N-star") and sel["control"] in (
+        "G-int",
+        "N-int",
+    )
 
     run(ws, str(REPO / "scripts" / "study_c_diagnostics.py"), "calib", str(r))
     run(ws, str(REPO / "scripts" / "study_c_diagnostics.py"), "star", str(r))
@@ -189,9 +198,14 @@ def test_study_c_end_to_end(ws: Path) -> None:
         pytest.skip("this machine was too busy for an accepted latency measurement; freeze refused it as it should")
 
     files = {n: ws / DATA / n for n in ("train-13.parquet", "train-14.parquet")}
-    (ws / r / "holdout_expected.json").write_text(json.dumps(
-        {"source": "synthetic (tests/test_e2e.py)", "files": {n: {"size": f.stat().st_size, "sha256": sha256(f)}
-                                                              for n, f in files.items()}}))
+    (ws / r / "holdout_expected.json").write_text(
+        json.dumps(
+            {
+                "source": "synthetic (tests/test_e2e.py)",
+                "files": {n: {"size": f.stat().st_size, "sha256": sha256(f)} for n, f in files.items()},
+            }
+        )
+    )
     run(ws, "-m", "cvr.final_eval_c", "freeze", str(r))
     assert "never re-frozen" in run(ws, "-m", "cvr.final_eval_c", "freeze", str(r), ok=False).stderr
     run(ws, "-m", "cvr.final_eval_c", "dryrun", str(r))
@@ -209,7 +223,9 @@ def test_study_c_end_to_end(ws: Path) -> None:
     shutil.copy(ws / DATA / "train-12.parquet", ws / "fake" / "train-13.parquet")  # right name, wrong file
     p = run(ws, *test, "fake/train-13.parquet", holdout[1], ok=False)
     assert "official" in p.stderr
-    assert "differ from the frozen holdout" in run(ws, *test, str(DATA / "train-12.parquet"), holdout[1], ok=False).stderr
+    assert (
+        "differ from the frozen holdout" in run(ws, *test, str(DATA / "train-12.parquet"), holdout[1], ok=False).stderr
+    )
     assert not lock.exists()
 
     run(ws, *test, *holdout)

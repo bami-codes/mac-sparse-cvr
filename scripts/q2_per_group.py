@@ -38,14 +38,29 @@ def describe(t: pl.DataFrame) -> dict:
     bins = []
     for lo, hi in BINS:
         bd = t.filter((pl.col("pos") >= lo) & (pl.col("pos") < hi))["d"].to_numpy()
-        bins.append({"train_positives": f"[{lo},{hi})", "groups": int(bd.size), "mean_diff": float(bd.mean()),
-                     "better": int((bd < 0).sum()), "worse": int((bd > 0).sum())})
-    return {"groups": int(d.size), "macro_diff": float(d.mean()), "better": int((d < 0).sum()),
-            "worse": int((d > 0).sum()), "better_in_all_3_seeds": int((seeds < 0).all(axis=1).sum()),
-            "worse_in_all_3_seeds": int((seeds > 0).all(axis=1).sum()),
-            "sum_of_improvements": float(-d[d < 0].sum()), "sum_of_worsenings": float(d[d > 0].sum()),
-            "groups_without_positives": zero.height, "without_positives_mean_diff": float(zero["d"].mean()),
-            "without_positives_better": int((zero["d"] < 0).sum()), "by_training_positives": bins}
+        bins.append(
+            {
+                "train_positives": f"[{lo},{hi})",
+                "groups": int(bd.size),
+                "mean_diff": float(bd.mean()),
+                "better": int((bd < 0).sum()),
+                "worse": int((bd > 0).sum()),
+            }
+        )
+    return {
+        "groups": int(d.size),
+        "macro_diff": float(d.mean()),
+        "better": int((d < 0).sum()),
+        "worse": int((d > 0).sum()),
+        "better_in_all_3_seeds": int((seeds < 0).all(axis=1).sum()),
+        "worse_in_all_3_seeds": int((seeds > 0).all(axis=1).sum()),
+        "sum_of_improvements": float(-d[d < 0].sum()),
+        "sum_of_worsenings": float(d[d > 0].sum()),
+        "groups_without_positives": zero.height,
+        "without_positives_mean_diff": float(zero["d"].mean()),
+        "without_positives_better": int((zero["d"] < 0).sum()),
+        "by_training_positives": bins,
+    }
 
 
 def main() -> dict:
@@ -53,14 +68,17 @@ def main() -> dict:
     g1 = Q.group_sets(codes)["G1"]
     choice = json.loads(Path("runs/e_study/config_choice.json").read_text())
     stats = pl.read_parquet("runs/e_study/train_stats_ad_feat1.parquet").select(
-        pl.col("ad_feat1").replace_strict(codes, return_dtype=pl.Int64).alias("g"), "clicks", "pos")
+        pl.col("ad_feat1").replace_strict(codes, return_dtype=pl.Int64).alias("g"), "clicks", "pos"
+    )
     out = {}
     for name in (Q.V2, Q.TEST):
         g, y = Q.file_columns(name, codes)
         m = np.isin(g, g1)
         for model in ("MoAE", "BASE"):
-            parts = [per_seed_diff(Q.run_id(model, choice[model]["lr"], choice[model]["lamda"], s), name, y, g, m, s)
-                     for s in Q.SEEDS]
+            parts = [
+                per_seed_diff(Q.run_id(model, choice[model]["lr"], choice[model]["lamda"], s), name, y, g, m, s)
+                for s in Q.SEEDS
+            ]
             t = parts[0]
             for d in parts[1:]:
                 t = t.join(d.drop("n", "O"), on="g")

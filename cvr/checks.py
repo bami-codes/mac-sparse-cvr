@@ -25,9 +25,11 @@ def require_commit(git: dict, what: str = "the evaluation") -> None:
     """`git_state` returns commit "" and no changed files when git fails (outside a repository), which used to
     pass the clean-tree check silently (found while setting up the synthetic end-to-end test)."""
     import re
+
     if not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", str(git.get("commit", ""))):
-        raise CheckFailed(f"{what} is not inside a git repository (commit {git.get('commit')!r}); "
-                          "the clean-tree check cannot run")
+        raise CheckFailed(
+            f"{what} is not inside a git repository (commit {git.get('commit')!r}); the clean-tree check cannot run"
+        )
 
 
 def require_close(name: str, diff: float, tol: float) -> float:
@@ -41,9 +43,15 @@ def require_finite_probs(name: str, p: np.ndarray) -> None:
         raise CheckFailed(f"{name}: predictions must be finite probabilities in [0, 1]")
 
 
-def serving_consistency(codes_online: dict[str, np.ndarray], codes_offline: dict[str, np.ndarray],
-                        num_online: np.ndarray, num_offline: np.ndarray,
-                        p_online: np.ndarray, p_offline: np.ndarray, pred_tol: float = PRED_TOL) -> dict:
+def serving_consistency(
+    codes_online: dict[str, np.ndarray],
+    codes_offline: dict[str, np.ndarray],
+    num_online: np.ndarray,
+    num_offline: np.ndarray,
+    p_online: np.ndarray,
+    p_offline: np.ndarray,
+    pred_tol: float = PRED_TOL,
+) -> dict:
     """Compare the serving path with the evaluation path on the same raw rows; raise on any mismatch.
 
     `pred_tol` defaults to PRED_TOL (1e-9), the tolerance of the first two studies. Study C networks score a single
@@ -52,13 +60,20 @@ def serving_consistency(codes_online: dict[str, np.ndarray], codes_offline: dict
     RELOAD_TOL."""
     mismatch = {c: int((codes_online[c] != codes_offline[c]).sum()) for c in codes_offline}
     if any(mismatch.values()):
-        raise CheckFailed(f"categorical code mismatch between serving and evaluation paths: "
-                          f"{ {c: n for c, n in mismatch.items() if n} }")
+        raise CheckFailed(
+            f"categorical code mismatch between serving and evaluation paths: "
+            f"{ {c: n for c, n in mismatch.items() if n} }"
+        )
     num_diff = float(np.abs(num_online - num_offline).max()) if num_online.size else 0.0
     require_close("numeric features (serving vs evaluation)", num_diff, NUM_TOL)
     require_finite_probs("serving predictions", p_online)
     require_finite_probs("evaluation-path predictions", p_offline)
-    pred_diff = require_close("calibrated predictions (serving vs evaluation)",
-                              float(np.abs(p_online - p_offline).max()), pred_tol)
-    return {"codes_mismatch": 0, "num_max_abs_diff": num_diff, "prediction_max_abs_diff": pred_diff,
-            "tolerances": {"num": NUM_TOL, "pred": pred_tol}}
+    pred_diff = require_close(
+        "calibrated predictions (serving vs evaluation)", float(np.abs(p_online - p_offline).max()), pred_tol
+    )
+    return {
+        "codes_mismatch": 0,
+        "num_max_abs_diff": num_diff,
+        "prediction_max_abs_diff": pred_diff,
+        "tolerances": {"num": NUM_TOL, "pred": pred_tol},
+    }

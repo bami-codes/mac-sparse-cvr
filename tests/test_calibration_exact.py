@@ -36,11 +36,19 @@ def _reference(p, y, g, base, lam):
         def f(x):
             s = (base.a + x[0]) * zg + (base.b + x[1])
             r = expit(s) - yg
-            return (np.logaddexp(0.0, s).sum() - (yg * s).sum() + lam * (x @ x),
-                    np.array([r @ zg + 2 * lam * x[0], r.sum() + 2 * lam * x[1]]))
+            return (
+                np.logaddexp(0.0, s).sum() - (yg * s).sum() + lam * (x @ x),
+                np.array([r @ zg + 2 * lam * x[0], r.sum() + 2 * lam * x[1]]),
+            )
 
-        res = minimize(f, np.zeros(2), jac=True, method="L-BFGS-B", bounds=[(-base.a + MIN_SLOPE, None), (None, None)],
-                       options={"maxiter": 100_000, "ftol": 1e-16, "gtol": 1e-12})
+        res = minimize(
+            f,
+            np.zeros(2),
+            jac=True,
+            method="L-BFGS-B",
+            bounds=[(-base.a + MIN_SLOPE, None), (None, None)],
+            options={"maxiter": 100_000, "ftol": 1e-16, "gtol": 1e-12},
+        )
         da[k], db[k] = res.x
     return gid, da, db
 

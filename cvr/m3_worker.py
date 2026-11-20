@@ -39,9 +39,20 @@ def main(job_dir: str) -> None:
     for variant in job["variants"]:
         for seed in job["seeds"]:
             t = time.time()
-            m = M3Model.fit(train, y, job["other_sizes"], job["id_sizes"], variant, seed, dim=job["dim"],
-                            epochs=job["epochs"], batch=job["batch"], lr=job["lr"], device=job["device"],
-                            threads=job["threads"])
+            m = M3Model.fit(
+                train,
+                y,
+                job["other_sizes"],
+                job["id_sizes"],
+                variant,
+                seed,
+                dim=job["dim"],
+                epochs=job["epochs"],
+                batch=job["batch"],
+                lr=job["lr"],
+                device=job["device"],
+                threads=job["threads"],
+            )
             name = f"M3_{variant}_s{seed}"
             preds = {r: m.predict(a) for r, a in evals.items()}
             for r, p in preds.items():
@@ -54,7 +65,8 @@ def main(job_dir: str) -> None:
             p_re = load_m3(models_dir / name).predict(head)
             require_finite_probs(f"reloaded {name}", p_re)
             result["reload_check"][name] = require_close(
-                f"reload {name}", float(np.abs(p_re - preds["v2"][:k]).max()), RELOAD_TOL)
+                f"reload {name}", float(np.abs(p_re - preds["v2"][:k]).max()), RELOAD_TOL
+            )
             print(f"{name} done in {time.time() - t:.0f}s", flush=True)
     (job_path / "result.json").write_text(json.dumps(result, indent=2))
 

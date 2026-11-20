@@ -29,10 +29,12 @@ from cvr.stacking import AUX_LABEL, TE_INPUTS, fit_stacking
 BASE = CAT_INPUTS + NUM_INPUTS
 NEW = {"M2auxlast": BASE + ["aux_last"], "M2bothlast": BASE + ["aux_last"] + TE_INPUTS}
 STORED = ["M2", "M2aux", "M2te", "M2both"]
-COMPARISONS = [("M2aux", "M2auxlast", "core: same procedure, label mta vs last"),
-               ("M2both", "M2bothlast", "core: same procedure, label mta vs last (with group rates)"),
-               ("M2auxlast", "M2", "reference: adding a same-label out-of-fold prediction"),
-               ("M2aux", "M2", "reference: the second study's mta input")]
+COMPARISONS = [
+    ("M2aux", "M2auxlast", "core: same procedure, label mta vs last"),
+    ("M2both", "M2bothlast", "core: same procedure, label mta vs last (with group rates)"),
+    ("M2auxlast", "M2", "reference: adding a same-label out-of-fold prediction"),
+    ("M2aux", "M2", "reference: the second study's mta input"),
+]
 REPRO_TOL, IDENTITY_TOL, TE_TOL = 1e-9, 1e-12, 1e-9
 
 
@@ -55,26 +57,47 @@ def main() -> None:
     data = {}
     for role in ("train", "v1", "v2"):
         df = pl.concat([featurize(read_raw(root / f), vocab) for f in cfg["data"][role]])
-        data[role] = pl.concat([df, G.classify(df, stats, gc["n_min"], gc["c_min"], gc["c_dense"], p0)], how="horizontal")
+        data[role] = pl.concat(
+            [df, G.classify(df, stats, gc["n_min"], gc["c_min"], gc["c_dense"], p0)], how="horizontal"
+        )
     log = {"rows": {r: data[r].height for r in data}, "seconds": {"features": round(time.time() - t0)}}
     print(f"features {log['rows']} in {time.time() - t0:.0f}s", flush=True)
 
     # check 1: the rebuilt training rows give the saved full auxiliary model exactly (same data, same procedure)
     saved = load_stacking(a.run / "models" / "stacking")
-    refit = GBDT.fit(data["train"], lgb_params, stc["aux_seed"], mc["num_boost_round"], mc["early_stopping_rounds"],
-                     BASE, label=AUX_LABEL)
+    refit = GBDT.fit(
+        data["train"],
+        lgb_params,
+        stc["aux_seed"],
+        mc["num_boost_round"],
+        mc["early_stopping_rounds"],
+        BASE,
+        label=AUX_LABEL,
+    )
     head = data["v2"].head(100_000)
-    log["identity_check"] = {"refit_rounds": refit.rounds, "saved_rounds": saved.aux.rounds,
-                             "max_abs_pred_diff": float(np.abs(refit.predict(head) - saved.aux.predict(head)).max())}
+    log["identity_check"] = {
+        "refit_rounds": refit.rounds,
+        "saved_rounds": saved.aux.rounds,
+        "max_abs_pred_diff": float(np.abs(refit.predict(head) - saved.aux.predict(head)).max()),
+    }
     if refit.rounds != saved.aux.rounds or log["identity_check"]["max_abs_pred_diff"] > IDENTITY_TOL:
         raise SystemExit(f"training data or procedure differs from the saved run: {log['identity_check']}")
     print(f"identity ok {log['identity_check']}", flush=True)
 
     # the control input: same out-of-fold procedure, main label
     t1 = time.time()
-    train_last, st_last, info = fit_stacking(data["train"], lgb_params, stc["aux_seed"], stc["folds"],
-                                             mc["num_boost_round"], mc["early_stopping_rounds"], True, True,
-                                             aux_label="y", aux_col="aux_last")
+    train_last, st_last, info = fit_stacking(
+        data["train"],
+        lgb_params,
+        stc["aux_seed"],
+        stc["folds"],
+        mc["num_boost_round"],
+        mc["early_stopping_rounds"],
+        True,
+        True,
+        aux_label="y",
+        aux_col="aux_last",
+    )
     save_stacking(st_last, a.out / "stacking_last")
     log["stacking_last"] = info | {"seconds": round(time.time() - t1)}
     frames = {}
@@ -124,12 +147,26 @@ def main() -> None:
     seed_mean = {v: float(np.mean([macro[f"{v}_s{s}"] for s in seeds])) for v in variants}
     comps = []
     for va, vb, role in COMPARISONS:
-        b = M.paired_bootstrap_macro_diff(y2[g1m], [cal[f"{va}_s{s}"] for s in seeds],
-                                          [cal[f"{vb}_s{s}"] for s in seeds], g2, users, bs["reps"], bs["seed"])
+        b = M.paired_bootstrap_macro_diff(
+            y2[g1m],
+            [cal[f"{va}_s{s}"] for s in seeds],
+            [cal[f"{vb}_s{s}"] for s in seeds],
+            g2,
+            users,
+            bs["reps"],
+            bs["seed"],
+        )
         comps.append({"a": va, "b": vb, "role": role} | b)
-    result = {"run": str(a.run), "seeds": seeds, "design": "docs/DESIGN.md §15.2", "log": log, "reproduction": repro,
-              "v2_G1_macro_logloss_ii_seed_mean": seed_mean, "comparisons": comps,
-              "seconds_total": round(time.time() - t0)}
+    result = {
+        "run": str(a.run),
+        "seeds": seeds,
+        "design": "docs/DESIGN.md §15.2",
+        "log": log,
+        "reproduction": repro,
+        "v2_G1_macro_logloss_ii_seed_mean": seed_mean,
+        "comparisons": comps,
+        "seconds_total": round(time.time() - t0),
+    }
     (a.out / "results.json").write_text(json.dumps(result, indent=1))
     if a.md:
         write_md(a.md, result)
@@ -138,26 +175,42 @@ def main() -> None:
 
 
 def write_md(path: Path, r: dict) -> None:
-    lines = ["# Study B: auxiliary attribution label vs a same-label control (development data)", "",
-             f"Run `{r['run']}` (train-00..02, V1 train-03, V2 train-04); seeds {r['seeds']}. Design: {r['design']}. "
-             "All variants after (ii) global calibration fitted on V1; metric V2 G1 macro LogLoss. "
-             "M2both was chosen on this V2, so comparisons with M2both are optimistic.", "",
-             f"Checks: refit of the saved mta auxiliary model on the rebuilt training rows: {r['log']['identity_check']}; "
-             f"{len(r['reproduction'])} stored V2 values recomputed within {REPRO_TOL:g}; group-rate inputs equal up to "
-             f"{max(r['log']['group_rate_max_abs_diff'].values()):.1e} (saved run's floating-point drift).", "",
-             "| variant | inputs added to M2 | V2 G1 macro LogLoss (ii), seed mean |", "|---|---|---:|"]
-    added = {"M2": "-", "M2aux": "out-of-fold prediction of mta > 0", "M2te": "group rates",
-             "M2both": "mta prediction + group rates", "M2auxlast": "out-of-fold prediction of last > 0 (control)",
-             "M2bothlast": "last prediction + group rates (control)"}
+    lines = [
+        "# Study B: auxiliary attribution label vs a same-label control (development data)",
+        "",
+        f"Run `{r['run']}` (train-00..02, V1 train-03, V2 train-04); seeds {r['seeds']}. Design: {r['design']}. "
+        "All variants after (ii) global calibration fitted on V1; metric V2 G1 macro LogLoss. "
+        "M2both was chosen on this V2, so comparisons with M2both are optimistic.",
+        "",
+        f"Checks: refit of the saved mta auxiliary model on the rebuilt training rows: {r['log']['identity_check']}; "
+        f"{len(r['reproduction'])} stored V2 values recomputed within {REPRO_TOL:g}; group-rate inputs equal up to "
+        f"{max(r['log']['group_rate_max_abs_diff'].values()):.1e} (saved run's floating-point drift).",
+        "",
+        "| variant | inputs added to M2 | V2 G1 macro LogLoss (ii), seed mean |",
+        "|---|---|---:|",
+    ]
+    added = {
+        "M2": "-",
+        "M2aux": "out-of-fold prediction of mta > 0",
+        "M2te": "group rates",
+        "M2both": "mta prediction + group rates",
+        "M2auxlast": "out-of-fold prediction of last > 0 (control)",
+        "M2bothlast": "last prediction + group rates (control)",
+    }
     for v, x in r["v2_G1_macro_logloss_ii_seed_mean"].items():
         lines.append(f"| {v} | {added[v]} | {x:.6f} |")
     lines += ["", "| comparison | role | difference A - B [95% CI] | per seed pair |", "|---|---|---|---|"]
     for c in r["comparisons"]:
         pairs = ", ".join(f"{d:+.6f}" for d in c["per_pair_diff"])
-        lines.append(f"| {c['a']} - {c['b']} | {c['role']} | {c['diff']:+.6f} [{c['ci95'][0]:+.6f}, "
-                     f"{c['ci95'][1]:+.6f}] | {pairs} |")
-    lines += ["", "Intervals resample V2 users with the fitted models held fixed (seed-paired); they do not include "
-              "training variation."]
+        lines.append(
+            f"| {c['a']} - {c['b']} | {c['role']} | {c['diff']:+.6f} [{c['ci95'][0]:+.6f}, "
+            f"{c['ci95'][1]:+.6f}] | {pairs} |"
+        )
+    lines += [
+        "",
+        "Intervals resample V2 users with the fitted models held fixed (seed-paired); they do not include "
+        "training variation.",
+    ]
     path.write_text("\n".join(lines) + "\n")
 
 

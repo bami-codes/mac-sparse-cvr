@@ -76,32 +76,53 @@ def check_development_sources(data: dict) -> None:
 # ---------------------------------------------------------------- domain classes (§16.3)
 def domain_stats(train: pl.DataFrame) -> pl.DataFrame:
     n = train.height
-    return (train.group_by(DOMAIN_KEY).agg(pl.len().alias("tr_clicks"), pl.col("y").sum().alias("tr_pos"))
-            .with_columns((pl.col("tr_clicks") / n).alias("tr_share")).sort(DOMAIN_KEY))
+    return (
+        train.group_by(DOMAIN_KEY)
+        .agg(pl.len().alias("tr_clicks"), pl.col("y").sum().alias("tr_pos"))
+        .with_columns((pl.col("tr_clicks") / n).alias("tr_share"))
+        .sort(DOMAIN_KEY)
+    )
 
 
-def domain_class(df: pl.DataFrame, stats: pl.DataFrame, small_share: float = SMALL_SHARE,
-                 small_min_clicks: int = SMALL_MIN_CLICKS) -> np.ndarray:
+def domain_class(
+    df: pl.DataFrame, stats: pl.DataFrame, small_share: float = SMALL_SHARE, small_min_clicks: int = SMALL_MIN_CLICKS
+) -> np.ndarray:
     j = df.select(DOMAIN_KEY).join(stats, on=DOMAIN_KEY, how="left", maintain_order="left")
-    cls = (pl.when(pl.col("tr_clicks").is_null() | (pl.col(DOMAIN_KEY) == UNKNOWN)).then(pl.lit("unseen"))
-           .when(pl.col("tr_share") >= small_share).then(pl.lit("large"))
-           .when(pl.col("tr_clicks") >= small_min_clicks).then(pl.lit("small"))
-           .otherwise(pl.lit("tiny")))
+    cls = (
+        pl.when(pl.col("tr_clicks").is_null() | (pl.col(DOMAIN_KEY) == UNKNOWN))
+        .then(pl.lit("unseen"))
+        .when(pl.col("tr_share") >= small_share)
+        .then(pl.lit("large"))
+        .when(pl.col("tr_clicks") >= small_min_clicks)
+        .then(pl.lit("small"))
+        .otherwise(pl.lit("tiny"))
+    )
     return j.select(cls.alias("c"))["c"].to_numpy()
 
 
-def domain_summary(stats: pl.DataFrame, small_share: float = SMALL_SHARE,
-                   small_min_clicks: int = SMALL_MIN_CLICKS) -> dict:
+def domain_summary(
+    stats: pl.DataFrame, small_share: float = SMALL_SHARE, small_min_clicks: int = SMALL_MIN_CLICKS
+) -> dict:
     c = domain_class(stats.select(DOMAIN_KEY), stats, small_share, small_min_clicks)
     s = stats.with_columns(pl.Series("cls", c))
-    out = {"definition": {"key": DOMAIN_KEY, "small_share": small_share, "small_min_clicks": small_min_clicks,
-                          "selected_on": "training files only (clicks, never observed positives)"},
-           "train_rows": int(stats["tr_clicks"].sum())}
+    out = {
+        "definition": {
+            "key": DOMAIN_KEY,
+            "small_share": small_share,
+            "small_min_clicks": small_min_clicks,
+            "selected_on": "training files only (clicks, never observed positives)",
+        },
+        "train_rows": int(stats["tr_clicks"].sum()),
+    }
     for k in ("small", "tiny", "large"):
         part = s.filter(pl.col("cls") == k)
-        out[k] = {"domains": part.height, "codes": part[DOMAIN_KEY].to_list(),
-                  "train_click_share": float(part["tr_share"].sum()), "train_positives": int(part["tr_pos"].sum()),
-                  "train_clicks_min": int(part["tr_clicks"].min()) if part.height else None}
+        out[k] = {
+            "domains": part.height,
+            "codes": part[DOMAIN_KEY].to_list(),
+            "train_click_share": float(part["tr_share"].sum()),
+            "train_positives": int(part["tr_pos"].sum()),
+            "train_clicks_min": int(part["tr_clicks"].min()) if part.height else None,
+        }
     return out
 
 
@@ -113,24 +134,43 @@ def poisson_deviance(O: np.ndarray, E: np.ndarray) -> np.ndarray:
     return 2 * (term - (O - E))
 
 
-def report(y: np.ndarray, p: np.ndarray, dom: np.ndarray, cls: np.ndarray, nonmissing: np.ndarray,
-           g1: np.ndarray | None = None, g1_groups: np.ndarray | None = None) -> dict:
+def report(
+    y: np.ndarray,
+    p: np.ndarray,
+    dom: np.ndarray,
+    cls: np.ndarray,
+    nonmissing: np.ndarray,
+    g1: np.ndarray | None = None,
+    g1_groups: np.ndarray | None = None,
+) -> dict:
     small, large, tiny = cls == "small", cls == "large", cls == "tiny"
     pg = M.per_group(y[small], p[small], dom[small]).sort("g")
     auc_macro, used, excl = M.within_group_auc_macro(y[small], p[small], dom[small]) if small.any() else (None, 0, 0)
     per_dom = M.per_group(y[small | large], p[small | large], dom[small | large]).sort("g")
     out = {
-        "small": {"domains": pg.height, "rows": int(small.sum()),
-                  "macro_logloss": float(pg["logloss"].mean()) if pg.height else None,
-                  "click_weighted_logloss": float(M.bce(y[small], p[small]).mean()) if small.any() else None,
-                  "poisson_deviance_mean": float(poisson_deviance(pg["O"], pg["E"]).mean()) if pg.height else None,
-                  "pooled_O_over_E": float(y[small].sum() / p[small].sum()) if small.any() else None,
-                  "within_domain_auc_macro": auc_macro, "auc_domains_used": used, "auc_domains_excluded": excl},
-        "large": {"domains": int(np.unique(dom[large]).size), "rows": int(large.sum()),
-                  "click_weighted_logloss": float(M.bce(y[large], p[large]).mean()) if large.any() else None,
-                  "pooled_O_over_E": float(y[large].sum() / p[large].sum()) if large.any() else None},
-        "tiny": {"domains": int(np.unique(dom[tiny]).size), "rows": int(tiny.sum()), "O": int(y[tiny].sum()),
-                 "E": float(p[tiny].sum())},
+        "small": {
+            "domains": pg.height,
+            "rows": int(small.sum()),
+            "macro_logloss": float(pg["logloss"].mean()) if pg.height else None,
+            "click_weighted_logloss": float(M.bce(y[small], p[small]).mean()) if small.any() else None,
+            "poisson_deviance_mean": float(poisson_deviance(pg["O"], pg["E"]).mean()) if pg.height else None,
+            "pooled_O_over_E": float(y[small].sum() / p[small].sum()) if small.any() else None,
+            "within_domain_auc_macro": auc_macro,
+            "auc_domains_used": used,
+            "auc_domains_excluded": excl,
+        },
+        "large": {
+            "domains": int(np.unique(dom[large]).size),
+            "rows": int(large.sum()),
+            "click_weighted_logloss": float(M.bce(y[large], p[large]).mean()) if large.any() else None,
+            "pooled_O_over_E": float(y[large].sum() / p[large].sum()) if large.any() else None,
+        },
+        "tiny": {
+            "domains": int(np.unique(dom[tiny]).size),
+            "rows": int(tiny.sum()),
+            "O": int(y[tiny].sum()),
+            "E": float(p[tiny].sum()),
+        },
         "unseen_rows": int((cls == "unseen").sum()),
         "per_domain": per_dom.to_dicts(),
         "overall_nonmissing": M.overall(y[nonmissing], p[nonmissing]),
@@ -174,9 +214,18 @@ class WeightedAUC:
 
 
 # ---------------------------------------------------------------- paired user bootstrap
-def paired_bootstrap(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], dom: np.ndarray, cls: np.ndarray,
-                     users: np.ndarray, reps: int = 1000, seed: int = 0, with_auc: bool = True,
-                     pair_seeds: list[int] | None = None) -> dict:
+def paired_bootstrap(
+    y: np.ndarray,
+    pa: list[np.ndarray],
+    pb: list[np.ndarray],
+    dom: np.ndarray,
+    cls: np.ndarray,
+    users: np.ndarray,
+    reps: int = 1000,
+    seed: int = 0,
+    with_auc: bool = True,
+    pair_seeds: list[int] | None = None,
+) -> dict:
     """A - B for four statistics, seed-paired (A seed k with B seed k), one user resample per replicate shared by
     every statistic and seed pair. Models are held fixed: only evaluation-user uncertainty is covered.
     - small_macro: macro LogLoss over small domains (primary); a domain enters a replicate if it has a resampled row
@@ -208,9 +257,11 @@ def paired_bootstrap(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], 
         tot = d_small.T @ w_user
         keep = cnt > 0
         ws, wl = w_user[ui_s], w_user[ui_l]
-        return {"small_macro": float((tot[keep] / cnt[keep]).mean()) if keep.any() else np.nan,
-                "small_click": float((d[small] * ws).sum() / ws.sum()) if ws.sum() > 0 else np.nan,
-                "large_click": float((d[large] * wl).sum() / wl.sum()) if wl.sum() > 0 else np.nan}
+        return {
+            "small_macro": float((tot[keep] / cnt[keep]).mean()) if keep.any() else np.nan,
+            "small_click": float((d[small] * ws).sum() / ws.sum()) if ws.sum() > 0 else np.nan,
+            "large_click": float((d[large] * wl).sum() / wl.sum()) if wl.sum() > 0 else np.nan,
+        }
 
     aucs = None
     if with_auc and small.any():
@@ -239,12 +290,20 @@ def paired_bootstrap(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], 
         if aucs is not None:
             draws["small_auc_macro"].append(auc_diff(w[ui_s])[0])
     ci = {k: [float(np.nanquantile(v, 0.025)), float(np.nanquantile(v, 0.975))] for k, v in draws.items()}
-    return {"point": point, "ci95": ci, "reps": reps, "users": U, "small_domains": G, "seed_pairs": len(pa),
-            "note": "A - B; models fixed (evaluation-user uncertainty only); one user resample per replicate"}
+    return {
+        "point": point,
+        "ci95": ci,
+        "reps": reps,
+        "users": U,
+        "small_domains": G,
+        "seed_pairs": len(pa),
+        "note": "A - B; models fixed (evaluation-user uncertainty only); one user resample per replicate",
+    }
 
 
-def leave_one_domain_out(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], dom: np.ndarray,
-                         cls: np.ndarray) -> dict:
+def leave_one_domain_out(
+    y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], dom: np.ndarray, cls: np.ndarray
+) -> dict:
     """Primary difference (seed-pair mean) recomputed with each small domain removed in turn (point estimates)."""
     small = cls == "small"
     diff = np.mean([M.bce(y, a) - M.bce(y, b) for a, b in zip(pa, pb)], axis=0)[small]
@@ -253,8 +312,13 @@ def leave_one_domain_out(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarra
     full = float(vals.mean())
     loo = {int(c): float(np.delete(vals, i).mean()) for i, c in enumerate(g["g"].to_list())}
     sign = np.sign(full)
-    return {"full": full, "min": min(loo.values()), "max": max(loo.values()),
-            "sign_flips": int(sum(np.sign(v) != sign for v in loo.values())), "by_removed_domain": loo}
+    return {
+        "full": full,
+        "min": min(loo.values()),
+        "max": max(loo.values()),
+        "sign_flips": int(sum(np.sign(v) != sign for v in loo.values())),
+        "by_removed_domain": loo,
+    }
 
 
 # ---------------------------------------------------------------- selection, power, verdict (§16.6, §16.7)
@@ -269,10 +333,15 @@ def power_check(h_v2: float, l_int: float) -> dict:
     h_test = h_v2 / np.sqrt(2)
     detectable = POWER_FACTOR * h_test
     threshold = ADOPT_REL * l_int
-    return {"h_v2": h_v2, "h_test_optimistic": float(h_test), "detectable_80pct": float(detectable),
-            "adoption_effect_abs": float(threshold), "underpowered_expected": bool(detectable > threshold),
-            "note": "h_test = h_V2 / sqrt(2) is optimistic: user overlap between the two files, day-to-day variation "
-                    "and the three-seed direction rule are not included"}
+    return {
+        "h_v2": h_v2,
+        "h_test_optimistic": float(h_test),
+        "detectable_80pct": float(detectable),
+        "adoption_effect_abs": float(threshold),
+        "underpowered_expected": bool(detectable > threshold),
+        "note": "h_test = h_V2 / sqrt(2) is optimistic: user overlap between the two files, day-to-day variation "
+        "and the three-seed direction rule are not included",
+    }
 
 
 def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None) -> dict:
@@ -295,23 +364,44 @@ def verdict(boot: dict, l_int: float, p99_by_seed: dict[int, float] | None) -> d
     p99_ms = None if p99_by_seed is None else float(max(p99_by_seed.values()))
     improved = bool(pt["small_macro"] < 0 and ci["small_macro"][1] < 0 and all(x < 0 for x in per))
     rel = float(-pt["small_macro"] / l_int)
-    conditions = {"effect_size": {"relative_improvement": rel, "needed": ADOPT_REL, "met": rel >= ADOPT_REL},
-                  "large_domains": {"ci95_upper": ci["large_click"][1], "needed_at_most": ADOPT_LARGE,
-                                    "met": bool(ci["large_click"][1] <= ADOPT_LARGE)},
-                  "latency": {"p99_ms_max_over_seeds": p99_ms, "p99_ms_by_seed": p99_by_seed, "needed_at_most": ADOPT_P99_MS,
-                              "met": None if p99_ms is None else bool(p99_ms <= ADOPT_P99_MS)}}
+    conditions = {
+        "effect_size": {"relative_improvement": rel, "needed": ADOPT_REL, "met": rel >= ADOPT_REL},
+        "large_domains": {
+            "ci95_upper": ci["large_click"][1],
+            "needed_at_most": ADOPT_LARGE,
+            "met": bool(ci["large_click"][1] <= ADOPT_LARGE),
+        },
+        "latency": {
+            "p99_ms_max_over_seeds": p99_ms,
+            "p99_ms_by_seed": p99_by_seed,
+            "needed_at_most": ADOPT_P99_MS,
+            "met": None if p99_ms is None else bool(p99_ms <= ADOPT_P99_MS),
+        },
+    }
     adopted = improved and all(c["met"] is True for c in conditions.values())
     failed = [k for k, c in conditions.items() if c["met"] is False]
     pending = [k for k, c in conditions.items() if c["met"] is None]
     tier = "adoption_candidate" if adopted else ("improvement_confirmed" if improved else "not_confirmed")
-    return {"improvement_confirmed": improved, "tier": tier, "conditions": conditions,
-            "failed_conditions": failed, "pending_conditions": pending}
+    return {
+        "improvement_confirmed": improved,
+        "tier": tier,
+        "conditions": conditions,
+        "failed_conditions": failed,
+        "pending_conditions": pending,
+    }
 
 
 # ---------------------------------------------------------------- study D (docs/DESIGN.md §17)
-def paired_bootstrap_groups(y: np.ndarray, pa: list[np.ndarray], pb: list[np.ndarray], groups: np.ndarray,
-                            users: np.ndarray, reps: int = 1000, seed: int = 0,
-                            pair_seeds: list[int] | None = None) -> dict:
+def paired_bootstrap_groups(
+    y: np.ndarray,
+    pa: list[np.ndarray],
+    pb: list[np.ndarray],
+    groups: np.ndarray,
+    users: np.ndarray,
+    reps: int = 1000,
+    seed: int = 0,
+    pair_seeds: list[int] | None = None,
+) -> dict:
     """A - B on rows that all belong to the evaluated groups, seed-paired, one user resample per replicate:
     - macro: group-equal mean of per-group mean LogLoss; click: row-equal mean LogLoss;
     - poisson: mean over groups of 2[O log(O/E) - (O - E)] with O, E the (resampled) positive and predicted sums.
@@ -340,8 +430,12 @@ def paired_bootstrap_groups(y: np.ndarray, pa: list[np.ndarray], pb: list[np.nda
         for (la, lb), (ma, mb), (ea, eb) in zip(loss, la_m, pa_m):
             out["macro"].append(float(((ma.T @ w)[keep] / cnt[keep]).mean() - ((mb.T @ w)[keep] / cnt[keep]).mean()))
             out["click"].append(float(((la - lb) * wr).sum() / wr.sum()))
-            out["poisson"].append(float(poisson_deviance(O[keep], (ea.T @ w)[keep]).mean()
-                                        - poisson_deviance(O[keep], (eb.T @ w)[keep]).mean()))
+            out["poisson"].append(
+                float(
+                    poisson_deviance(O[keep], (ea.T @ w)[keep]).mean()
+                    - poisson_deviance(O[keep], (eb.T @ w)[keep]).mean()
+                )
+            )
         return out
 
     point = stats(np.ones(U))
@@ -351,7 +445,13 @@ def paired_bootstrap_groups(y: np.ndarray, pa: list[np.ndarray], pb: list[np.nda
         s = stats(np.bincount(rng.integers(U, size=U), minlength=U).astype(float))
         for k in draws:
             draws[k].append(float(np.mean(s[k])))
-    return {"point": {k: float(np.mean(v)) for k, v in point.items()},
-            "per_pair": point, "per_pair_seeds": list(pair_seeds) if pair_seeds is not None else None,
-            "ci95": {k: [float(np.quantile(v, 0.025)), float(np.quantile(v, 0.975))] for k, v in draws.items()},
-            "reps": reps, "users": U, "groups": G, "seed_pairs": len(pa)}
+    return {
+        "point": {k: float(np.mean(v)) for k, v in point.items()},
+        "per_pair": point,
+        "per_pair_seeds": list(pair_seeds) if pair_seeds is not None else None,
+        "ci95": {k: [float(np.quantile(v, 0.025)), float(np.quantile(v, 0.975))] for k, v in draws.items()},
+        "reps": reps,
+        "users": U,
+        "groups": G,
+        "seed_pairs": len(pa),
+    }

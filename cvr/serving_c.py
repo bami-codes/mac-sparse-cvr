@@ -61,8 +61,13 @@ class ServerC:
         else:
             raise ValueError(family)
         self.glob, self.gs = load_domain_calibrators(run_dir / "models" / f"calib_{family}_s{seed}")
-        self.info = {"model": str(path), "calibrator": f"calib_{family}_s{seed}", "calibration": calibration,
-                     "lambda": self.gs.lam, "group_key": DOMAIN_KEY}
+        self.info = {
+            "model": str(path),
+            "calibrator": f"calib_{family}_s{seed}",
+            "calibration": calibration,
+            "lambda": self.gs.lam,
+            "group_key": DOMAIN_KEY,
+        }
 
     def features(self, rows: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray]:
         return row_features(self.vocab, rows)
@@ -70,7 +75,9 @@ class ServerC:
     def raw_score(self, codes: dict[str, np.ndarray], num: np.ndarray) -> np.ndarray:
         n = num.shape[0]
         if self.family in GBDT_FAMILIES:
-            cols = {c: codes[c].astype(np.float64) for c in CAT_INPUTS} | {c: num[:, j] for j, c in enumerate(NUM_INPUTS)}
+            cols = {c: codes[c].astype(np.float64) for c in CAT_INPUTS} | {
+                c: num[:, j] for j, c in enumerate(NUM_INPUTS)
+            }
             X = np.column_stack([cols[c] for c in self.model.inputs])
             if self.family == "G-shared":
                 return self.model.booster.predict(X, num_threads=1)

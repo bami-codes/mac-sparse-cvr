@@ -41,8 +41,16 @@ def synthetic(n_blocks=120, per_block=50, seed=0, shared_factor=0.5):
     block = np.repeat(np.arange(n_blocks), per_block)
     base = rng.lognormal(np.log(2e6), 0.3, n)  # ns
     wall = np.where(path == 1, base * shared_factor, base)
-    rec = {"wall": wall, "encode": wall * 0.5, "model": wall * 0.45, "calibrate": wall * 0.05, "cpu": wall * 0.98,
-           "nivcsw": (rng.random(n) < 0.1).astype(int), "gc": (rng.random(n) < 0.2).astype(int), "path": path}
+    rec = {
+        "wall": wall,
+        "encode": wall * 0.5,
+        "model": wall * 0.45,
+        "calibrate": wall * 0.05,
+        "cpu": wall * 0.98,
+        "nivcsw": (rng.random(n) < 0.1).astype(int),
+        "gc": (rng.random(n) < 0.2).astype(int),
+        "path": path,
+    }
     return rec, block
 
 

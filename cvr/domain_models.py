@@ -69,8 +69,15 @@ class GBDTOffset:
         return expit(raw + self.offset(df))
 
     @classmethod
-    def fit(cls, train: pl.DataFrame, params: dict, seed: int, num_boost_round: int, early_stopping_rounds: int,
-            folds: int = OFFSET_FOLDS) -> "GBDTOffset":
+    def fit(
+        cls,
+        train: pl.DataFrame,
+        params: dict,
+        seed: int,
+        num_boost_round: int,
+        early_stopping_rounds: int,
+        folds: int = OFFSET_FOLDS,
+    ) -> "GBDTOffset":
         import lightgbm as lgb
 
         inputs = G_INT_INPUTS
@@ -80,11 +87,21 @@ class GBDTOffset:
         es, off_fit, off_es = early_stopping_offsets(train, folds)
         dtr = lgb.Dataset(X[~es], y[~es], init_score=off_fit, categorical_feature=cat_idx, free_raw_data=True)
         des = lgb.Dataset(X[es], y[es], init_score=off_es, categorical_feature=cat_idx, reference=dtr)
-        probe = lgb.train(p, dtr, num_boost_round=num_boost_round, valid_sets=[des],
-                          callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)])
+        probe = lgb.train(
+            p,
+            dtr,
+            num_boost_round=num_boost_round,
+            valid_sets=[des],
+            callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)],
+        )
         rounds = max(1, probe.best_iteration)
-        full = lgb.train(p, lgb.Dataset(X, y, init_score=oof_domain_offset(train, folds), categorical_feature=cat_idx,
-                                        free_raw_data=True), num_boost_round=rounds)
+        full = lgb.train(
+            p,
+            lgb.Dataset(
+                X, y, init_score=oof_domain_offset(train, folds), categorical_feature=cat_idx, free_raw_data=True
+            ),
+            num_boost_round=rounds,
+        )
         return cls(full, inputs, rounds, SmoothedRate.fit(train, DOMAIN_KEY))
 
 
@@ -92,15 +109,20 @@ class GBDTOffset:
 def save_gbdt_offset(m: GBDTOffset, path: Path) -> None:
     m.booster.save_model(str(path.with_suffix(".txt")))
     m.rate.table.write_parquet(path.with_suffix(".rate.parquet"))
-    path.with_suffix(".json").write_text(json.dumps({"inputs": m.inputs, "rounds": m.rounds, "rate_key": m.rate.key,
-                                                     "rate_p0": m.rate.p0, "rate_m": m.rate.m}))
+    path.with_suffix(".json").write_text(
+        json.dumps(
+            {"inputs": m.inputs, "rounds": m.rounds, "rate_key": m.rate.key, "rate_p0": m.rate.p0, "rate_m": m.rate.m}
+        )
+    )
 
 
 def load_gbdt_offset(path: Path) -> GBDTOffset:
     import lightgbm as lgb
 
     meta = json.loads(path.with_suffix(".json").read_text())
-    rate = SmoothedRate(meta["rate_key"], meta["rate_p0"], meta["rate_m"], pl.read_parquet(path.with_suffix(".rate.parquet")))
+    rate = SmoothedRate(
+        meta["rate_key"], meta["rate_p0"], meta["rate_m"], pl.read_parquet(path.with_suffix(".rate.parquet"))
+    )
     return GBDTOffset(lgb.Booster(model_file=str(path.with_suffix(".txt"))), meta["inputs"], meta["rounds"], rate)
 
 

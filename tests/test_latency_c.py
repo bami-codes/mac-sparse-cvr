@@ -30,6 +30,7 @@ def test_rows_are_read_at_their_file_positions(tmp_path):
 
 def test_the_acceptance_rule_is_refused_outside_macos(monkeypatch):
     import scripts.latency_c as L
+
     monkeypatch.setattr(L.sys, "platform", "linux")  # ps -o pcpu means lifetime average CPU there
     with pytest.raises(RuntimeError, match="macOS"):
         L.environment()

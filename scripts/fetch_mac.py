@@ -80,8 +80,10 @@ def download(rel: str, dest: Path, size: int) -> None:
                 while chunk := r.read(CHUNK):
                     f.write(chunk)
         except OSError as e:
-            print(f"{rel}: attempt {attempt} stopped at {dest.stat().st_size if dest.exists() else 0}/{size}: {e}",
-                  flush=True)
+            print(
+                f"{rel}: attempt {attempt} stopped at {dest.stat().st_size if dest.exists() else 0}/{size}: {e}",
+                flush=True,
+            )
             time.sleep(min(30, 2 * attempt))
     if not dest.exists() or dest.stat().st_size != size:
         raise RuntimeError(f"{rel}: incomplete after {ATTEMPTS} attempts")

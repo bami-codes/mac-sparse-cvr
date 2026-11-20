@@ -59,11 +59,13 @@ def test_mean_pooling_is_average_over_valid_steps():
 def test_fit_and_predict_run_and_are_seed_deterministic():
     rng = np.random.default_rng(0)
     n = 512
-    a = M3Arrays(other=rng.integers(0, 5, (n, 3)).astype(np.int32),
-                 target=rng.integers(2, 50, (n, 3)).astype(np.int32),
-                 seq=rng.integers(1, 50, (n, 20, 3)).astype(np.int32),
-                 mm=rng.random((n, 20, 2)).astype(np.float32),
-                 num=rng.normal(size=(n, 4)).astype(np.float32))
+    a = M3Arrays(
+        other=rng.integers(0, 5, (n, 3)).astype(np.int32),
+        target=rng.integers(2, 50, (n, 3)).astype(np.int32),
+        seq=rng.integers(1, 50, (n, 20, 3)).astype(np.int32),
+        mm=rng.random((n, 20, 2)).astype(np.float32),
+        num=rng.normal(size=(n, 4)).astype(np.float32),
+    )
     y = (rng.random(n) < 0.1).astype(np.float32)
     p1 = M3Model.fit(a, y, [5, 5, 5], [50, 50, 50], "attn", seed=7, dim=8, batch=128, threads=1).predict(a)
     p2 = M3Model.fit(a, y, [5, 5, 5], [50, 50, 50], "attn", seed=7, dim=8, batch=128, threads=1).predict(a)

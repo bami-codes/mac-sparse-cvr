@@ -103,12 +103,15 @@ def main(config_path: str) -> Path:
     cls = {r: D.domain_class(data[r], dstats, dc["small_share"], dc["small_min_clicks"]) for r in ROLES}
     dom = {r: data[r][DOMAIN_KEY].to_numpy() for r in ROLES}
     domain_summary = D.domain_summary(dstats, dc["small_share"], dc["small_min_clicks"])
-    domain_summary["rows_by_class"] = {r: {str(k): int(v) for k, v in zip(*np.unique(cls[r], return_counts=True))}
-                                       for r in ROLES}
+    domain_summary["rows_by_class"] = {
+        r: {str(k): int(v) for k, v in zip(*np.unique(cls[r], return_counts=True))} for r in ROLES
+    }
     gc = cfg["groups"]
     gstats = G.train_stats(data["train"])
-    g1 = {r: G.classify(data[r], gstats, gc["n_min"], gc["c_min"], gc["c_dense"])["group_class"].to_numpy() == "G1"
-          for r in ("v1", "v2")}
+    g1 = {
+        r: G.classify(data[r], gstats, gc["n_min"], gc["c_min"], gc["c_dense"])["group_class"].to_numpy() == "G1"
+        for r in ("v1", "v2")
+    }
     lap("groups")
 
     # 4) GBDT family (this process): every seed saved and reloaded on the V2 head
@@ -123,10 +126,23 @@ def main(config_path: str) -> Path:
     lgb_params = mc["lgb"]
     for seed in seeds:
         for fam, fit, save, load in (
-                ("G-shared", lambda s: GBDT.fit(data["train"], lgb_params, s, mc["num_boost_round"],
-                                                 mc["early_stopping_rounds"], G_SHARED_INPUTS), save_gbdt, load_gbdt),
-                ("G-int", lambda s: GBDTOffset.fit(data["train"], lgb_params, s, mc["num_boost_round"],
-                                                   mc["early_stopping_rounds"]), save_gbdt_offset, load_gbdt_offset)):
+            (
+                "G-shared",
+                lambda s: GBDT.fit(
+                    data["train"], lgb_params, s, mc["num_boost_round"], mc["early_stopping_rounds"], G_SHARED_INPUTS
+                ),
+                save_gbdt,
+                load_gbdt,
+            ),
+            (
+                "G-int",
+                lambda s: GBDTOffset.fit(
+                    data["train"], lgb_params, s, mc["num_boost_round"], mc["early_stopping_rounds"]
+                ),
+                save_gbdt_offset,
+                load_gbdt_offset,
+            ),
+        ):
             t1 = time.time()
             m = fit(seed)
             name = f"{fam}_s{seed}"
@@ -137,18 +153,36 @@ def main(config_path: str) -> Path:
                 np.save(preds_dir / f"{name}_{r}.npy", preds[r][name])  # so selection can be recomputed later
             save(m, models_dir / name)
             p_re = load(models_dir / name).predict(head)
-            reload_check[name] = require_close(f"reload {name}", float(np.abs(p_re - preds["v2"][name][:head.height]).max()),
-                                               RELOAD_TOL)
+            reload_check[name] = require_close(
+                f"reload {name}", float(np.abs(p_re - preds["v2"][name][: head.height]).max()), RELOAD_TOL
+            )
             print(f"{name}: {m.rounds} rounds, {time.time() - t1:.0f}s", flush=True)
     lap("gbdt")
 
     # 5) NN learning rate / epochs on V2 (seed 1, every compared variant, same grid and metric), then all seeds
-    job_base = {"cat_sizes": [sizes[c] for c in CAT_INPUTS], "dom_col": DOM_COL, "dim": nc["dim"], "batch": nc["batch"],
-                "threads": nc["threads"], "reload_rows": RELOAD_ROWS, "data_dir": str(nn_dir),
-                "models_dir": str(models_dir)}
-    tune_runs = [{"name": f"{fam}_lr{lr:g}_s{seeds[0]}", "variant": var, "seed": seeds[0], "lr": lr,
-                  "epochs": max(nc["epochs"]), "eval_epochs": nc["epochs"], "save": False}
-                 for fam, var in NN_FAMILIES.items() for lr in nc["lrs"]]
+    job_base = {
+        "cat_sizes": [sizes[c] for c in CAT_INPUTS],
+        "dom_col": DOM_COL,
+        "dim": nc["dim"],
+        "batch": nc["batch"],
+        "threads": nc["threads"],
+        "reload_rows": RELOAD_ROWS,
+        "data_dir": str(nn_dir),
+        "models_dir": str(models_dir),
+    }
+    tune_runs = [
+        {
+            "name": f"{fam}_lr{lr:g}_s{seeds[0]}",
+            "variant": var,
+            "seed": seeds[0],
+            "lr": lr,
+            "epochs": max(nc["epochs"]),
+            "eval_epochs": nc["epochs"],
+            "save": False,
+        }
+        for fam, var in NN_FAMILIES.items()
+        for lr in nc["lrs"]
+    ]
     run_worker(run_dir / "nn_tune", job_base | {"runs": tune_runs})  # predictions are read from nn_tune/preds
     y1, y2 = data["v1"]["y"].to_numpy(), data["v2"]["y"].to_numpy()
     nonmiss2 = data["v2"]["is_missing"].to_numpy() == 0
@@ -161,14 +195,28 @@ def main(config_path: str) -> Path:
                 p1 = np.load(run_dir / "nn_tune" / "preds" / f"{key}_v1.npy")
                 p2 = np.load(run_dir / "nn_tune" / "preds" / f"{key}_v2.npy")
                 q2 = GlobalPlatt.fit(p1, y1).predict(p2)
-                grid[f"lr{lr:g}_e{e}"] = {"lr": lr, "epochs": e, "v2_logloss_nonmissing_ii": float(M.bce(y2[nonmiss2], q2[nonmiss2]).mean())}
+                grid[f"lr{lr:g}_e{e}"] = {
+                    "lr": lr,
+                    "epochs": e,
+                    "v2_logloss_nonmissing_ii": float(M.bce(y2[nonmiss2], q2[nonmiss2]).mean()),
+                }
         best = min(grid, key=lambda k: grid[k]["v2_logloss_nonmissing_ii"])  # grid order breaks exact ties
         tuning[fam] = {"grid": grid, "chosen": grid[best], "rule": "min V2 non-missing LogLoss after (ii), seed 1"}
     final_runs = []
     for fam, var in list(NN_FAMILIES.items()) + [ABLATION]:
         ch = tuning["N-star" if fam == ABLATION[0] else fam]["chosen"]
-        final_runs += [{"name": f"{fam}_s{s}", "variant": var, "seed": s, "lr": ch["lr"], "epochs": ch["epochs"],
-                        "eval_epochs": [ch["epochs"]], "save": True} for s in seeds]
+        final_runs += [
+            {
+                "name": f"{fam}_s{s}",
+                "variant": var,
+                "seed": s,
+                "lr": ch["lr"],
+                "epochs": ch["epochs"],
+                "eval_epochs": [ch["epochs"]],
+                "save": True,
+            }
+            for s in seeds
+        ]
     final = run_worker(run_dir / "nn_final", job_base | {"runs": final_runs})
     nn_names: dict[str, str] = {}  # family_seed -> saved model name (with the epoch suffix)
     for run in final_runs:
@@ -183,8 +231,11 @@ def main(config_path: str) -> Path:
     for fam in NN_FAMILIES:
         ch = tuning[fam]["chosen"]
         tuned = np.load(run_dir / "nn_tune" / "preds" / f"{fam}_lr{ch['lr']:g}_s{seeds[0]}_e{ch['epochs']}_v2.npy")
-        repro[fam] = require_close(f"{fam} seed-1 final vs tuning checkpoint",
-                                   float(np.abs(preds["v2"][f"{fam}_s{seeds[0]}"] - tuned).max()), RELOAD_TOL)
+        repro[fam] = require_close(
+            f"{fam} seed-1 final vs tuning checkpoint",
+            float(np.abs(preds["v2"][f"{fam}_s{seeds[0]}"] - tuned).max()),
+            RELOAD_TOL,
+        )
     lap("nn")
 
     # 6) calibration on V1 ((ii) and (iii-d) with every lambda), reports on V2
@@ -218,8 +269,10 @@ def main(config_path: str) -> Path:
             for lam in lambdas:
                 gs, sinfo = fit_group_shrunk_exact(p1, y1, dom["v1"], glob, lam)  # exact per-domain solve (rev. 4)
                 if gs.n_nonpositive_slopes or not gs.converged:
-                    raise RuntimeError(f"(iii-d) fit of {name}, lambda {lam}: converged={gs.converged}, "
-                                       f"non-positive slopes={gs.n_nonpositive_slopes}, {sinfo}")
+                    raise RuntimeError(
+                        f"(iii-d) fit of {name}, lambda {lam}: converged={gs.converged}, "
+                        f"non-positive slopes={gs.n_nonpositive_slopes}, {sinfo}"
+                    )
                 cal[name]["iiid"][lam] = gs
                 cal_solver[f"{name}|lam{lam:g}"] = sinfo
                 rep(f"{name}|iiid_lam{lam:g}", gs.predict(p2, dom["v2"]))
@@ -240,8 +293,17 @@ def main(config_path: str) -> Path:
     bs = cfg["bootstrap"]
 
     def boot(a: str, b: str, ca: str = "iiid", cb: str = "iiid") -> dict:
-        out = D.paired_bootstrap(y2, calibrated(a, ca), calibrated(b, cb), dom["v2"], cls["v2"], users2,
-                                 bs["reps"], bs["seed"], pair_seeds=seeds)
+        out = D.paired_bootstrap(
+            y2,
+            calibrated(a, ca),
+            calibrated(b, cb),
+            dom["v2"],
+            cls["v2"],
+            users2,
+            bs["reps"],
+            bs["seed"],
+            pair_seeds=seeds,
+        )
         out["compared"] = f"{a} ({ca}) - {b} ({cb})"
         return out
 
@@ -250,28 +312,45 @@ def main(config_path: str) -> Path:
     lo, hi = primary["ci95"]["small_macro"]
     power = D.power_check((hi - lo) / 2, l_int)
     verdict_dry = D.verdict(primary, l_int, p99_by_seed=None) | {
-        "note": "DRY RUN of the verdict code on V2 = selection data; not a result (latency measured later)"}
+        "note": "DRY RUN of the verdict code on V2 = selection data; not a result (latency measured later)"
+    }
     loo = D.leave_one_domain_out(y2, calibrated(cand), calibrated(ctrl), dom["v2"], cls["v2"])
     best_g = min(["G-int", "G-shared"], key=lambda f: seed_mean(f, f"iiid_lam{lam_of[f]:g}"))
     best_n = min(list(NN_FAMILIES), key=lambda f: seed_mean(f, f"iiid_lam{lam_of[f]:g}"))
-    secondary = {"N-star - N-shared": boot("N-star", "N-shared"), "N-head - N-shared": boot("N-head", "N-shared"),
-                 "N-star-noPN - N-star": boot("N-star-noPN", "N-star"), "best NN - best GBDT": boot(best_n, best_g),
-                 f"{cand}: iiid - ii": boot(cand, cand, "iiid", "ii"),
-                 f"{ctrl}: iiid - ii": boot(ctrl, ctrl, "iiid", "ii")}
+    secondary = {
+        "N-star - N-shared": boot("N-star", "N-shared"),
+        "N-head - N-shared": boot("N-head", "N-shared"),
+        "N-star-noPN - N-star": boot("N-star-noPN", "N-star"),
+        "best NN - best GBDT": boot(best_n, best_g),
+        f"{cand}: iiid - ii": boot(cand, cand, "iiid", "ii"),
+        f"{ctrl}: iiid - ii": boot(ctrl, ctrl, "iiid", "ii"),
+    }
     if cand != "G-shared":  # what a serving system would actually get: the candidate vs G-shared
         secondary[f"{cand} - G-shared"] = boot(cand, "G-shared")
     selection = {
         "selected_on": "V2 small-domain macro LogLoss (seed mean) after (iii-d), docs/DESIGN.md §16.6",
         "nn_settings": {fam: tuning[fam]["chosen"] for fam in NN_FAMILIES} | {ABLATION[0]: tuning["N-star"]["chosen"]},
-        "lambda_iiid": lam_of, "candidate_scores": scores, "candidate": cand, "control": ctrl,
+        "lambda_iiid": lam_of,
+        "candidate_scores": scores,
+        "candidate": cand,
+        "control": ctrl,
         "tie_rule": {"tolerance": D.TIE, "preference": D.PREFERENCE},
-        "primary": {"treatment": [f"{n}|iiid_lam{lam_of[cand]:g}" for n in family_seeds(cand, seeds)],
-                    "control": [f"{n}|iiid_lam{lam_of[ctrl]:g}" for n in family_seeds(ctrl, seeds)],
-                    "description": f"{cand} (iii-d) - {ctrl} (iii-d), small-domain macro LogLoss"},
+        "primary": {
+            "treatment": [f"{n}|iiid_lam{lam_of[cand]:g}" for n in family_seeds(cand, seeds)],
+            "control": [f"{n}|iiid_lam{lam_of[ctrl]:g}" for n in family_seeds(ctrl, seeds)],
+            "description": f"{cand} (iii-d) - {ctrl} (iii-d), small-domain macro LogLoss",
+        },
         "domains": domain_summary["definition"] | {k: domain_summary[k]["codes"] for k in ("small", "tiny", "large")},
-        "vocab_fingerprint": V.fingerprint(vocab), "lgb_params": lgb_params, "nn": nc, "seeds": seeds,
-        "adoption": {"relative": D.ADOPT_REL, "large_ci_upper": D.ADOPT_LARGE, "p99_ms": D.ADOPT_P99_MS,
-                     "p99_rule": "max over the selected candidate's seeds"},
+        "vocab_fingerprint": V.fingerprint(vocab),
+        "lgb_params": lgb_params,
+        "nn": nc,
+        "seeds": seeds,
+        "adoption": {
+            "relative": D.ADOPT_REL,
+            "large_ci_upper": D.ADOPT_LARGE,
+            "p99_ms": D.ADOPT_P99_MS,
+            "p99_rule": "max over the selected candidate's seeds",
+        },
         "power_check": power,
     }
 
@@ -282,29 +361,53 @@ def main(config_path: str) -> Path:
             save_domain_calibrators(glob, gs, models_dir / f"calib_{name}")
             g2, s2 = load_domain_calibrators(models_dir / f"calib_{name}")
             ph, dh = preds["v2"][name][:RELOAD_ROWS], dom["v2"][:RELOAD_ROWS]
-            for tag, a, b in (("ii", g2.predict(ph), glob.predict(ph)), ("iiid", s2.predict(ph, dh), gs.predict(ph, dh))):
+            for tag, a, b in (
+                ("ii", g2.predict(ph), glob.predict(ph)),
+                ("iiid", s2.predict(ph, dh), gs.predict(ph, dh)),
+            ):
                 require_finite_probs(f"reloaded calib_{name}|{tag}", a)
-                reload_check[f"calib_{name}|{tag}"] = require_close(f"reload calib_{name}|{tag}",
-                                                                    float(np.abs(a - b).max()), RELOAD_TOL)
+                reload_check[f"calib_{name}|{tag}"] = require_close(
+                    f"reload calib_{name}|{tag}", float(np.abs(a - b).max()), RELOAD_TOL
+                )
     lap("selection")
 
-    meta = {"config": config_path, "git": git_at_start, "created_utc": run_dir.name,
-            "data": {r: [{"file": str(p), "buckets": b, "sha256": sha_of(p)} for p, b in srcs[r]] for r in ROLES},
-            "smoke_user_pct": user_pct, "rows": {r: data[r].height for r in ROLES},
-            "vocab": {"fingerprint": V.fingerprint(vocab), "sizes": sizes},
-            "versions": {"python": platform.python_version(), "polars": pl.__version__,
-                         "lightgbm": lightgbm.__version__, "numpy": np.__version__},
-            "timings_seconds": timings | {"total": round(time.time() - t0, 1)},
-            "peak_rss_gb": peak_rss_gb(),
-            "fitted": fitted, "reload_check_max_abs_diff": reload_check, "nn_seed1_reproduction": repro,
-            "calibration_solver": {"solver": "per-group Newton (cvr/calibration.fit_group_shrunk_exact)",
-                                   "max_projected_gradient": max(v["max_projected_gradient"] for v in cal_solver.values()),
-                                   "max_iterations": max(v["max_iterations"] for v in cal_solver.values()),
-                                   "fits_with_a_group_at_the_slope_bound":
-                                       sum(v["groups_at_slope_bound"] > 0 for v in cal_solver.values())}}
-    out = {"meta": meta, "domains": domain_summary, "nn_tuning": tuning, "selection": selection,
-           "v2_primary_bootstrap": primary, "v2_verdict_dry_run": verdict_dry, "v2_leave_one_domain_out": loo,
-           "v2_secondary": secondary, "v2_rows": rows}
+    meta = {
+        "config": config_path,
+        "git": git_at_start,
+        "created_utc": run_dir.name,
+        "data": {r: [{"file": str(p), "buckets": b, "sha256": sha_of(p)} for p, b in srcs[r]] for r in ROLES},
+        "smoke_user_pct": user_pct,
+        "rows": {r: data[r].height for r in ROLES},
+        "vocab": {"fingerprint": V.fingerprint(vocab), "sizes": sizes},
+        "versions": {
+            "python": platform.python_version(),
+            "polars": pl.__version__,
+            "lightgbm": lightgbm.__version__,
+            "numpy": np.__version__,
+        },
+        "timings_seconds": timings | {"total": round(time.time() - t0, 1)},
+        "peak_rss_gb": peak_rss_gb(),
+        "fitted": fitted,
+        "reload_check_max_abs_diff": reload_check,
+        "nn_seed1_reproduction": repro,
+        "calibration_solver": {
+            "solver": "per-group Newton (cvr/calibration.fit_group_shrunk_exact)",
+            "max_projected_gradient": max(v["max_projected_gradient"] for v in cal_solver.values()),
+            "max_iterations": max(v["max_iterations"] for v in cal_solver.values()),
+            "fits_with_a_group_at_the_slope_bound": sum(v["groups_at_slope_bound"] > 0 for v in cal_solver.values()),
+        },
+    }
+    out = {
+        "meta": meta,
+        "domains": domain_summary,
+        "nn_tuning": tuning,
+        "selection": selection,
+        "v2_primary_bootstrap": primary,
+        "v2_verdict_dry_run": verdict_dry,
+        "v2_leave_one_domain_out": loo,
+        "v2_secondary": secondary,
+        "v2_rows": rows,
+    }
     (run_dir / "results.json").write_text(json.dumps(out, indent=2, default=str))
     (run_dir / "selection.json").write_text(json.dumps(selection, indent=2, default=str))
     (run_dir / "results.md").write_text(render_markdown(out, families, seeds, lambdas))
@@ -315,23 +418,35 @@ def main(config_path: str) -> Path:
 def render_markdown(out: dict, families: list[str], seeds: list[int], lambdas: list[float]) -> str:
     meta, ds, sel, rows = out["meta"], out["domains"], out["selection"], out["v2_rows"]
     d = ds["definition"]
-    lines = [f"# Study C development run: {Path(meta['config']).stem} (V2 = selection data, not a test)", "",
-             f"- commit `{meta['git']['commit'][:7]}`" + (" (dirty working tree)" if meta["git"]["dirty_files"] else ""),
-             f"- rows {meta['rows']}, vocab `{meta['vocab']['fingerprint']}`, smoke user % {meta['smoke_user_pct']}",
-             f"- domains `{d['key']}` (training rows only): small = share < {d['small_share']:.0%} and clicks ≥ "
-             f"{d['small_min_clicks']}: **{ds['small']['domains']}** ({ds['small']['train_click_share']:.2%} of training "
-             f"clicks, {ds['small']['train_positives']} positives); tiny {ds['tiny']['domains']}; large {ds['large']['domains']}",
-             f"- time {meta['timings_seconds']['total']} s ({meta['timings_seconds']}), peak memory {meta['peak_rss_gb']} GB",
-             "", "## NN learning rate / epochs (seed 1, V2 non-missing LogLoss after (ii))", "",
-             "| family | " + " | ".join(out["nn_tuning"]["N-int"]["grid"]) + " | chosen |",
-             "|---|" + "---|" * (len(out["nn_tuning"]["N-int"]["grid"]) + 1)]
+    lines = [
+        f"# Study C development run: {Path(meta['config']).stem} (V2 = selection data, not a test)",
+        "",
+        f"- commit `{meta['git']['commit'][:7]}`" + (" (dirty working tree)" if meta["git"]["dirty_files"] else ""),
+        f"- rows {meta['rows']}, vocab `{meta['vocab']['fingerprint']}`, smoke user % {meta['smoke_user_pct']}",
+        f"- domains `{d['key']}` (training rows only): small = share < {d['small_share']:.0%} and clicks ≥ "
+        f"{d['small_min_clicks']}: **{ds['small']['domains']}** ({ds['small']['train_click_share']:.2%} of training "
+        f"clicks, {ds['small']['train_positives']} positives); tiny {ds['tiny']['domains']}; large {ds['large']['domains']}",
+        f"- time {meta['timings_seconds']['total']} s ({meta['timings_seconds']}), peak memory {meta['peak_rss_gb']} GB",
+        "",
+        "## NN learning rate / epochs (seed 1, V2 non-missing LogLoss after (ii))",
+        "",
+        "| family | " + " | ".join(out["nn_tuning"]["N-int"]["grid"]) + " | chosen |",
+        "|---|" + "---|" * (len(out["nn_tuning"]["N-int"]["grid"]) + 1),
+    ]
     for fam, t in out["nn_tuning"].items():
-        lines.append(f"| {fam} | " + " | ".join(f"{v['v2_logloss_nonmissing_ii']:.6f}" for v in t["grid"].values())
-                     + f" | lr {t['chosen']['lr']:g}, {t['chosen']['epochs']} ep |")
-    lines += ["", "## V2 table (seed mean ± sd)", "",
-              "| family | calib | small macro LogLoss | small click LogLoss | small Poisson dev | small within-domain AUC | "
-              "large click LogLoss | LogLoss (non-missing) | AUC (non-missing) | G1 macro LogLoss |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+        lines.append(
+            f"| {fam} | "
+            + " | ".join(f"{v['v2_logloss_nonmissing_ii']:.6f}" for v in t["grid"].values())
+            + f" | lr {t['chosen']['lr']:g}, {t['chosen']['epochs']} ep |"
+        )
+    lines += [
+        "",
+        "## V2 table (seed mean ± sd)",
+        "",
+        "| family | calib | small macro LogLoss | small click LogLoss | small Poisson dev | small within-domain AUC | "
+        "large click LogLoss | LogLoss (non-missing) | AUC (non-missing) | G1 macro LogLoss |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
 
     def cell(keys: list[str], path: tuple, fmt: str = ".6f") -> str:
         vals = []
@@ -349,40 +464,54 @@ def render_markdown(out: dict, families: list[str], seeds: list[int], lambdas: l
         lam = sel["lambda_iiid"][fam]
         for suf in ["raw", "ii", f"iiid_lam{lam:g}"]:
             keys = [f"{n}|{suf}" for n in family_seeds(fam, seeds)]
-            lines.append(f"| {fam} | {suf} | {cell(keys, ('small', 'macro_logloss'))} | "
-                         f"{cell(keys, ('small', 'click_weighted_logloss'))} | {cell(keys, ('small', 'poisson_deviance_mean'), '.4f')} | "
-                         f"{cell(keys, ('small', 'within_domain_auc_macro'), '.4f')} | {cell(keys, ('large', 'click_weighted_logloss'))} | "
-                         f"{cell(keys, ('overall_nonmissing', 'logloss'))} | {cell(keys, ('overall_nonmissing', 'auc'), '.4f')} | "
-                         f"{cell(keys, ('G1_macro_logloss',))} |")
+            lines.append(
+                f"| {fam} | {suf} | {cell(keys, ('small', 'macro_logloss'))} | "
+                f"{cell(keys, ('small', 'click_weighted_logloss'))} | {cell(keys, ('small', 'poisson_deviance_mean'), '.4f')} | "
+                f"{cell(keys, ('small', 'within_domain_auc_macro'), '.4f')} | {cell(keys, ('large', 'click_weighted_logloss'))} | "
+                f"{cell(keys, ('overall_nonmissing', 'logloss'))} | {cell(keys, ('overall_nonmissing', 'auc'), '.4f')} | "
+                f"{cell(keys, ('G1_macro_logloss',))} |"
+            )
     pb, pw, vd = out["v2_primary_bootstrap"], sel["power_check"], out["v2_verdict_dry_run"]
     pt, ci = pb["point"], pb["ci95"]
-    lines += ["", "## Selection (V2)", "",
-              f"- lambda (iii-d) per family: {sel['lambda_iiid']}",
-              f"- candidate scores (small macro LogLoss after iii-d): { {k: round(v, 6) for k, v in sel['candidate_scores'].items()} }",
-              f"- **candidate {sel['candidate']}**, control **{sel['control']}**",
-              f"- primary on V2 ({pb['compared']}): small macro {pt['small_macro']:+.6f} [{ci['small_macro'][0]:+.6f}, "
-              f"{ci['small_macro'][1]:+.6f}], per seed pair {[round(x, 6) for x in pt['per_pair_small_macro']]}; "
-              f"large click {pt['large_click']:+.6f} [{ci['large_click'][0]:+.6f}, {ci['large_click'][1]:+.6f}]; "
-              f"small within-domain AUC {pt.get('small_auc_macro', float('nan')):+.5f} "
-              f"[{ci.get('small_auc_macro', [np.nan, np.nan])[0]:+.5f}, {ci.get('small_auc_macro', [np.nan, np.nan])[1]:+.5f}] "
-              f"({pt.get('auc_domains')} domains with both classes)",
-              f"- power check: h_V2 {pw['h_v2']:.6f}, optimistic h_test {pw['h_test_optimistic']:.6f}, detectable at 80% "
-              f"{pw['detectable_80pct']:.6f} vs adoption effect {pw['adoption_effect_abs']:.6f} -> "
-              f"underpowered expected: {pw['underpowered_expected']}",
-              f"- verdict code DRY RUN on V2 (not a result): tier {vd['tier']}, failed {vd['failed_conditions']}, "
-              f"pending {vd['pending_conditions']}",
-              f"- leave one small domain out: full {out['v2_leave_one_domain_out']['full']:+.6f}, range "
-              f"[{out['v2_leave_one_domain_out']['min']:+.6f}, {out['v2_leave_one_domain_out']['max']:+.6f}], sign flips "
-              f"{out['v2_leave_one_domain_out']['sign_flips']}",
-              "", "## Secondary comparisons on V2 (A - B)", "", "| comparison | small macro [95% CI] | per seed pair | large click [95% CI] |",
-              "|---|---|---|---|"]
+    lines += [
+        "",
+        "## Selection (V2)",
+        "",
+        f"- lambda (iii-d) per family: {sel['lambda_iiid']}",
+        f"- candidate scores (small macro LogLoss after iii-d): { {k: round(v, 6) for k, v in sel['candidate_scores'].items()} }",
+        f"- **candidate {sel['candidate']}**, control **{sel['control']}**",
+        f"- primary on V2 ({pb['compared']}): small macro {pt['small_macro']:+.6f} [{ci['small_macro'][0]:+.6f}, "
+        f"{ci['small_macro'][1]:+.6f}], per seed pair {[round(x, 6) for x in pt['per_pair_small_macro']]}; "
+        f"large click {pt['large_click']:+.6f} [{ci['large_click'][0]:+.6f}, {ci['large_click'][1]:+.6f}]; "
+        f"small within-domain AUC {pt.get('small_auc_macro', float('nan')):+.5f} "
+        f"[{ci.get('small_auc_macro', [np.nan, np.nan])[0]:+.5f}, {ci.get('small_auc_macro', [np.nan, np.nan])[1]:+.5f}] "
+        f"({pt.get('auc_domains')} domains with both classes)",
+        f"- power check: h_V2 {pw['h_v2']:.6f}, optimistic h_test {pw['h_test_optimistic']:.6f}, detectable at 80% "
+        f"{pw['detectable_80pct']:.6f} vs adoption effect {pw['adoption_effect_abs']:.6f} -> "
+        f"underpowered expected: {pw['underpowered_expected']}",
+        f"- verdict code DRY RUN on V2 (not a result): tier {vd['tier']}, failed {vd['failed_conditions']}, "
+        f"pending {vd['pending_conditions']}",
+        f"- leave one small domain out: full {out['v2_leave_one_domain_out']['full']:+.6f}, range "
+        f"[{out['v2_leave_one_domain_out']['min']:+.6f}, {out['v2_leave_one_domain_out']['max']:+.6f}], sign flips "
+        f"{out['v2_leave_one_domain_out']['sign_flips']}",
+        "",
+        "## Secondary comparisons on V2 (A - B)",
+        "",
+        "| comparison | small macro [95% CI] | per seed pair | large click [95% CI] |",
+        "|---|---|---|---|",
+    ]
     for k, b in out["v2_secondary"].items():
         p, c = b["point"], b["ci95"]
-        lines.append(f"| {k} | {p['small_macro']:+.6f} [{c['small_macro'][0]:+.6f}, {c['small_macro'][1]:+.6f}] | "
-                     f"{[round(x, 6) for x in p['per_pair_small_macro']]} | {p['large_click']:+.6f} "
-                     f"[{c['large_click'][0]:+.6f}, {c['large_click'][1]:+.6f}] |")
-    lines += ["", "Intervals resample V2 users with the fitted models held fixed (seed-paired); V2 chose every setting, "
-                  "so the selected candidate's values are optimistic."]
+        lines.append(
+            f"| {k} | {p['small_macro']:+.6f} [{c['small_macro'][0]:+.6f}, {c['small_macro'][1]:+.6f}] | "
+            f"{[round(x, 6) for x in p['per_pair_small_macro']]} | {p['large_click']:+.6f} "
+            f"[{c['large_click'][0]:+.6f}, {c['large_click'][1]:+.6f}] |"
+        )
+    lines += [
+        "",
+        "Intervals resample V2 users with the fitted models held fixed (seed-paired); V2 chose every setting, "
+        "so the selected candidate's values are optimistic.",
+    ]
     return "\n".join(lines) + "\n"
 
 

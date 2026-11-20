@@ -89,9 +89,15 @@ def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -
     D, _ = R.official()
     calibrated = cfg.get("calibrator") is not None
     codes = json.loads((bundle / "group_codes.json").read_text()) if calibrated else {}
-    server = ServerE.from_parts(cfg["args"], ckpt, D.get_vocabs(str(voc)), codes,
-                                bundle / cfg["calibrator"] if calibrated else None, threads,
-                                {"bundle": str(bundle), "source": cfg.get("source")})
+    server = ServerE.from_parts(
+        cfg["args"],
+        ckpt,
+        D.get_vocabs(str(voc)),
+        codes,
+        bundle / cfg["calibrator"] if calibrated else None,
+        threads,
+        {"bundle": str(bundle), "source": cfg.get("source")},
+    )
     if server.info["checkpoint_sha256"] != cfg["checkpoint_sha256"]:
         raise SystemExit(f"{ckpt} is not the checkpoint of {bundle} (SHA-256 differs)")
     return server
@@ -106,10 +112,20 @@ def predict(server: ServerE, request: dict, calibration: str = "iii") -> dict:
         calibration, q = "none", p
     else:
         q = server.calibrate(p, request["candidates"]) if calibration == "iii" else server.glob.predict(p)
-    return {"model": server.info["model"], "calibration": CALIBRATIONS[calibration],
-            "candidates": [{"ad_feat0": c["ad_feat0"], "ad_feat1": c["ad_feat1"], "cvr": round(float(qi), 8),
-                            "cvr_uncalibrated": round(float(pi), 8)} for c, pi, qi in zip(request["candidates"], p, q)],
-            "values_not_in_vocabulary": dict(server.oov)}
+    return {
+        "model": server.info["model"],
+        "calibration": CALIBRATIONS[calibration],
+        "candidates": [
+            {
+                "ad_feat0": c["ad_feat0"],
+                "ad_feat1": c["ad_feat1"],
+                "cvr": round(float(qi), 8),
+                "cvr_uncalibrated": round(float(pi), 8),
+            }
+            for c, pi, qi in zip(request["candidates"], p, q)
+        ],
+        "values_not_in_vocabulary": dict(server.oov),
+    }
 
 
 def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: bool = True) -> dict:
@@ -118,6 +134,7 @@ def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: boo
     A calibrator only fits the checkpoint whose predictions it was trained on (train-17). Exporting any other
     checkpoint requires calibrated=False."""
     from . import study_e_eval as Q
+
     run = json.loads((Q.RUNS / rid / "run.json").read_text())
     ckpt = (Q.RUNS / rid / f"model_after_{Path(after).stem}.pt").resolve()
     sha = run["checkpoints"][after]["sha256"]
@@ -126,19 +143,29 @@ def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: boo
     fitted = Q.prediction_file("research", Q.CKPT, Q.checkpoint_sha(rid), Q.V1).with_suffix(".json")
     fitted_sha = json.loads(fitted.read_text())["checkpoint_sha256"] if fitted.exists() else None
     if calibrated and fitted_sha != sha:
-        raise SystemExit(f"the calibrator of {rid} was fitted on another checkpoint's predictions ({fitted}); "
-                         "export this checkpoint with --no-calibration to serve raw probabilities")
+        raise SystemExit(
+            f"the calibrator of {rid} was fitted on another checkpoint's predictions ({fitted}); "
+            "export this checkpoint with --no-calibration to serve raw probabilities"
+        )
     out = Path(out)
     out.mkdir(parents=True, exist_ok=False)
     source = {"study": "E", "run": rid, "trained_through": after}
     if calibrated:
         shutil.copy(Q.calibrator_path(rid, "iii", "main"), out / "calibrator.npz")
         (out / "group_codes.json").write_text(json.dumps(Q.token_codes()))
-        source |= {"calibrator_fitted_on": f"{Q.V1} predictions of checkpoint {fitted_sha[:12]}",
-                   "lambda_chosen_on": Q.V2}
-    cfg = {"args": run["args"], "checkpoint": str(ckpt), "checkpoint_sha256": sha,
-           "calibrator": "calibrator.npz" if calibrated else None, "calibration": "iii" if calibrated else "none",
-           "vocabs": None, "source": source}
+        source |= {
+            "calibrator_fitted_on": f"{Q.V1} predictions of checkpoint {fitted_sha[:12]}",
+            "lambda_chosen_on": Q.V2,
+        }
+    cfg = {
+        "args": run["args"],
+        "checkpoint": str(ckpt),
+        "checkpoint_sha256": sha,
+        "calibrator": "calibrator.npz" if calibrated else None,
+        "calibration": "iii" if calibrated else "none",
+        "vocabs": None,
+        "source": source,
+    }
     (out / "config.json").write_text(json.dumps(cfg, indent=2))
     return cfg
 
@@ -149,13 +176,17 @@ def request_from(parquet: Path, row: int, k: int) -> dict:
     Not a logged request. The clicks may come from different ad contexts."""
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
+
     user_cols, cand_cols = columns()
     users = pq.read_table(parquet, columns=["user_id"]).column("user_id")
     uid = users[row].as_py()
     idx = np.flatnonzero(pc.equal(users, uid).to_numpy(zero_copy_only=False))
     idx = np.r_[row, [i for i in idx if i != row]][:k]
     t = pq.read_table(parquet, columns=["user_id", *user_cols, *cand_cols]).take(idx).to_pylist()
-    return {"user": {c: t[0][c] for c in ["user_id", *user_cols]}, "candidates": [{c: r[c] for c in cand_cols} for r in t]}
+    return {
+        "user": {c: t[0][c] for c in ["user_id", *user_cols]},
+        "candidates": [{c: r[c] for c in cand_cols} for r in t],
+    }
 
 
 def main(argv: list[str]) -> None:
@@ -176,7 +207,9 @@ def main(argv: list[str]) -> None:
         a = ap.parse_args(argv[1:])
         print(json.dumps(request_from(a.parquet, a.row, a.candidates)))
         return
-    ap = argparse.ArgumentParser(prog="cvr.predictor", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        prog="cvr.predictor", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("request", type=Path, help="request JSON, or - for standard input")
     ap.add_argument("--bundle", type=Path, default=EXAMPLE)
     ap.add_argument("--vocabs", type=Path, default=None)

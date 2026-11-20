@@ -42,8 +42,14 @@ def request_schedule(n_requests: int, block: int) -> list[dict]:
         for model in order:
             m = MODELS.index(model)
             idx = list(range(b * block, (b + 1) * block))
-            out.append({"model": model, "block": b, "requests": idx,
-                        "paths": [PATHS[1] if (i + b + m) % 2 == 0 else PATHS[0] for i in idx]})
+            out.append(
+                {
+                    "model": model,
+                    "block": b,
+                    "requests": idx,
+                    "paths": [PATHS[1] if (i + b + m) % 2 == 0 else PATHS[0] for i in idx],
+                }
+            )
     return out
 
 
@@ -52,7 +58,7 @@ def click_schedule(n_clicks: int, block: int) -> list[dict]:
         raise ValueError("the clicks must fill whole blocks")
     out = []
     for b in range(n_clicks // block):
-        for model in (MODELS if b % 2 == 0 else MODELS[::-1]):
+        for model in MODELS if b % 2 == 0 else MODELS[::-1]:
             out.append({"model": model, "block": b, "clicks": list(range(b * block, (b + 1) * block))})
     return out
 
@@ -65,6 +71,7 @@ def set_latency_priority() -> dict:
     Linux: pin the process to one CPU of its allowed set, the usual setup for a latency-critical server."""
     if sys.platform == "darwin":
         import ctypes
+
         lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
         if lib.pthread_set_qos_class_self_np(0x21, 0) != 0:
             raise RuntimeError("could not set QoS user-interactive")
@@ -74,9 +81,13 @@ def set_latency_priority() -> dict:
         cpu = max(allowed)
         os.sched_setaffinity(0, {cpu})
         sib = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list")
-        return {"priority": f"Linux affinity to CPU {cpu}", "affinity": sorted(os.sched_getaffinity(0)),
-                "container_cpus": allowed, "host_cpus": os.cpu_count(),
-                "pinned_cpu_siblings": sib.read_text().strip() if sib.exists() else None}
+        return {
+            "priority": f"Linux affinity to CPU {cpu}",
+            "affinity": sorted(os.sched_getaffinity(0)),
+            "container_cpus": allowed,
+            "host_cpus": os.cpu_count(),
+            "pinned_cpu_siblings": sib.read_text().strip() if sib.exists() else None,
+        }
     raise RuntimeError(f"no latency priority defined for {sys.platform}")
 
 
@@ -115,6 +126,7 @@ def probe(server, encode, cands: list[dict]) -> tuple[int, int, int, int, int, i
 def load_sample(seconds: float) -> dict:
     """CPU use of every process but this one over `seconds`. Inside a Linux container this covers the whole host."""
     import psutil
+
     me = psutil.Process()
     a = me.cpu_times()
     per = psutil.cpu_percent(interval=seconds, percpu=True)
@@ -145,7 +157,9 @@ def gate() -> dict:
 
 
 # -------------------------------------------------------------------------------------------------------- the analysis
-def block_bootstrap(values: np.ndarray, blocks: np.ndarray, stat, reps: int = 1000, seed: int = 20261119) -> list[float]:
+def block_bootstrap(
+    values: np.ndarray, blocks: np.ndarray, stat, reps: int = 1000, seed: int = 20261119
+) -> list[float]:
     """95% interval of stat(values) when whole blocks are resampled with replacement (requests in one block share the
     machine's state, so they are not independent)."""
     ids = np.unique(blocks)
@@ -158,9 +172,16 @@ def block_bootstrap(values: np.ndarray, blocks: np.ndarray, stat, reps: int = 10
     return [float(np.percentile(out, 2.5)), float(np.percentile(out, 97.5))]
 
 
-def p50(a): return float(np.percentile(a, 50))
-def p99(a): return float(np.percentile(a, 99))
-def p999(a): return float(np.percentile(a, 99.9))
+def p50(a):
+    return float(np.percentile(a, 50))
+
+
+def p99(a):
+    return float(np.percentile(a, 99))
+
+
+def p999(a):
+    return float(np.percentile(a, 99.9))
 
 
 def describe(rec: dict, mask: np.ndarray, blocks: np.ndarray) -> dict:
@@ -169,16 +190,23 @@ def describe(rec: dict, mask: np.ndarray, blocks: np.ndarray) -> dict:
     ms = {k: rec[k][mask] / 1e6 for k in ("wall", "encode", "model", "calibrate", "cpu")}
     b = blocks[mask]
     quiet = (rec["nivcsw"][mask] == 0) & (rec["gc"][mask] == 0)
-    out = {"n": int(mask.sum()),
-           "wall": {"p50": p50(ms["wall"]), "p50_ci95": block_bootstrap(ms["wall"], b, p50),
-                    "p99": p99(ms["wall"]), "p99_ci95": block_bootstrap(ms["wall"], b, p99),
-                    "p999": p999(ms["wall"]), "mean": float(ms["wall"].mean())},
-           "cpu": {"p50": p50(ms["cpu"]), "p99": p99(ms["cpu"])},
-           "stages_p50": {k: p50(ms[k]) for k in ("encode", "model", "calibrate")},
-           "stages_p99": {k: p99(ms[k]) for k in ("encode", "model", "calibrate")},
-           "share_context_switched": float((rec["nivcsw"][mask] > 0).mean()),
-           "share_gc": float((rec["gc"][mask] > 0).mean()),
-           "undisturbed": {"n": int(quiet.sum()), "p99": p99(ms["wall"][quiet]) if quiet.sum() >= 100 else None}}
+    out = {
+        "n": int(mask.sum()),
+        "wall": {
+            "p50": p50(ms["wall"]),
+            "p50_ci95": block_bootstrap(ms["wall"], b, p50),
+            "p99": p99(ms["wall"]),
+            "p99_ci95": block_bootstrap(ms["wall"], b, p99),
+            "p999": p999(ms["wall"]),
+            "mean": float(ms["wall"].mean()),
+        },
+        "cpu": {"p50": p50(ms["cpu"]), "p99": p99(ms["cpu"])},
+        "stages_p50": {k: p50(ms[k]) for k in ("encode", "model", "calibrate")},
+        "stages_p99": {k: p99(ms[k]) for k in ("encode", "model", "calibrate")},
+        "share_context_switched": float((rec["nivcsw"][mask] > 0).mean()),
+        "share_gc": float((rec["gc"][mask] > 0).mean()),
+        "undisturbed": {"n": int(quiet.sum()), "p99": p99(ms["wall"][quiet]) if quiet.sum() >= 100 else None},
+    }
     return out
 
 
@@ -193,7 +221,9 @@ def path_ratio(rec: dict, model_mask: np.ndarray, blocks: np.ndarray, stat) -> d
     reps = np.empty(1000)
     for r in range(reps.size):
         pick = rng.integers(0, len(groups), len(groups))
-        reps[r] = stat(np.concatenate([groups[i][0] for i in pick])) / stat(np.concatenate([groups[i][1] for i in pick]))
+        reps[r] = stat(np.concatenate([groups[i][0] for i in pick])) / stat(
+            np.concatenate([groups[i][1] for i in pick])
+        )
     return {"ratio": float(point), "ci95": [float(np.percentile(reps, 2.5)), float(np.percentile(reps, 97.5))]}
 
 
@@ -201,8 +231,12 @@ def stability(values: list[float]) -> dict:
     """Over the sessions of one machine: reproduced when max / min <= STABLE_RATIO; the reported value is the median."""
     v = np.asarray(values, dtype=float)
     ratio = float(v.max() / v.min())
-    return {"sessions": [float(x) for x in v], "median": float(np.median(v)), "max_over_min": ratio,
-            "reproduced": bool(ratio <= STABLE_RATIO)}
+    return {
+        "sessions": [float(x) for x in v],
+        "median": float(np.median(v)),
+        "max_over_min": ratio,
+        "reproduced": bool(ratio <= STABLE_RATIO),
+    }
 
 
 def effect(cis: list[list[float]]) -> str:

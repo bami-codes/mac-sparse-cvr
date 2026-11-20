@@ -46,6 +46,7 @@ def sha256(path: Path) -> str:
 def git_state() -> dict:
     def run(*args: str) -> str:
         return subprocess.run(["git", *args], capture_output=True, text=True).stdout.strip()
+
     return {"commit": run("rev-parse", "HEAD"), "dirty_files": run("status", "--porcelain").splitlines()}
 
 
@@ -61,7 +62,10 @@ def code_fingerprint() -> str:
 def planned_grid() -> list[dict]:
     """The 45 planned grid jobs, taken from the queue's own definition (scripts/pod_queue.py grid)."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("pod_queue", Path(__file__).resolve().parents[1] / "scripts" / "pod_queue.py")
+
+    spec = importlib.util.spec_from_file_location(
+        "pod_queue", Path(__file__).resolve().parents[1] / "scripts" / "pod_queue.py"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.grid()
@@ -86,7 +90,9 @@ def check_complete(rows: list[dict]) -> dict:
         if any(r[k] != j[k] for k in ("model", "lr", "lamda", "seed")):
             problems.append(f"{r['id']}: settings differ from the plan")
         if r["state"] == "done":
-            if not all(np.isfinite(r.get(k, np.nan) if r.get(k) is not None else np.nan) for k in ("val_gauc", "val_auc")):
+            if not all(
+                np.isfinite(r.get(k, np.nan) if r.get(k) is not None else np.nan) for k in ("val_gauc", "val_auc")
+            ):
                 problems.append(f"{r['id']}: done without a finite validation GAUC/AUC")
         elif r["state"] == "diverged":
             if str((r.get("diverged") or {}).get("loss")) not in ("nan", "inf", "-inf"):
@@ -95,8 +101,11 @@ def check_complete(rows: list[dict]) -> dict:
             problems.append(f"{r['id']}: state {r['state']} (resume it)")
     if problems:
         raise CheckFailed(f"the grid is not complete ({len(problems)} problems): {problems[:12]}")
-    return {"jobs": len(plan), "validated": sum(r["state"] == "done" for r in rows),
-            "diverged": sum(r["state"] == "diverged" for r in rows)}
+    return {
+        "jobs": len(plan),
+        "validated": sum(r["state"] == "done" for r in rows),
+        "diverged": sum(r["state"] == "diverged" for r in rows),
+    }
 
 
 def choose(summary: Path) -> dict:
@@ -104,8 +113,15 @@ def choose(summary: Path) -> dict:
     completeness = check_complete(rows)
     out = {"completeness": completeness}
     for model in ("MoAE", "BASE"):
-        cand = [r for r in rows if r["model"] == model and r["seed"] == 2026 and r["state"] == "done"
-                and r.get("val_gauc") is not None and np.isfinite(r["val_gauc"])]
+        cand = [
+            r
+            for r in rows
+            if r["model"] == model
+            and r["seed"] == 2026
+            and r["state"] == "done"
+            and r.get("val_gauc") is not None
+            and np.isfinite(r["val_gauc"])
+        ]
         if not cand:
             raise CheckFailed(f"no validated {model} run")
         top = max(r["val_gauc"] for r in cand)
@@ -113,9 +129,16 @@ def choose(summary: Path) -> dict:
         best_auc = max(r["val_auc"] for r in tied)
         tied = [r for r in tied if best_auc - r["val_auc"] < TIE]
         best = min(tied, key=lambda r: (abs(r["lr"] - 0.003), abs(r["lamda"] - 0.3)))
-        out[model] = {"lr": best["lr"], "lamda": best["lamda"], "val_gauc": best["val_gauc"], "val_auc": best["val_auc"],
-                      "ties_within_1e-6": len(tied)}
-    out["rule"] = "max train-19 GAUC of the train-18 checkpoint; ties < 1e-6: higher AUC, then closest to lr 0.003, lambda 0.3"
+        out[model] = {
+            "lr": best["lr"],
+            "lamda": best["lamda"],
+            "val_gauc": best["val_gauc"],
+            "val_auc": best["val_auc"],
+            "ties_within_1e-6": len(tied),
+        }
+    out["rule"] = (
+        "max train-19 GAUC of the train-18 checkpoint; ties < 1e-6: higher AUC, then closest to lr 0.003, lambda 0.3"
+    )
     out["grid"] = rows  # every planned job, checked complete above
     dest = E.OUT / "config_choice.json"
     if dest.exists():
@@ -145,8 +168,16 @@ def official_test_sha() -> str:
 
 
 def hashed_files() -> dict[str, str]:
-    files = [E.OUT / f for f in ("groups.json", "group_lists.json", "train_stats_ad_feat1.parquet", "config_choice.json",
-                                 "q2/selection.json")]
+    files = [
+        E.OUT / f
+        for f in (
+            "groups.json",
+            "group_lists.json",
+            "train_stats_ad_feat1.parquet",
+            "config_choice.json",
+            "q2/selection.json",
+        )
+    ]
     files += sorted((E.OUT / "q2" / "calibrators").glob("*.npz"))
     return {str(p.relative_to(E.OUT)): sha256(p) for p in files}
 
@@ -164,32 +195,55 @@ def freeze() -> dict:
     ck17 = checkpoints(choice, "train-17.parquet")  # Q2 and Q4: nine checkpoints in one claim
     ck19 = checkpoints({k: choice[k] for k in ("MoAE", "BASE")}, "train-19.parquet")  # Q1 reproduces the paper's two
     if len(set(ck17.values())) != 9 or len(set(ck19.values())) != 6:
-        raise CheckFailed(f"expected 9 distinct train-17 and 6 train-19 checkpoints, got {len(set(ck17.values()))} "
-                          f"and {len(set(ck19.values()))}")
+        raise CheckFailed(
+            f"expected 9 distinct train-17 and 6 train-19 checkpoints, got {len(set(ck17.values()))} "
+            f"and {len(set(ck19.values()))}"
+        )
     for rid, s in ck17.items():
         if sel["inputs"][rid]["checkpoint_sha256"] != s:
             raise CheckFailed(f"{rid}: the V1/V2 predictions were not made with its train-17 checkpoint")
     test_sha = official_test_sha()
-    common = {"official_test_sha256": test_sha, "files_sha256": hashed_files(), "choice": choice,
-              "groups_sha256": sel["groups_sha256"], "design": "docs/DESIGN.md §18 (amendments 1-2)"}
+    common = {
+        "official_test_sha256": test_sha,
+        "files_sha256": hashed_files(),
+        "choice": choice,
+        "groups_sha256": sel["groups_sha256"],
+        "design": "docs/DESIGN.md §18 (amendments 1-2)",
+    }
     lam = sel["lambda_chosen"]
     q2 = common | {
-        "question": "Q2", "checkpoints_sha256": sorted(ck17.values()), "checkpoints": ck17,
-        "primary": {"comparison": f"MoAE (iii, lambda {lam['MoAE']['iii']['main']:g}) - MoAE (ii)",
-                    "metric": "G1 macro LogLoss on the official test, seed-paired user bootstrap "
-                              f"({Q.BOOT['reps']} reps, seed {Q.BOOT['seed']}), models and calibrators fixed",
-                    "improvement_confirmed": "difference < 0, 95% CI upper < 0, all three seed pairs < 0"},
-        "secondary": ["BASE: iii - ii", "MoAE/BASE: iii0 - ii, iii0 - iii, iii (aggregate rule) - ii",
-                      "Q3: (MoAE - BASE) on G1 minus on C, after (ii) and raw, no verdict"],
-        "q4": {"comparison": f"{Q.WEIGHTED} (iii) - MoAE (iii), each with its own lambda chosen on V2",
-               "metric": "G1 macro LogLoss on the official test, same bootstrap and verdict rule as Q2",
-               "guards": "hold the method if the all-click LogLoss difference has 95% CI lower > 0 or the G1 Poisson "
-                         "deviance gets worse", "design": "docs/DESIGN.md §18.10 amendment 3"},
-        "lambda_chosen": lam}
-    q1 = common | {"question": "Q1", "checkpoints_sha256": sorted(ck19.values()), "checkpoints": ck19,
-                   "paper_table4": PAPER, "tolerance": TOL,
-                   "rule": "per model, AUC and GAUC of the 3-seed mean of the train-19 checkpoints vs Table 4: "
-                           "<= 0.002 reproduced, <= 0.005 close, otherwise not reproduced"}
+        "question": "Q2",
+        "checkpoints_sha256": sorted(ck17.values()),
+        "checkpoints": ck17,
+        "primary": {
+            "comparison": f"MoAE (iii, lambda {lam['MoAE']['iii']['main']:g}) - MoAE (ii)",
+            "metric": "G1 macro LogLoss on the official test, seed-paired user bootstrap "
+            f"({Q.BOOT['reps']} reps, seed {Q.BOOT['seed']}), models and calibrators fixed",
+            "improvement_confirmed": "difference < 0, 95% CI upper < 0, all three seed pairs < 0",
+        },
+        "secondary": [
+            "BASE: iii - ii",
+            "MoAE/BASE: iii0 - ii, iii0 - iii, iii (aggregate rule) - ii",
+            "Q3: (MoAE - BASE) on G1 minus on C, after (ii) and raw, no verdict",
+        ],
+        "q4": {
+            "comparison": f"{Q.WEIGHTED} (iii) - MoAE (iii), each with its own lambda chosen on V2",
+            "metric": "G1 macro LogLoss on the official test, same bootstrap and verdict rule as Q2",
+            "guards": "hold the method if the all-click LogLoss difference has 95% CI lower > 0 or the G1 Poisson "
+            "deviance gets worse",
+            "design": "docs/DESIGN.md §18.10 amendment 3",
+        },
+        "lambda_chosen": lam,
+    }
+    q1 = common | {
+        "question": "Q1",
+        "checkpoints_sha256": sorted(ck19.values()),
+        "checkpoints": ck19,
+        "paper_table4": PAPER,
+        "tolerance": TOL,
+        "rule": "per model, AUC and GAUC of the 3-seed mean of the train-19 checkpoints vs Table 4: "
+        "<= 0.002 reproduced, <= 0.005 close, otherwise not reproduced",
+    }
     for name, m in (("q1", q1), ("q2", q2)):
         (FROZEN / f"freeze_{name}.json").write_text(json.dumps(m, indent=2))
     return {"q1": q1, "q2": q2}
@@ -235,8 +289,9 @@ def q2_values(name: str, manifest: dict) -> dict:
     m1 = np.isin(g, sets["G1"])
 
     def boot(model, a, b):
-        return M.paired_bootstrap_macro_diff(y[m1], [x[m1] for x in seeds(model, a)], [x[m1] for x in seeds(model, b)],
-                                             g[m1], users[m1], **Q.BOOT) | {"compared": f"{model}: {a} - {b}"}
+        return M.paired_bootstrap_macro_diff(
+            y[m1], [x[m1] for x in seeds(model, a)], [x[m1] for x in seeds(model, b)], g[m1], users[m1], **Q.BOOT
+        ) | {"compared": f"{model}: {a} - {b}"}
 
     out = {}
     for model in choice:
@@ -246,9 +301,11 @@ def q2_values(name: str, manifest: dict) -> dict:
         out[f"{model}: iii (aggregate rule) - ii"] = boot(model, "iii_aggregate", "ii")
     for k in ("ii", "raw"):
         out[f"Q3 {k}: (MoAE - BASE) on G1 minus on C"] = Q.did_bootstrap(
-            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT)
+            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT
+        )
         out[f"Q3 click {k}: (MoAE - BASE) on G1 minus on C"] = Q.did_click_bootstrap(
-            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT)
+            y, seeds("MoAE", k), seeds("BASE", k), g, users, sets["G1"], sets["C"], **Q.BOOT
+        )
     if Q.WEIGHTED in choice:
         out |= Q.q4_comparisons(y, g, users, sets, seeds, "iii_main", "iii_main")
     return {"rows": rows, "bootstrap": out}
@@ -256,14 +313,23 @@ def q2_values(name: str, manifest: dict) -> dict:
 
 def hold_flags(b: dict) -> dict:
     """Pre-set reasons to hold back the weighted training even when it improves G1."""
-    click, pois = b["Q4 guard: weighted iii - plain iii, all clicks"], b["Q4 guard: weighted iii - plain iii, G1 Poisson deviance"]
+    click, pois = (
+        b["Q4 guard: weighted iii - plain iii, all clicks"],
+        b["Q4 guard: weighted iii - plain iii, G1 Poisson deviance"],
+    )
     return {"all_click_logloss_worse": bool(click["ci95"][0] > 0), "g1_poisson_worse": bool(pois["diff"] > 0)}
 
 
 def verdict(b: dict) -> dict:
     ok = b["diff"] < 0 and b["ci95"][1] < 0 and all(d < 0 for d in b["per_pair_diff"])
-    return {"improvement_confirmed": bool(ok), "conditions": {"diff<0": b["diff"] < 0, "ci_upper<0": b["ci95"][1] < 0,
-                                                              "all_pairs<0": all(d < 0 for d in b["per_pair_diff"])}}
+    return {
+        "improvement_confirmed": bool(ok),
+        "conditions": {
+            "diff<0": b["diff"] < 0,
+            "ci_upper<0": b["ci95"][1] < 0,
+            "all_pairs<0": all(d < 0 for d in b["per_pair_diff"]),
+        },
+    }
 
 
 def dryrun() -> dict:
@@ -274,7 +340,11 @@ def dryrun() -> dict:
     for key, row in new["rows"].items():
         rid, k = key.split("|")
         model = rid.split("_")[0]
-        name = k if k in ("raw", "ii") else f"{k.rsplit('_', 1)[0]}_lam{lam[model][k.rsplit('_', 1)[0]][k.rsplit('_', 1)[1]]:g}"
+        name = (
+            k
+            if k in ("raw", "ii")
+            else f"{k.rsplit('_', 1)[0]}_lam{lam[model][k.rsplit('_', 1)[0]][k.rsplit('_', 1)[1]]:g}"
+        )
         rec = sel["v2_rows"][f"{rid}|{name}"]
         for part in ("G1", "C"):
             for metric in ("macro_logloss", "click_logloss", "poisson_mean"):
@@ -282,7 +352,9 @@ def dryrun() -> dict:
                 n += 1
     extra = set(new["bootstrap"]) - set(sel["v2_bootstrap"])
     if extra != Q.ADDED_AFTER_SELECTION or set(sel["v2_bootstrap"]) - set(new["bootstrap"]):
-        raise CheckFailed(f"dry run: values differ from the selection record beyond the ones added after selection: {sorted(extra)}")
+        raise CheckFailed(
+            f"dry run: values differ from the selection record beyond the ones added after selection: {sorted(extra)}"
+        )
     added = {k: new["bootstrap"][k] for k in sorted(extra)}  # recorded, not reproduced
     for key, b in new["bootstrap"].items():
         if key in extra:
@@ -297,7 +369,9 @@ def dryrun() -> dict:
             n += 1
         if "per_pair_diff" in b:  # the verdict needs every seed pair below 0, not just the mean
             if len(b["per_pair_diff"]) != len(rec["per_pair_diff"]):
-                raise CheckFailed(f"dry run {key}: {len(b['per_pair_diff'])} seed pairs, recorded {len(rec['per_pair_diff'])}")
+                raise CheckFailed(
+                    f"dry run {key}: {len(b['per_pair_diff'])} seed pairs, recorded {len(rec['per_pair_diff'])}"
+                )
             for i, (x, z) in enumerate(zip(b["per_pair_diff"], rec["per_pair_diff"])):
                 require_close(f"dry run {key} seed pair {i}", abs(x - z), DRYRUN_TOL)
                 n += 1
@@ -309,12 +383,17 @@ def dryrun() -> dict:
     if holds[0] != holds[1]:
         raise CheckFailed(f"dry run: the Q4 hold conditions differ: {holds}")
     git = git_state()
-    out = {"dryrun_passed": True, "values_reproduced": n, "freeze_sha256": sha256(FROZEN / "freeze_q2.json"),
-           "v2_q4_verdict_code_run": verdict(new["bootstrap"]["Q4: weighted iii - plain iii"]) | {"hold": holds[0]},
-           "v2_values_added_after_selection": added,
-           "v2_overall_gauc": {k: r["overall"]["gauc"] for k, r in new["rows"].items()},
-           "code_fingerprint": code_fingerprint(), "git": git,
-           "v2_verdict_code_run": verdict(new["bootstrap"]["MoAE: iii - ii"]) | {"note": "V2 = selection data"}}
+    out = {
+        "dryrun_passed": True,
+        "values_reproduced": n,
+        "freeze_sha256": sha256(FROZEN / "freeze_q2.json"),
+        "v2_q4_verdict_code_run": verdict(new["bootstrap"]["Q4: weighted iii - plain iii"]) | {"hold": holds[0]},
+        "v2_values_added_after_selection": added,
+        "v2_overall_gauc": {k: r["overall"]["gauc"] for k, r in new["rows"].items()},
+        "code_fingerprint": code_fingerprint(),
+        "git": git,
+        "v2_verdict_code_run": verdict(new["bootstrap"]["MoAE: iii - ii"]) | {"note": "V2 = selection data"},
+    }
     (FROZEN / "dryrun_q2.json").write_text(json.dumps(out, indent=2))
     return out
 
@@ -368,14 +447,20 @@ def check_test_predictions(name: str, m: dict) -> None:
         if not (f.exists() and meta_f.exists()):
             raise CheckFailed(f"{rid}: no test predictions at {f}")
         meta = json.loads(meta_f.read_text())
-        if meta.get("sha256") != sha256(f) or meta.get("checkpoint_sha256") != ck or meta.get("source_sha256") != m["official_test_sha256"]:
+        if (
+            meta.get("sha256") != sha256(f)
+            or meta.get("checkpoint_sha256") != ck
+            or meta.get("source_sha256") != m["official_test_sha256"]
+        ):
             raise CheckFailed(f"{rid}: the test predictions do not match their record, checkpoint or the official test")
         z = np.load(f)
         if not {"p_last", "user", "y_last"} <= set(z.files):  # fail now, not after the claim
             raise CheckFailed(f"{rid}: test predictions lack p_last, user or y_last")
         p = z["p_last"]
         if not (p.size == z["user"].size == z["y_last"].size == y.size):
-            raise CheckFailed(f"{rid}: {p.size} predictions, {z['user'].size} users, {z['y_last'].size} labels, {y.size} rows")
+            raise CheckFailed(
+                f"{rid}: {p.size} predictions, {z['user'].size} users, {z['y_last'].size} labels, {y.size} rows"
+            )
         if not (np.isfinite(p).all() and (p >= 0).all() and (p <= 1).all()):
             raise CheckFailed(f"{rid}: test probabilities outside [0, 1] or not finite")
         if not np.array_equal(z["y_last"].astype(np.int8), y):
@@ -390,8 +475,11 @@ def test(name: str) -> dict:
     status = FROZEN / f"evaluation_{name}_status.json"
     status.write_text(json.dumps({"state": "started", "lock": str(lock)}))
     try:
-        out = (_test_q2 if name == "q2" else _test_q1)(m) | {"git": git, "code_fingerprint": code_fingerprint(),
-                                                             "freeze_sha256": sha256(FROZEN / f"freeze_{name}.json")}
+        out = (_test_q2 if name == "q2" else _test_q1)(m) | {
+            "git": git,
+            "code_fingerprint": code_fingerprint(),
+            "freeze_sha256": sha256(FROZEN / f"freeze_{name}.json"),
+        }
     except BaseException as e:
         status.write_text(json.dumps({"state": "failed_after_claim", "error": repr(e)[:2000]}))
         raise
@@ -403,16 +491,25 @@ def test(name: str) -> dict:
 def _test_q2(m: dict) -> dict:
     v = q2_values(Q.TEST, m)
     b = v["bootstrap"]
-    out = {"question": "Q2", "primary": b["MoAE: iii - ii"], "verdict": verdict(b["MoAE: iii - ii"]),
-           "secondary": b, "rows": v["rows"]}
+    out = {
+        "question": "Q2",
+        "primary": b["MoAE: iii - ii"],
+        "verdict": verdict(b["MoAE: iii - ii"]),
+        "secondary": b,
+        "rows": v["rows"],
+    }
     if "Q4: weighted iii - plain iii" in b:
-        out["q4"] = {"primary": b["Q4: weighted iii - plain iii"], "verdict": verdict(b["Q4: weighted iii - plain iii"]),
-                     "hold": hold_flags(b)}
+        out["q4"] = {
+            "primary": b["Q4: weighted iii - plain iii"],
+            "verdict": verdict(b["Q4: weighted iii - plain iii"]),
+            "hold": hold_flags(b),
+        }
     return out
 
 
 def _test_q1(m: dict) -> dict:
     from sklearn.metrics import roc_auc_score
+
     codes = Q.token_codes()
     _, y = Q.file_columns(Q.TEST, codes)
     per, out = {}, {}
@@ -436,14 +533,30 @@ def _test_q1(m: dict) -> dict:
             vals.append({"seed": s, "auc": auc, "gauc": gauc})
         per[model] = vals
         mean = {k: float(np.mean([v[k] for v in vals])) for k in ("auc", "gauc")}
-        out[model] = {"mean": mean, "sd": {k: float(np.std([v[k] for v in vals], ddof=1)) for k in ("auc", "gauc")},
-                      "paper": PAPER[model], "gap": {k: mean[k] - PAPER[model][k] for k in ("auc", "gauc")},
-                      "judgement": {k: ("reproduced" if abs(mean[k] - PAPER[model][k]) <= TOL["reproduced"] else
-                                        "close" if abs(mean[k] - PAPER[model][k]) <= TOL["close"] else "not reproduced")
-                                    for k in ("auc", "gauc")}}
+        out[model] = {
+            "mean": mean,
+            "sd": {k: float(np.std([v[k] for v in vals], ddof=1)) for k in ("auc", "gauc")},
+            "paper": PAPER[model],
+            "gap": {k: mean[k] - PAPER[model][k] for k in ("auc", "gauc")},
+            "judgement": {
+                k: (
+                    "reproduced"
+                    if abs(mean[k] - PAPER[model][k]) <= TOL["reproduced"]
+                    else "close"
+                    if abs(mean[k] - PAPER[model][k]) <= TOL["close"]
+                    else "not reproduced"
+                )
+                for k in ("auc", "gauc")
+            },
+        }
     gap = {k: out["MoAE"]["mean"][k] - out["BASE"]["mean"][k] for k in ("auc", "gauc")}
-    return {"question": "Q1", "per_seed": per, "summary": out, "MoAE_minus_BASE": gap,
-            "paper_MoAE_minus_BASE": {k: PAPER["MoAE"][k] - PAPER["BASE"][k] for k in ("auc", "gauc")}}
+    return {
+        "question": "Q1",
+        "per_seed": per,
+        "summary": out,
+        "MoAE_minus_BASE": gap,
+        "paper_MoAE_minus_BASE": {k: PAPER["MoAE"][k] - PAPER["BASE"][k] for k in ("auc", "gauc")},
+    }
 
 
 if __name__ == "__main__":

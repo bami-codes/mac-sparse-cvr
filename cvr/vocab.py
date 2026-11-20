@@ -14,25 +14,27 @@ import polars as pl
 from .schema import MISSING, PAD, UNKNOWN, VOCAB_COLS
 
 
-def count_values(frames: list[pl.DataFrame], cols: list[str] = VOCAB_COLS,
-                 counts: dict[str, pl.DataFrame] | None = None) -> dict[str, pl.DataFrame]:
+def count_values(
+    frames: list[pl.DataFrame], cols: list[str] = VOCAB_COLS, counts: dict[str, pl.DataFrame] | None = None
+) -> dict[str, pl.DataFrame]:
     """Value counts per column; pass `counts` to add one more file without keeping earlier ones."""
     counts = dict(counts or {})
     for df in frames:
         for c in cols:
             vc = df.group_by(c).agg(pl.len().alias("n")).rename({c: "value"})
-            counts[c] = vc if c not in counts else (
-                pl.concat([counts[c], vc]).group_by("value").agg(pl.col("n").sum()))
+            counts[c] = vc if c not in counts else (pl.concat([counts[c], vc]).group_by("value").agg(pl.col("n").sum()))
     return counts
 
 
 def build_vocab(counts: dict[str, pl.DataFrame], min_count: int = 1) -> dict[str, pl.DataFrame]:
     vocab = {}
     for c, vc in counts.items():
-        known = (vc.filter((pl.col("value") != PAD) & (pl.col("n") >= min_count))
-                 .sort(["n", "value"], descending=[True, False])
-                 .with_row_index("code", offset=2)
-                 .select(pl.col("value"), pl.col("code").cast(pl.Int32)))
+        known = (
+            vc.filter((pl.col("value") != PAD) & (pl.col("n") >= min_count))
+            .sort(["n", "value"], descending=[True, False])
+            .with_row_index("code", offset=2)
+            .select(pl.col("value"), pl.col("code").cast(pl.Int32))
+        )
         pad = pl.DataFrame({"value": [PAD], "code": [MISSING]}, schema={"value": pl.String, "code": pl.Int32})
         vocab[c] = pl.concat([pad, known])
     return vocab
@@ -40,10 +42,13 @@ def build_vocab(counts: dict[str, pl.DataFrame], min_count: int = 1) -> dict[str
 
 def encode(df: pl.DataFrame, vocab: dict[str, pl.DataFrame]) -> pl.DataFrame:
     """Replace each vocabulary column with its integer code; unseen values -> UNKNOWN."""
-    return df.with_columns([
-        pl.col(c).replace_strict(v["value"], v["code"], default=UNKNOWN, return_dtype=pl.Int32).alias(c)
-        for c, v in vocab.items() if c in df.columns
-    ])
+    return df.with_columns(
+        [
+            pl.col(c).replace_strict(v["value"], v["code"], default=UNKNOWN, return_dtype=pl.Int32).alias(c)
+            for c, v in vocab.items()
+            if c in df.columns
+        ]
+    )
 
 
 def fingerprint(vocab: dict[str, pl.DataFrame]) -> str:

@@ -20,7 +20,9 @@ MM_COLS = ["mm_feat0_seq", "mm_feat1_seq"]
 
 GROUP_KEY = "ad_feat1"  # [추정] category-like anonymous item feature
 SHOP_KEY = "ad_feat2"  # [추정] shop-like anonymous item feature
-DOMAIN_KEY = "context_feat1"  # study C domain: anonymous ad-context groups (docs/DESIGN.md §16), not asserted to be scenarios
+DOMAIN_KEY = (
+    "context_feat1"  # study C domain: anonymous ad-context groups (docs/DESIGN.md §16), not asserted to be scenarios
+)
 
 # integer codes reserved by the vocabulary
 UNKNOWN = 0  # value not seen in the training files
@@ -29,8 +31,14 @@ MISSING = 1  # the PAD token
 # M1 and M2 use the same inputs: CAT_INPUTS + NUM_INPUTS. The *_nohist variants drop NUM_INPUTS.
 CAT_INPUTS = USER_COLS + CTX_COLS + ["ad_feat1", SHOP_KEY, "ad_feat3", "ad_feat4", "ad_feat5"]
 NUM_INPUTS = [
-    "match_ad_feat0", "match_ad_feat1", "match_ad_feat2", "hist_empty",
-    "mm_feat0_max", "mm_feat0_mean", "mm_feat1_max", "mm_feat1_mean",
+    "match_ad_feat0",
+    "match_ad_feat1",
+    "match_ad_feat2",
+    "hist_empty",
+    "mm_feat0_max",
+    "mm_feat0_mean",
+    "mm_feat1_max",
+    "mm_feat1_mean",
 ]
 HISTORY_INPUTS = NUM_INPUTS  # all numeric inputs come from the purchase history
 LR_ONEHOT = CAT_INPUTS

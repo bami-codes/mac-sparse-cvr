@@ -45,9 +45,18 @@ def weighted(lr: float, lamda: float) -> list[dict]:
         j = job("MoAE", lr, lamda, seed)
         j["id"] = j["id"].replace("MoAE_", f"{WEIGHTED}_", 1)
         j["model"] = WEIGHTED
-        j["train_args"] += ["--g1_weight", "2", "--weight_groups", "runs/e_study/group_lists.json",
-                            "--weight_groups_sha256", g1_sha,
-                            "--train_files", *[f"train-{i:02d}.parquet" for i in range(18)], "--ckpt_after", "train-17.parquet"]
+        j["train_args"] += [
+            "--g1_weight",
+            "2",
+            "--weight_groups",
+            "runs/e_study/group_lists.json",
+            "--weight_groups_sha256",
+            g1_sha,
+            "--train_files",
+            *[f"train-{i:02d}.parquet" for i in range(18)],
+            "--ckpt_after",
+            "train-17.parquet",
+        ]
         j["validate"] = False
         out.append(j)
     return out
@@ -80,8 +89,15 @@ def command(j: dict, st: str, extra: list[str]) -> list[str]:
         return py + ["train", "--out", str(d), *extra, *j["train_args"]]
     if st == "resume":
         return py + ["train", "--resume", str(d), *extra]
-    return py + ["predict", "--out", str(d / "val"), "--ckpt", str(d / "model_after_train-18.pt"), *extra,
-                 "train-19.parquet"]
+    return py + [
+        "predict",
+        "--out",
+        str(d / "val"),
+        "--ckpt",
+        str(d / "model_after_train-18.pt"),
+        *extra,
+        "train-19.parquet",
+    ]
 
 
 def run(jobs: list[dict], gpus: int, extra: list[str] | None = None) -> None:
@@ -155,8 +171,11 @@ def main(argv: list[str]) -> None:
         print(json.dumps(grid(), indent=1))
     elif a.cmd == "seeds":
         lr, lam = (float(x) for x in a.moae.split())
-        jobs = ([job("MoAE", lr, lam, s) for s in (2027, 2028)] + [job("BASE", float(a.base), 0.3, s) for s in (2027, 2028)]
-                + (weighted(lr, lam) if a.with_weighted else []))
+        jobs = (
+            [job("MoAE", lr, lam, s) for s in (2027, 2028)]
+            + [job("BASE", float(a.base), 0.3, s) for s in (2027, 2028)]
+            + (weighted(lr, lam) if a.with_weighted else [])
+        )
         print(json.dumps(jobs, indent=1))
     elif a.cmd == "run":
         run(json.loads(a.jobs.read_text()), a.gpus, ["--device", a.device, "--num_workers", str(a.num_workers)])

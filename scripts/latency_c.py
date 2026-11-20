@@ -40,8 +40,13 @@ FAMILIES = ["G-int", "G-shared", "N-int", "N-shared", "N-head", "N-star"]
 PER_DOMAIN, RANDOM_ROWS, SAMPLE_SEED = 40, 2000, 20261118
 TRAFFIC_ROWS, TRAFFIC_SEED = 10_000, 20261119  # uniform V2 requests replayed in the same order on every model
 WARMUP, REQUESTS = 50, 5000  # p99 from 5,000 timed requests (50 tail values), less sensitive to one burst
-PROTOCOL = {"version": 2, "warmup": WARMUP, "requests": REQUESTS, "traffic_rows": TRAFFIC_ROWS,
-            "traffic_seed": TRAFFIC_SEED}
+PROTOCOL = {
+    "version": 2,
+    "warmup": WARMUP,
+    "requests": REQUESTS,
+    "traffic_rows": TRAFFIC_ROWS,
+    "traffic_seed": TRAFFIC_SEED,
+}
 # acceptance of a measurement, fixed before measuring the development run and independent of the measured p99
 # (docs/DESIGN.md §16 rev. 7): at the start and end of every family's timing, no OTHER python process of this
 # repository's virtualenv runs, and the other processes together use at most ACCEPT_OTHER_CPU percent CPU (ps).
@@ -49,9 +54,29 @@ PROTOCOL = {"version": 2, "warmup": WARMUP, "requests": REQUESTS, "traffic_rows"
 # before the timing (a smoke run rose to 9.8 that way).
 ACCEPT_OTHER_CPU = 400.0
 MAX_ATTEMPTS = 3  # a family whose measurement is not accepted is measured again, at most this many times in all
-RAW = ["user_id", "ad_feat0", "user_feat0", "user_feat1", "user_feat2", "user_feat3", "user_feat4", "user_feat5",
-       "context_feat1", "context_feat2", "context_feat3", "ad_feat1", "ad_feat2", "ad_feat3", "ad_feat4", "ad_feat5",
-       "ad_feat0_seq", "ad_feat1_seq", "ad_feat2_seq", "mm_feat0_seq", "mm_feat1_seq"]
+RAW = [
+    "user_id",
+    "ad_feat0",
+    "user_feat0",
+    "user_feat1",
+    "user_feat2",
+    "user_feat3",
+    "user_feat4",
+    "user_feat5",
+    "context_feat1",
+    "context_feat2",
+    "context_feat3",
+    "ad_feat1",
+    "ad_feat2",
+    "ad_feat3",
+    "ad_feat4",
+    "ad_feat5",
+    "ad_feat0_seq",
+    "ad_feat1_seq",
+    "ad_feat2_seq",
+    "mm_feat0_seq",
+    "mm_feat1_seq",
+]
 
 
 def sample_indices(dom: np.ndarray) -> np.ndarray:
@@ -131,13 +156,21 @@ def environment() -> dict:
     venv = str(Path(sys.executable).parent.parent)
     others = [c[:160] for pid, _, _, c in table if pid not in mine and venv in c and "python" in c]
     other_cpu = sum(cpu for pid, _, cpu, _ in table if pid not in mine)
-    return {"load_average": list(os.getloadavg()), "cpu_count": os.cpu_count(), "other_repo_python": others,
-            "other_cpu_percent": other_cpu}
+    return {
+        "load_average": list(os.getloadavg()),
+        "cpu_count": os.cpu_count(),
+        "other_repo_python": others,
+        "other_cpu_percent": other_cpu,
+    }
 
 
 def accepted(start: dict, end: dict) -> bool:
-    return (not start["other_repo_python"] and not end["other_repo_python"]
-            and start["other_cpu_percent"] <= ACCEPT_OTHER_CPU and end["other_cpu_percent"] <= ACCEPT_OTHER_CPU)
+    return (
+        not start["other_repo_python"]
+        and not end["other_repo_python"]
+        and start["other_cpu_percent"] <= ACCEPT_OTHER_CPU
+        and end["other_cpu_percent"] <= ACCEPT_OTHER_CPU
+    )
 
 
 def pct(ms: list[float]) -> dict:
@@ -166,11 +199,17 @@ def measure_family(run: Path, family: str) -> dict:
     small = set(res["selection"]["domains"]["small"])
     tol = PRED_TOL if family in GBDT_FAMILIES else NN_SINGLE_VS_BATCH_TOL
     lam = float(res["selection"]["lambda_iiid"][family])
-    out = {"rows_checked": int(idx.size), "domains_checked": int(np.unique(dom[idx]).size), "pred_tol": tol,
-           "small_domain_share": {"correctness_sample": float(np.isin(dom[idx], list(small)).mean()),
-                                  "traffic_sample": float(np.isin(dom[order], list(small)).mean()),
-                                  "v2": float(np.isin(dom, list(small)).mean())},
-           "seeds": {}}
+    out = {
+        "rows_checked": int(idx.size),
+        "domains_checked": int(np.unique(dom[idx]).size),
+        "pred_tol": tol,
+        "small_domain_share": {
+            "correctness_sample": float(np.isin(dom[idx], list(small)).mean()),
+            "traffic_sample": float(np.isin(dom[order], list(small)).mean()),
+            "v2": float(np.isin(dom, list(small)).mean()),
+        },
+        "seeds": {},
+    }
     out["environment_start"] = environment()  # after the V2 rows are read, right before the first server and timing
     for seed in res["selection"]["seeds"]:
         server = ServerC(run, family, seed)
@@ -180,13 +219,22 @@ def measure_family(run: Path, family: str) -> dict:
         if float(expected_gs.lam) != lam:
             raise CheckFailed(f"calib_{family}_s{seed} has lambda {expected_gs.lam}, selection.json says {lam}")
         ref = expected_gs.predict(np.asarray(base_pred_v2(run, family, seed))[idx], dom[idx])
-        consistency = serving_consistency({c: codes[c] for c in CAT_INPUTS},
-                                          {c: np.asarray(v2.cat[idx, j]) for j, c in enumerate(CAT_INPUTS)},
-                                          num, np.asarray(v2.num[idx], dtype=np.float64), online, ref, pred_tol=tol)
-        out["seeds"][str(seed)] = {"server": server.info, "consistency": consistency,
-                                   "batch1_stratified": time_batch1(server, rows),
-                                   "batch1_traffic": time_batch1(server, traffic),
-                                   "batch100_traffic": time_batch100(server, traffic)}
+        consistency = serving_consistency(
+            {c: codes[c] for c in CAT_INPUTS},
+            {c: np.asarray(v2.cat[idx, j]) for j, c in enumerate(CAT_INPUTS)},
+            num,
+            np.asarray(v2.num[idx], dtype=np.float64),
+            online,
+            ref,
+            pred_tol=tol,
+        )
+        out["seeds"][str(seed)] = {
+            "server": server.info,
+            "consistency": consistency,
+            "batch1_stratified": time_batch1(server, rows),
+            "batch1_traffic": time_batch1(server, traffic),
+            "batch100_traffic": time_batch100(server, traffic),
+        }
     out["p99_ms_by_seed"] = {s: v["batch1_traffic"]["p99_ms"] for s, v in out["seeds"].items()}
     out["environment_end"] = environment()
     out["protocol"] = PROTOCOL
@@ -198,7 +246,7 @@ def time_batch1(server, rows: list[dict]) -> dict:
     for r in rows[:WARMUP]:
         server.predict([r])
     ms = []
-    for r in rows[WARMUP:WARMUP + REQUESTS]:
+    for r in rows[WARMUP : WARMUP + REQUESTS]:
         t = time.perf_counter()
         server.predict([r])
         ms.append(1000 * (time.perf_counter() - t))
@@ -208,7 +256,7 @@ def time_batch1(server, rows: list[dict]) -> dict:
 def time_batch100(server, rows: list[dict]) -> dict:
     ms = []
     for i in range(min(100, len(rows) // 100)):
-        chunk = rows[i * 100:(i + 1) * 100]
+        chunk = rows[i * 100 : (i + 1) * 100]
         t = time.perf_counter()
         server.predict(chunk)
         ms.append(1000 * (time.perf_counter() - t))
@@ -217,14 +265,21 @@ def time_batch100(server, rows: list[dict]) -> dict:
 
 def main(run_arg: str) -> None:
     run = Path(run_arg)
-    report = {"run": str(run),
-              "env": {"cpu": cpu_name(),
-                      "python": platform.python_version(), "threads": 1, "process": "one subprocess per family"},
-              "sampling": {"per_domain": PER_DOMAIN, "random_rows": RANDOM_ROWS, "seed": SAMPLE_SEED},
-              "protocol": PROTOCOL, "acceptance_rule": f"no other python process of this virtualenv at the start and "
-                                                       f"end of each family's timing, and other processes use at most "
-                                                       f"{ACCEPT_OTHER_CPU:g}% CPU at both points",
-              "families": {}}
+    report = {
+        "run": str(run),
+        "env": {
+            "cpu": cpu_name(),
+            "python": platform.python_version(),
+            "threads": 1,
+            "process": "one subprocess per family",
+        },
+        "sampling": {"per_domain": PER_DOMAIN, "random_rows": RANDOM_ROWS, "seed": SAMPLE_SEED},
+        "protocol": PROTOCOL,
+        "acceptance_rule": f"no other python process of this virtualenv at the start and "
+        f"end of each family's timing, and other processes use at most "
+        f"{ACCEPT_OTHER_CPU:g}% CPU at both points",
+        "families": {},
+    }
     for fam in FAMILIES:
         tmp = run / f"latency_c_{fam}.json"
         attempts = []
@@ -235,14 +290,28 @@ def main(run_arg: str) -> None:
             attempts.append(f)
             if f["accepted"]:
                 break
-        f = attempts[-1] | {"attempts": [{"accepted": a["accepted"], "environment_start": a["environment_start"],
-                                          "environment_end": a["environment_end"], "p99_ms_by_seed": a["p99_ms_by_seed"]}
-                                         for a in attempts]}
+        f = attempts[-1] | {
+            "attempts": [
+                {
+                    "accepted": a["accepted"],
+                    "environment_start": a["environment_start"],
+                    "environment_end": a["environment_end"],
+                    "p99_ms_by_seed": a["p99_ms_by_seed"],
+                }
+                for a in attempts
+            ]
+        }
         report["families"][fam] = f
-        print(fam, {"accepted": f["accepted"], "other_cpu_start": f["environment_start"]["other_cpu_percent"],
-                    "p99_ms_by_seed": f["p99_ms_by_seed"],
-                    "max_pred_diff": max(v["consistency"]["prediction_max_abs_diff"] for v in f["seeds"].values())},
-              flush=True)
+        print(
+            fam,
+            {
+                "accepted": f["accepted"],
+                "other_cpu_start": f["environment_start"]["other_cpu_percent"],
+                "p99_ms_by_seed": f["p99_ms_by_seed"],
+                "max_pred_diff": max(v["consistency"]["prediction_max_abs_diff"] for v in f["seeds"].values()),
+            },
+            flush=True,
+        )
     (run / "latency_c.json").write_text(json.dumps(report, indent=2))
     print(f"wrote {run / 'latency_c.json'}")
 

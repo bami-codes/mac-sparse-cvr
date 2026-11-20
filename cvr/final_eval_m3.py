@@ -1,6 +1,6 @@
 """Predict every saved M3 model on one evaluation file, in a PyTorch-only process (never imports LightGBM).
 
-    python -m cvr.final_eval_m3 <run_dir> <eval_file> <out_dir> [<bucket_lo> <bucket_hi> <user_pct>]
+python -m cvr.final_eval_m3 <run_dir> <eval_file> <out_dir> [<bucket_lo> <bucket_hi> <user_pct>]
 """
 
 import sys
@@ -14,8 +14,9 @@ from .m3data import encode_m3
 from .nn import load_m3
 
 
-def main(run_dir: str, eval_file: str, out_dir: str, lo: str | None = None, hi: str | None = None,
-         pct: str | None = None) -> None:
+def main(
+    run_dir: str, eval_file: str, out_dir: str, lo: str | None = None, hi: str | None = None, pct: str | None = None
+) -> None:
     run, out = Path(run_dir), Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     vocab = {p.stem: pl.read_parquet(p) for p in (run / "vocab").glob("*.parquet")}

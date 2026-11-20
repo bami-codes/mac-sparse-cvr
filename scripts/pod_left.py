@@ -21,6 +21,7 @@ def main(path: str) -> str:
     if not Path(path).exists():
         return f"missing 0 {queue}"
     import pod_queue as Q
+
     jobs = json.loads(Path(path).read_text())
     left = sum(Q.state(j) not in ("done", "diverged") for j in jobs)
     return f"{left} {len(jobs)} {queue}"

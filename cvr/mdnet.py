@@ -118,7 +118,7 @@ class PartitionedNorm(nn.Module):
 
     @staticmethod
     def _var(mean: torch.Tensor, msq: torch.Tensor) -> torch.Tensor:
-        return (msq - mean ** 2).clamp_min(0.0)
+        return (msq - mean**2).clamp_min(0.0)
 
     def global_stats(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self.glob_mean.clone(), self._var(self.glob_mean, self.glob_msq).clamp_min(PN_VAR_FLOOR)
@@ -144,8 +144,11 @@ class PartitionedNorm(nn.Module):
             return
         zd = z.detach().double()
         n, s, ss = self._acc
-        self._acc = [n + z.shape[0], zd.sum(0) if s is None else s + zd.sum(0),
-                     (zd ** 2).sum(0) if ss is None else ss + (zd ** 2).sum(0)]
+        self._acc = [
+            n + z.shape[0],
+            zd.sum(0) if s is None else s + zd.sum(0),
+            (zd**2).sum(0) if ss is None else ss + (zd**2).sum(0),
+        ]
 
     @torch.no_grad()
     def _update_domain(self, d: int, mu: torch.Tensor, msq: torch.Tensor) -> None:
@@ -188,8 +191,17 @@ class PartitionedNorm(nn.Module):
 
 
 class MDNet(nn.Module):
-    def __init__(self, cat_sizes: list[int], dom_col: int, n_num: int, variant: str, dim: int = 16,
-                 hidden: tuple[int, ...] = (256, 128), aux_hidden: int = 32, sparse: bool = True):
+    def __init__(
+        self,
+        cat_sizes: list[int],
+        dom_col: int,
+        n_num: int,
+        variant: str,
+        dim: int = 16,
+        hidden: tuple[int, ...] = (256, 128),
+        aux_hidden: int = 32,
+        sparse: bool = True,
+    ):
         super().__init__()
         if variant not in VARIANTS:
             raise ValueError(variant)
@@ -206,7 +218,7 @@ class MDNet(nn.Module):
             self.pn = PartitionedNorm(n_dom, d_in, sparse) if variant == "star" else None
             if self.pn is not None:
                 start = self.in_cols.index(dom_col) * dim
-                self.pn.global_dims[start:start + dim] = True
+                self.pn.global_dims[start : start + dim] = True
             self.aux_emb = _table(n_dom, dim, sparse, None)
             self.aux = nn.Sequential(nn.Linear(dim, aux_hidden), nn.ReLU(), nn.Linear(aux_hidden, 1))
         else:
@@ -270,7 +282,7 @@ class MDNet(nn.Module):
 # ---------------------------------------------------------------- batching and optimisation
 def mixed_batches(rng: np.random.Generator, n: int, batch: int) -> list[np.ndarray]:
     order = rng.permutation(n)
-    return [order[s:s + batch] for s in range(0, n, batch)]
+    return [order[s : s + batch] for s in range(0, n, batch)]
 
 
 def domain_batches(rng: np.random.Generator, dom_rows: list[np.ndarray], batch: int) -> list[np.ndarray]:
@@ -280,7 +292,7 @@ def domain_batches(rng: np.random.Generator, dom_rows: list[np.ndarray], batch: 
     out = []
     for rows in dom_rows:
         rows = rows[rng.permutation(rows.size)]
-        chunks = [rows[s:s + batch] for s in range(0, rows.size, batch)]
+        chunks = [rows[s : s + batch] for s in range(0, rows.size, batch)]
         if len(chunks) > 1 and chunks[-1].size < batch:
             chunks[-2] = np.concatenate([chunks[-2], chunks[-1]])
             chunks.pop()
@@ -322,8 +334,9 @@ def make_optimizers(net: nn.Module, lr: float) -> list[torch.optim.Optimizer]:
     return opts
 
 
-def train_step(net: nn.Module, opts: list, cat: torch.Tensor, num: torch.Tensor, y: torch.Tensor,
-               loss_fn: nn.Module) -> torch.Tensor:
+def train_step(
+    net: nn.Module, opts: list, cat: torch.Tensor, num: torch.Tensor, y: torch.Tensor, loss_fn: nn.Module
+) -> torch.Tensor:
     loss = loss_fn(net(cat, num), y)  # mean over the step's rows
     for o in opts:
         o.zero_grad(set_to_none=True)
@@ -355,9 +368,21 @@ class MDModel:
         return mean.astype(np.float32), np.maximum(std, NUM_STD_FLOOR).astype(np.float32), keep
 
     @classmethod
-    def fit(cls, a: MDArrays, y: np.ndarray, cat_sizes: list[int], dom_col: int, variant: str, seed: int,
-            dim: int = 16, epochs: int = 2, batch: int = 4096, lr: float = 1e-3, threads: int = 8,
-            sparse: bool = True) -> list["MDModel"]:
+    def fit(
+        cls,
+        a: MDArrays,
+        y: np.ndarray,
+        cat_sizes: list[int],
+        dom_col: int,
+        variant: str,
+        seed: int,
+        dim: int = 16,
+        epochs: int = 2,
+        batch: int = 4096,
+        lr: float = 1e-3,
+        threads: int = 8,
+        sparse: bool = True,
+    ) -> list["MDModel"]:
         """Returns one model per epoch (checkpoint after epoch 1, 2, ...). The learning rate is constant and the
         random streams of epoch e do not depend on the total number of epochs, so the epoch-1 checkpoint of a
         2-epoch run equals a 1-epoch run (tests/test_mdnet.py)."""
@@ -389,15 +414,27 @@ class MDModel:
                 if ep == 0:
                     step_rows.append(idx.size)
                     dom_steps[np.unique(dom[idx])] += 1
-            info = {"variant": variant, "seed": seed, "dim": dim, "epochs": ep + 1, "batch": batch, "lr": lr,
-                    "steps": len(losses), "train_loss_last100_mean": float(torch.stack(losses[-100:]).mean()),
-                    "params": int(sum(p.numel() for p in net.parameters())),
-                    "domains_seen": int((counts > 0).sum()), "num_constant_columns": int((model.num_keep == 0).sum()),
-                    "pn_global_only_dims": int(net.pn.global_dims.sum()) if getattr(net, "pn", None) is not None else None,
-                    "step_rows_epoch1": {"min": int(min(step_rows)), "median": float(np.median(step_rows)),
-                                         "max": int(max(step_rows))},
-                    "domain_rows": {int(d): int(counts[d]) for d in dom_ids},
-                    "domain_steps_epoch1": {int(d): int(dom_steps[d]) for d in dom_ids}}
+            info = {
+                "variant": variant,
+                "seed": seed,
+                "dim": dim,
+                "epochs": ep + 1,
+                "batch": batch,
+                "lr": lr,
+                "steps": len(losses),
+                "train_loss_last100_mean": float(torch.stack(losses[-100:]).mean()),
+                "params": int(sum(p.numel() for p in net.parameters())),
+                "domains_seen": int((counts > 0).sum()),
+                "num_constant_columns": int((model.num_keep == 0).sum()),
+                "pn_global_only_dims": int(net.pn.global_dims.sum()) if getattr(net, "pn", None) is not None else None,
+                "step_rows_epoch1": {
+                    "min": int(min(step_rows)),
+                    "median": float(np.median(step_rows)),
+                    "max": int(max(step_rows)),
+                },
+                "domain_rows": {int(d): int(counts[d]) for d in dom_ids},
+                "domain_steps_epoch1": {int(d): int(dom_steps[d]) for d in dom_ids},
+            }
             checkpoints.append(cls(copy.deepcopy(net).eval(), model.num_mean, model.num_std, model.num_keep, info))
         return checkpoints
 
@@ -421,7 +458,13 @@ def load_md_model(path: Path) -> MDModel:
     meta = json.loads(path.with_suffix(".json").read_text())
     z = np.load(path.with_suffix(".npz"))
     info = meta["info"]
-    net = MDNet(meta["cat_sizes"], meta["dom_col"], n_num=len(z["num_mean"]), variant=info["variant"],
-                dim=info["dim"], sparse=False)
+    net = MDNet(
+        meta["cat_sizes"],
+        meta["dom_col"],
+        n_num=len(z["num_mean"]),
+        variant=info["variant"],
+        dim=info["dim"],
+        sparse=False,
+    )
     net.load_state_dict(torch.load(path.with_suffix(".pt"), map_location="cpu"))
     return MDModel(net.eval(), z["num_mean"], z["num_std"], z["num_keep"], info)

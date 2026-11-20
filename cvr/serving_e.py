@@ -23,24 +23,42 @@ from .schema import PAD
 
 
 class ServerE:
-    def __init__(self, rid: str, ckpt: Path, vocabs: dict, codes: dict[str, int], threads: int = 1,
-                 calibration: str = "iii"):
+    def __init__(
+        self, rid: str, ckpt: Path, vocabs: dict, codes: dict[str, int], threads: int = 1, calibration: str = "iii"
+    ):
         """A study E model, with its run record next to the checkpoint and its calibrator."""
         run = R.run_record(Path(ckpt))
         cal = Q.calibrator_path(rid, calibration, "main")
         self._setup(run["args"], Path(ckpt), vocabs, codes, cal, threads, {"run": rid})
 
     @classmethod
-    def from_parts(cls, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path | None,
-                   threads: int = 1, info: dict | None = None) -> "ServerE":
+    def from_parts(
+        cls,
+        args: dict,
+        ckpt: Path,
+        vocabs: dict,
+        codes: dict[str, int],
+        calibrator: Path | None,
+        threads: int = 1,
+        info: dict | None = None,
+    ) -> "ServerE":
         """Any official model. With calibrator=None it can only return raw probabilities."""
         self = cls.__new__(cls)
         self._setup(args, Path(ckpt), vocabs, codes, Path(calibrator) if calibrator else None, threads, info or {})
         return self
 
-    def _setup(self, args: dict, ckpt: Path, vocabs: dict, codes: dict[str, int], calibrator: Path | None,
-               threads: int, info: dict) -> None:
+    def _setup(
+        self,
+        args: dict,
+        ckpt: Path,
+        vocabs: dict,
+        codes: dict[str, int],
+        calibrator: Path | None,
+        threads: int,
+        info: dict,
+    ) -> None:
         import torch
+
         torch.set_num_threads(threads)
         self.torch = torch
         self.D, _ = R.official()
@@ -53,9 +71,14 @@ class ServerE:
         self.pad = {c: v[PAD] for c, v in vocabs.items()}
         self.oov: dict[str, int] = {}
         self.glob, self.gs = load_domain_calibrators(calibrator) if calibrator else (None, None)
-        self.info = info | {"checkpoint": str(ckpt), "checkpoint_sha256": R.sha256(ckpt), "model": a.model,
-                            "calibrator": calibrator.name if calibrator else None,
-                            "lambda": float(self.gs.lam) if self.gs else None, "threads": threads}
+        self.info = info | {
+            "checkpoint": str(ckpt),
+            "checkpoint_sha256": R.sha256(ckpt),
+            "model": a.model,
+            "calibrator": calibrator.name if calibrator else None,
+            "lambda": float(self.gs.lam) if self.gs else None,
+            "threads": threads,
+        }
 
     @staticmethod
     def columns() -> list[str]:

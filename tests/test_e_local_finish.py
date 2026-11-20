@@ -28,7 +28,11 @@ def test_only_missing_predictions_are_made_after_the_checkpoints_verify(tmp_path
     bin_.mkdir()
     (bin_ / "uv").write_text(FAKE_UV)
     (bin_ / "uv").chmod(0o755)
-    choice = {"MoAE": {"lr": 0.003, "lamda": 0.3}, "BASE": {"lr": 0.0035, "lamda": 0.3}, "MoAE-g1w2": {"lr": 0.003, "lamda": 0.3}}
+    choice = {
+        "MoAE": {"lr": 0.003, "lamda": 0.3},
+        "BASE": {"lr": 0.0035, "lamda": 0.3},
+        "MoAE-g1w2": {"lr": 0.003, "lamda": 0.3},
+    }
     (tmp_path / "runs" / "e_study").mkdir(parents=True)
     (tmp_path / "runs" / "e_study" / "config_choice.json").write_text(json.dumps(choice))
     shas = {}
@@ -38,7 +42,7 @@ def test_only_missing_predictions_are_made_after_the_checkpoints_verify(tmp_path
             d = tmp_path / "runs" / "e_runs" / rid
             d.mkdir(parents=True)
             cks = {}
-            for k in ((17,) if m == "MoAE-g1w2" else (17, 19)):
+            for k in (17,) if m == "MoAE-g1w2" else (17, 19):
                 blob = f"{rid}{k}".encode()
                 (d / f"model_after_train-{k}.pt").write_bytes(blob)
                 cks[f"train-{k}.parquet"] = {"sha256": hashlib.sha256(blob).hexdigest()}
@@ -55,8 +59,14 @@ def test_only_missing_predictions_are_made_after_the_checkpoints_verify(tmp_path
     (done / f"model_after_train-17_{shas[half]}" / "train-18.json").touch()
     (done / f"model_after_train-17_{shas[half]}" / "train-19.npz").touch()  # cut before its record
     env = os.environ | {"PATH": f"{bin_}:{os.environ['PATH']}", "CALLS": str(tmp_path / "calls.txt")}
-    p = subprocess.run(["bash", str(REPO / "scripts" / "e_local_finish.sh")], cwd=tmp_path, env=env,
-                       capture_output=True, text=True, timeout=120)
+    p = subprocess.run(
+        ["bash", str(REPO / "scripts" / "e_local_finish.sh")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert p.returncode == 0, p.stdout + p.stderr
     calls = (tmp_path / "calls.txt").read_text().splitlines()
     predicts = [c for c in calls if "pymal_run predict" in c]
@@ -72,7 +82,11 @@ def test_a_changed_local_checkpoint_stops_before_any_prediction(tmp_path):
     bin_.mkdir()
     (bin_ / "uv").write_text(FAKE_UV)
     (bin_ / "uv").chmod(0o755)
-    choice = {"MoAE": {"lr": 0.003, "lamda": 0.3}, "BASE": {"lr": 0.0035, "lamda": 0.3}, "MoAE-g1w2": {"lr": 0.003, "lamda": 0.3}}
+    choice = {
+        "MoAE": {"lr": 0.003, "lamda": 0.3},
+        "BASE": {"lr": 0.0035, "lamda": 0.3},
+        "MoAE-g1w2": {"lr": 0.003, "lamda": 0.3},
+    }
     (tmp_path / "runs" / "e_study").mkdir(parents=True)
     (tmp_path / "runs" / "e_study" / "config_choice.json").write_text(json.dumps(choice))
     for m, c in choice.items():
@@ -81,12 +95,18 @@ def test_a_changed_local_checkpoint_stops_before_any_prediction(tmp_path):
             d = tmp_path / "runs" / "e_runs" / rid
             d.mkdir(parents=True)
             cks = {}
-            for k in ((17,) if m == "MoAE-g1w2" else (17, 19)):
+            for k in (17,) if m == "MoAE-g1w2" else (17, 19):
                 (d / f"model_after_train-{k}.pt").write_bytes(b"x")
                 cks[f"train-{k}.parquet"] = {"sha256": "0" * 64}  # the record does not match
             (d / "run.json").write_text(json.dumps({"checkpoints": cks}))
     env = os.environ | {"PATH": f"{bin_}:{os.environ['PATH']}", "CALLS": str(tmp_path / "calls.txt")}
-    p = subprocess.run(["bash", str(REPO / "scripts" / "e_local_finish.sh")], cwd=tmp_path, env=env,
-                       capture_output=True, text=True, timeout=120)
+    p = subprocess.run(
+        ["bash", str(REPO / "scripts" / "e_local_finish.sh")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert p.returncode != 0 and "BAD" in p.stdout
     assert not (tmp_path / "calls.txt").exists()

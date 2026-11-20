@@ -23,15 +23,23 @@ def ece_equal_freq(y: np.ndarray, p: np.ndarray, bins: int = 10) -> float:
 
 
 def overall(y: np.ndarray, p: np.ndarray) -> dict:
-    return {"rows": int(y.size), "logloss": float(bce(y, p).mean()),
-            "auc": float(roc_auc_score(y, p)) if 0 < y.sum() < y.size else None,
-            "O_over_E": float(y.sum() / p.sum()), "ece10": ece_equal_freq(y, p)}
+    return {
+        "rows": int(y.size),
+        "logloss": float(bce(y, p).mean()),
+        "auc": float(roc_auc_score(y, p)) if 0 < y.sum() < y.size else None,
+        "O_over_E": float(y.sum() / p.sum()),
+        "ece10": ece_equal_freq(y, p),
+    }
 
 
 def per_group(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> pl.DataFrame:
     df = pl.DataFrame({"g": g, "y": y, "p": p, "l": bce(y, p)})
-    return df.group_by("g").agg(pl.len().alias("n"), pl.col("y").sum().alias("O"),
-                                pl.col("p").sum().alias("E"), pl.col("l").mean().alias("logloss"))
+    return df.group_by("g").agg(
+        pl.len().alias("n"),
+        pl.col("y").sum().alias("O"),
+        pl.col("p").sum().alias("E"),
+        pl.col("l").mean().alias("logloss"),
+    )
 
 
 def grouped_auc(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> pl.DataFrame:
@@ -41,13 +49,18 @@ def grouped_auc(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> pl.DataFrame:
     """
     df = pl.DataFrame({"g": g, "y": y.astype(np.int8), "p": p})
     df = df.with_columns(pl.col("p").rank("average").over("g").alias("r"))
-    agg = df.group_by("g").agg(pl.len().alias("n"), pl.col("y").sum().cast(pl.Int64).alias("n_pos"),
-                               (pl.col("r") * pl.col("y")).sum().alias("rank_pos"))
+    agg = df.group_by("g").agg(
+        pl.len().alias("n"),
+        pl.col("y").sum().cast(pl.Int64).alias("n_pos"),
+        (pl.col("r") * pl.col("y")).sum().alias("rank_pos"),
+    )
     n_neg = pl.col("n") - pl.col("n_pos")
     return agg.with_columns(
         pl.when((pl.col("n_pos") > 0) & (n_neg > 0))
         .then((pl.col("rank_pos") - pl.col("n_pos") * (pl.col("n_pos") + 1) / 2) / (pl.col("n_pos") * n_neg))
-        .otherwise(None).alias("auc"))
+        .otherwise(None)
+        .alias("auc")
+    )
 
 
 def within_group_auc_macro(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> tuple[float | None, int, int]:
@@ -61,9 +74,12 @@ def gauc(y: np.ndarray, p: np.ndarray, users: np.ndarray) -> dict:
     """MAC-style GAUC: per-user AUC weighted by the user's clicks, over users with both classes."""
     a = grouped_auc(y, p, users)
     used = a.filter(pl.col("auc").is_not_null())
-    return {"gauc": float((used["auc"] * used["n"]).sum() / used["n"].sum()) if used.height else None,
-            "users_used": used.height, "users_excluded": a.height - used.height,
-            "click_share_used": float(used["n"].sum() / y.size)}
+    return {
+        "gauc": float((used["auc"] * used["n"]).sum() / used["n"].sum()) if used.height else None,
+        "users_used": used.height,
+        "users_excluded": a.height - used.height,
+        "click_share_used": float(used["n"].sum() / y.size),
+    }
 
 
 def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
@@ -75,7 +91,8 @@ def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
     zero = pg.filter(pl.col("O") == 0)
     auc_macro, used, excl = within_group_auc_macro(y, p, g)
     return {
-        "groups": pg.height, "rows": int(y.size),
+        "groups": pg.height,
+        "rows": int(y.size),
         "macro_logloss": float(pg["logloss"].mean()),
         "click_weighted_logloss": float(bce(y, p).mean()),
         "pooled_O_over_E": float(y.sum() / p.sum()),
@@ -85,12 +102,21 @@ def group_report(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> dict:
         "abs_conv_error_share": float((pg["E"] - pg["O"]).abs().sum() / pg["O"].sum()) if pg["O"].sum() > 0 else None,
         "zero_positive_groups": zero.height,
         "zero_positive_mean_E_minus_O": float((zero["E"] - zero["O"]).mean()) if zero.height else None,
-        "within_group_auc_macro": auc_macro, "auc_groups_used": used, "auc_groups_excluded": excl,
+        "within_group_auc_macro": auc_macro,
+        "auc_groups_used": used,
+        "auc_groups_excluded": excl,
     }
 
 
-def paired_bootstrap_macro_diff(y: np.ndarray, p_a: np.ndarray | list[np.ndarray], p_b: np.ndarray | list[np.ndarray],
-                                g: np.ndarray, users: np.ndarray, reps: int = 1000, seed: int = 0) -> dict:
+def paired_bootstrap_macro_diff(
+    y: np.ndarray,
+    p_a: np.ndarray | list[np.ndarray],
+    p_b: np.ndarray | list[np.ndarray],
+    g: np.ndarray,
+    users: np.ndarray,
+    reps: int = 1000,
+    seed: int = 0,
+) -> dict:
     """Macro LogLoss(A) - macro LogLoss(B) with a 95% interval from resampling USERS.
 
     p_a / p_b may be lists of seed-matched predictions (A seed k is paired with B seed k).
@@ -121,9 +147,16 @@ def paired_bootstrap_macro_diff(y: np.ndarray, p_a: np.ndarray | list[np.ndarray
     ones = np.ones(U)
     d_mean = as_matrix(np.mean(row_diffs, axis=0))
     rng = np.random.default_rng(seed)
-    diffs = np.array([macro(np.bincount(rng.integers(U, size=U), minlength=U).astype(float), d_mean)
-                      for _ in range(reps)])
+    diffs = np.array(
+        [macro(np.bincount(rng.integers(U, size=U), minlength=U).astype(float), d_mean) for _ in range(reps)]
+    )
     lo, hi = np.quantile(diffs, [0.025, 0.975])
-    return {"diff": macro(ones, d_mean), "ci95": [float(lo), float(hi)], "reps": reps, "users": int(U),
-            "groups": int(G), "seed_pairs": len(pa),
-            "per_pair_diff": [macro(ones, as_matrix(r)) for r in row_diffs]}
+    return {
+        "diff": macro(ones, d_mean),
+        "ci95": [float(lo), float(hi)],
+        "reps": reps,
+        "users": int(U),
+        "groups": int(G),
+        "seed_pairs": len(pa),
+        "per_pair_diff": [macro(ones, as_matrix(r)) for r in row_diffs],
+    }

@@ -15,8 +15,9 @@ from .models import GBDT, LogReg
 
 def save_logreg(m: LogReg, path: Path) -> None:
     np.savez(path, coef=m.model.coef_, intercept=m.model.intercept_, mean=m.mean, std=m.std)
-    path.with_suffix(".json").write_text(json.dumps({"offsets": m.offsets, "n_onehot": m.n_onehot,
-                                                     "num_inputs": m.num_inputs}))
+    path.with_suffix(".json").write_text(
+        json.dumps({"offsets": m.offsets, "n_onehot": m.n_onehot, "num_inputs": m.num_inputs})
+    )
 
 
 def load_logreg(path: Path) -> LogReg:
@@ -48,9 +49,15 @@ def save_stacking(st, folder: Path) -> None:
     for k, m in st.te.items():
         m.table.write_parquet(folder / f"te_{k}.parquet")
         st.counts[k].write_parquet(folder / f"counts_{k}.parquet")
-    (folder / "meta.json").write_text(json.dumps({
-        "aux": st.aux is not None, "aux_col": st.aux_col,
-        "te": {k: {"key": m.key, "p0": m.p0, "m": m.m} for k, m in st.te.items()}}))
+    (folder / "meta.json").write_text(
+        json.dumps(
+            {
+                "aux": st.aux is not None,
+                "aux_col": st.aux_col,
+                "te": {k: {"key": m.key, "p0": m.p0, "m": m.m} for k, m in st.te.items()},
+            }
+        )
+    )
 
 
 def load_stacking(folder: Path):
@@ -62,7 +69,9 @@ def load_stacking(folder: Path):
     meta = json.loads((folder / "meta.json").read_text())
     aux_col = meta.get("aux_col", "aux_mta")  # runs saved before the control have no aux_col
     aux = load_gbdt(folder / aux_col) if meta["aux"] else None
-    te = {k: SmoothedRate(v["key"], v["p0"], v["m"], pl.read_parquet(folder / f"te_{k}.parquet"))
-          for k, v in meta["te"].items()}
+    te = {
+        k: SmoothedRate(v["key"], v["p0"], v["m"], pl.read_parquet(folder / f"te_{k}.parquet"))
+        for k, v in meta["te"].items()
+    }
     counts = {k: pl.read_parquet(folder / f"counts_{k}.parquet") for k in meta["te"]}
     return StackingModels(aux, te, counts, aux_col)

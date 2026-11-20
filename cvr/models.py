@@ -69,19 +69,32 @@ class LogReg:
             parts_val = parts_val + [num]
         idx, val = np.column_stack(parts_idx), np.column_stack(parts_val)
         k = idx.shape[1]
-        return sparse.csr_matrix((val.ravel(), idx.ravel(), np.arange(0, n * k + 1, k)),
-                                 shape=(n, self.n_onehot + k_num))
+        return sparse.csr_matrix(
+            (val.ravel(), idx.ravel(), np.arange(0, n * k + 1, k)), shape=(n, self.n_onehot + k_num)
+        )
 
     @classmethod
-    def fit(cls, train: pl.DataFrame, vocab_sizes: dict[str, int], C: float, max_iter: int,
-            num_inputs: list[str] = NUM_INPUTS) -> "LogReg":
+    def fit(
+        cls,
+        train: pl.DataFrame,
+        vocab_sizes: dict[str, int],
+        C: float,
+        max_iter: int,
+        num_inputs: list[str] = NUM_INPUTS,
+    ) -> "LogReg":
         assert_no_label_inputs(LR_ONEHOT + num_inputs)
         offsets, pos = {}, 0
         for c in LR_ONEHOT:
             offsets[c], pos = pos, pos + vocab_sizes[c]
         num = train.select(num_inputs).to_numpy().astype(np.float64) if num_inputs else np.zeros((1, 0))
-        m = cls(offsets, pos, list(num_inputs), num.mean(0), num.std(0) + 1e-9,
-                LogisticRegression(C=C, solver="lbfgs", max_iter=max_iter, tol=1e-5))
+        m = cls(
+            offsets,
+            pos,
+            list(num_inputs),
+            num.mean(0),
+            num.std(0) + 1e-9,
+            LogisticRegression(C=C, solver="lbfgs", max_iter=max_iter, tol=1e-5),
+        )
         m.model.fit(m._design(train), train["y"].to_numpy())
         return m
 
@@ -106,8 +119,16 @@ class GBDT:
     rounds: int  # chosen by early stopping on held-out TRAINING users, then refit on all training rows
 
     @classmethod
-    def fit(cls, train: pl.DataFrame, params: dict, seed: int, num_boost_round: int,
-            early_stopping_rounds: int, inputs: list[str] | None = None, label: str = "y") -> "GBDT":
+    def fit(
+        cls,
+        train: pl.DataFrame,
+        params: dict,
+        seed: int,
+        num_boost_round: int,
+        early_stopping_rounds: int,
+        inputs: list[str] | None = None,
+        label: str = "y",
+    ) -> "GBDT":
         """Two stages so M2 sees the same training rows as M1:
         1) early stopping on ~10% of TRAINING users (second key digit == 0) picks the rounds;
         2) the model is refit on all training rows with that number of rounds. V1/V2 are never used.
@@ -123,16 +144,21 @@ class GBDT:
         p = dict(params, seed=seed, objective="binary", deterministic=True, force_row_wise=True, verbose=-1)
         dtr = lgb.Dataset(X[~es], y[~es], categorical_feature=cat_idx, free_raw_data=True)
         des = lgb.Dataset(X[es], y[es], categorical_feature=cat_idx, reference=dtr)
-        probe = lgb.train(p, dtr, num_boost_round=num_boost_round, valid_sets=[des],
-                          callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)])
+        probe = lgb.train(
+            p,
+            dtr,
+            num_boost_round=num_boost_round,
+            valid_sets=[des],
+            callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)],
+        )
         rounds = max(1, probe.best_iteration)
-        full = lgb.train(p, lgb.Dataset(X, y, categorical_feature=cat_idx, free_raw_data=True),
-                         num_boost_round=rounds)
+        full = lgb.train(p, lgb.Dataset(X, y, categorical_feature=cat_idx, free_raw_data=True), num_boost_round=rounds)
         return cls(full, inputs, rounds)
 
     @classmethod
-    def fit_fixed(cls, train: pl.DataFrame, params: dict, seed: int, rounds: int, inputs: list[str],
-                  label: str = "y") -> "GBDT":
+    def fit_fixed(
+        cls, train: pl.DataFrame, params: dict, seed: int, rounds: int, inputs: list[str], label: str = "y"
+    ) -> "GBDT":
         """Train on all rows with a GIVEN number of rounds (no early stopping), for ablation protocols where
         every variant must share the same training budget so differences come from the inputs only."""
         import lightgbm as lgb
@@ -141,7 +167,9 @@ class GBDT:
         cat_idx = [i for i, c in enumerate(inputs) if c in CAT_INPUTS]
         X, y = train.select(inputs).to_numpy().astype(np.float64), train[label].to_numpy()
         p = dict(params, seed=seed, objective="binary", deterministic=True, force_row_wise=True, verbose=-1)
-        booster = lgb.train(p, lgb.Dataset(X, y, categorical_feature=cat_idx, free_raw_data=True), num_boost_round=rounds)
+        booster = lgb.train(
+            p, lgb.Dataset(X, y, categorical_feature=cat_idx, free_raw_data=True), num_boost_round=rounds
+        )
         return cls(booster, inputs, rounds)
 
     def predict(self, df: pl.DataFrame) -> np.ndarray:

@@ -50,9 +50,19 @@ def main(job_dir: str) -> None:
     result: dict = {"fitted": {}, "reload_check": {}}
     for run in job["runs"]:
         t = time.time()
-        checkpoints = MDModel.fit(train, y, job["cat_sizes"], job["dom_col"], run["variant"], run["seed"],
-                                  dim=job["dim"], epochs=run["epochs"], batch=job["batch"], lr=run["lr"],
-                                  threads=job["threads"])
+        checkpoints = MDModel.fit(
+            train,
+            y,
+            job["cat_sizes"],
+            job["dom_col"],
+            run["variant"],
+            run["seed"],
+            dim=job["dim"],
+            epochs=run["epochs"],
+            batch=job["batch"],
+            lr=run["lr"],
+            threads=job["threads"],
+        )
         fit_seconds = time.time() - t
         for m in checkpoints:
             e = m.info["epochs"]
@@ -70,9 +80,12 @@ def main(job_dir: str) -> None:
                 p_re = load_md_model(models_dir / name).predict(evals["v2"].take(np.arange(k)), batch=PREDICT_BATCH)
                 require_finite_probs(f"reloaded {name}", p_re)
                 result["reload_check"][name] = require_close(  # same batching -> same-batch tolerance
-                    f"reload {name}", float(np.abs(p_re - preds["v2"][:k]).max()), RELOAD_TOL)
-        print(f"{run['name']} ({run['variant']}, lr {run['lr']}, {run['epochs']} epochs) done in "
-              f"{time.time() - t:.0f}s", flush=True)
+                    f"reload {name}", float(np.abs(p_re - preds["v2"][:k]).max()), RELOAD_TOL
+                )
+        print(
+            f"{run['name']} ({run['variant']}, lr {run['lr']}, {run['epochs']} epochs) done in {time.time() - t:.0f}s",
+            flush=True,
+        )
     (job_path / "result.json").write_text(json.dumps(result, indent=2))
 
 

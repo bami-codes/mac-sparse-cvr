@@ -30,8 +30,10 @@ def test_oof_offset_does_not_see_the_rows_own_user():
     df = _frame()
     fold = user_fold(df, 3)
     only = pl.Series((fold == 0) & (np.arange(df.height) % 7 == 0))
-    df = df.with_columns(pl.when(only).then(9).otherwise(pl.col(DOMAIN_KEY)).alias(DOMAIN_KEY),
-                         pl.when(only).then(1).otherwise(pl.col("y")).cast(pl.Int8).alias("y"))
+    df = df.with_columns(
+        pl.when(only).then(9).otherwise(pl.col(DOMAIN_KEY)).alias(DOMAIN_KEY),
+        pl.when(only).then(1).otherwise(pl.col("y")).cast(pl.Int8).alias("y"),
+    )
     off = oof_domain_offset(df)
     own = expit(off[only.to_numpy()])
     assert own.max() < 0.5  # fold 0 rows of domain 9 get the out-of-fold prior, not ~1
@@ -43,7 +45,9 @@ def test_early_stopping_labels_never_reach_any_offset():
     df = _frame()
     es = early_stopping_users(df)
     assert 0.03 < es.mean() < 0.2
-    flipped = df.with_columns(pl.when(pl.Series(es)).then(1 - pl.col("y")).otherwise(pl.col("y")).cast(pl.Int8).alias("y"))
+    flipped = df.with_columns(
+        pl.when(pl.Series(es)).then(1 - pl.col("y")).otherwise(pl.col("y")).cast(pl.Int8).alias("y")
+    )
     _, fit_a, es_a = early_stopping_offsets(df)
     _, fit_b, es_b = early_stopping_offsets(flipped)
     assert np.array_equal(fit_a, fit_b) and np.array_equal(es_a, es_b)

@@ -52,9 +52,12 @@ def key() -> str:
 def call(method: str, path: str, body: dict | None = None, query: dict | None = None, timeout: int = 60):
     url = API + path + ("?" + urllib.parse.urlencode(query) if query else "")
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Authorization": f"Bearer {key()}", "Content-Type": "application/json",
-                                          "User-Agent": UA})
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Authorization": f"Bearer {key()}", "Content-Type": "application/json", "User-Agent": UA},
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             text = r.read().decode()
@@ -96,8 +99,10 @@ def gpus(a) -> None:
     print(f"{'id':40} {'VRAM':>5} {'$/h':>7} {'min RAM':>8} availability")
     for g in sorted(rows, key=lambda g: (g.get("price") or {}).get(a.cloud.lower()) or 1e9):
         price = (g.get("price") or {}).get(a.cloud.lower())
-        print(f"{g['id']:40} {g.get('memory', ''):>5} {price if price is not None else '-':>7} "
-              f"{g.get('minRam', ''):>8} {g.get('availability')}")
+        print(
+            f"{g['id']:40} {g.get('memory', ''):>5} {price if price is not None else '-':>7} "
+            f"{g.get('minRam', ''):>8} {g.get('availability')}"
+        )
 
 
 def templates(a) -> None:
@@ -142,19 +147,39 @@ def create(a) -> None:
         raise SystemExit(f"{hardware} costs {rate} USD/h on {a.cloud}, above the limit {led['max_price']}")
     if spent(led) + rate * a.hours > led["budget_usd"]:
         raise SystemExit(f"spent {spent(led):.2f} + {rate} x {a.hours} h would pass the budget {led['budget_usd']} USD")
-    body = {"name": a.name, "image": a.image, "disk": a.disk, "cloud": a.cloud, "ports": ["22/tcp"],
-            "startSsh": True, "env": {"PUBLIC_KEY": public_key()}}
+    body = {
+        "name": a.name,
+        "image": a.image,
+        "disk": a.disk,
+        "cloud": a.cloud,
+        "ports": ["22/tcp"],
+        "startSsh": True,
+        "env": {"PUBLIC_KEY": public_key()},
+    }
     if a.cpu:
         body["cpu"] = {"id": a.cpu, "vcpuCount": a.vcpu}
     else:
-        body["gpu"] = {"id": a.gpu, "count": a.count, "minCudaVersion": a.cuda, "minRamPerGpu": a.min_ram,
-                       "minVcpuCountPerGpu": a.min_vcpu}  # the official DataLoader (8 workers) runs on the CPU
+        body["gpu"] = {
+            "id": a.gpu,
+            "count": a.count,
+            "minCudaVersion": a.cuda,
+            "minRamPerGpu": a.min_ram,
+            "minVcpuCountPerGpu": a.min_vcpu,
+        }  # the official DataLoader (8 workers) runs on the CPU
     pod = call("POST", "/pods", body)
-    led["pods"][pod["id"]] = {"name": a.name, "gpu": hardware, "rate": float(pod.get("cost") or rate), "created": now(),
-                              "max_hours": a.hours, "ended": None}
+    led["pods"][pod["id"]] = {
+        "name": a.name,
+        "gpu": hardware,
+        "rate": float(pod.get("cost") or rate),
+        "created": now(),
+        "max_hours": a.hours,
+        "ended": None,
+    }
     save(led)
-    print(f"created {pod['id']} ({hardware}, {led['pods'][pod['id']]['rate']} USD/h, lifetime {a.hours} h); "
-          f"status {pod.get('status')}")
+    print(
+        f"created {pod['id']} ({hardware}, {led['pods'][pod['id']]['rate']} USD/h, lifetime {a.hours} h); "
+        f"status {pod.get('status')}"
+    )
 
 
 def status(a) -> None:
@@ -165,8 +190,10 @@ def status(a) -> None:
         if lp is None and p["ended"] is None:  # gone outside this tool: close it at the time we noticed
             p["ended"] = now()
         hours = ((p["ended"] or now()) - p["created"]) / 3600
-        print(f"{pid} {p['name']:14} {p['gpu']:28} {p['rate']:.3f} $/h  {hours:5.2f} h  "
-              f"{(lp or {}).get('status', 'gone'):10} cuda {(lp or {}).get('cudaVersion')}  ended {stamp(p['ended'])}")
+        print(
+            f"{pid} {p['name']:14} {p['gpu']:28} {p['rate']:.3f} $/h  {hours:5.2f} h  "
+            f"{(lp or {}).get('status', 'gone'):10} cuda {(lp or {}).get('cudaVersion')}  ended {stamp(p['ended'])}"
+        )
     for pid, lp in live.items():
         if pid not in led["pods"]:
             print(f"{pid} {lp.get('name')} (not created by this tool: never touched) status {lp.get('status')}")
@@ -181,8 +208,12 @@ def pod_of(pid: str) -> dict:
 
 def exec_(a) -> None:
     cmd = a.command[1:] if a.command and a.command[0] == "--" else a.command
-    r = call("POST", f"/pods/{a.pod}/exec", {"command": ["sh", "-c", " ".join(cmd)], "timeoutSeconds": a.timeout},
-             timeout=a.timeout + 30)
+    r = call(
+        "POST",
+        f"/pods/{a.pod}/exec",
+        {"command": ["sh", "-c", " ".join(cmd)], "timeoutSeconds": a.timeout},
+        timeout=a.timeout + 30,
+    )
     sys.stdout.write(r.get("stdout") or "")
     sys.stderr.write(r.get("stderr") or "")
     print(f"[exit {r.get('exitCode')}{', timed out' if r.get('timedOut') else ''}]")
@@ -214,7 +245,9 @@ def extend(a) -> None:
         raise SystemExit(f"{a.pod} is not a running pod created by this tool")
     left = pod["rate"] * max(0.0, a.hours - (now() - pod["created"]) / 3600)
     if spent(led) + left > led["budget_usd"]:
-        raise SystemExit(f"spent {spent(led):.2f} + {left:.2f} until hour {a.hours} would pass the budget {led['budget_usd']}")
+        raise SystemExit(
+            f"spent {spent(led):.2f} + {left:.2f} until hour {a.hours} would pass the budget {led['budget_usd']}"
+        )
     pod["max_hours"] = a.hours
     save(led)
     print(f"{a.pod}: lifetime {a.hours} h; at most {spent(led) + left:.2f} USD of {led['budget_usd']} USD by then")
@@ -282,8 +315,18 @@ def main(argv: list[str]) -> None:
     p.add_argument("--every", type=int, default=120)
     p.add_argument("--once", action="store_true")
     a = ap.parse_args(argv)
-    {"gpus": gpus, "templates": templates, "budget": budget, "create": create, "status": status, "exec": exec_,
-     "ssh": ssh, "terminate": terminate, "extend": extend, "watch": watch}[a.cmd](a)
+    {
+        "gpus": gpus,
+        "templates": templates,
+        "budget": budget,
+        "create": create,
+        "status": status,
+        "exec": exec_,
+        "ssh": ssh,
+        "terminate": terminate,
+        "extend": extend,
+        "watch": watch,
+    }[a.cmd](a)
 
 
 if __name__ == "__main__":

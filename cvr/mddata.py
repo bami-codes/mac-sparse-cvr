@@ -32,8 +32,9 @@ class MDArrays:
 
 def encode_md(feats: pl.DataFrame) -> MDArrays:
     """`feats` is a featurize() output (cvr/features.py)."""
-    return MDArrays(feats.select(CAT_INPUTS).to_numpy().astype(np.int32),
-                    feats.select(NUM_INPUTS).to_numpy().astype(np.float32))
+    return MDArrays(
+        feats.select(CAT_INPUTS).to_numpy().astype(np.int32), feats.select(NUM_INPUTS).to_numpy().astype(np.float32)
+    )
 
 
 def concat_md(parts: list[MDArrays]) -> MDArrays:

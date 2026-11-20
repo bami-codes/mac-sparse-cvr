@@ -22,8 +22,10 @@ from .schema import CAT_INPUTS, GROUP_KEY, LR_ONEHOT, MM_COLS, NUM_INPUTS, PAD, 
 
 
 def _load_maps(folder: Path) -> dict[str, dict[str, int]]:
-    return {p.stem: dict(zip(*pl.read_parquet(p).select("value", "code").to_dict(as_series=False).values()))
-            for p in folder.glob("*.parquet")}
+    return {
+        p.stem: dict(zip(*pl.read_parquet(p).select("value", "code").to_dict(as_series=False).values()))
+        for p in folder.glob("*.parquet")
+    }
 
 
 def row_features(vocab: dict[str, dict[str, int]], rows: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray]:
@@ -66,7 +68,9 @@ class Server:
                 st = load_stacking(mdir / "stacking")
                 self.stacking = {
                     "aux": st.aux,
-                    "te": {k: (dict(zip(m.table[k].to_list(), m.table["rate"].to_list())), m.p0) for k, m in st.te.items()},
+                    "te": {
+                        k: (dict(zip(m.table[k].to_list(), m.table["rate"].to_list())), m.p0) for k, m in st.te.items()
+                    },
                     "counts": {k: dict(zip(c[k].to_list(), c["n"].to_list())) for k, c in st.counts.items()},
                 }
         elif base.startswith("M3"):
@@ -94,10 +98,12 @@ class Server:
             for c in LR_ONEHOT:
                 z += self.coef[codes[c] + m.offsets[c]]
             if m.num_inputs:
-                z += ((num - m.mean) / m.std) @ self.coef[m.n_onehot:m.n_onehot + len(m.num_inputs)]
+                z += ((num - m.mean) / m.std) @ self.coef[m.n_onehot : m.n_onehot + len(m.num_inputs)]
             return expit(z)
         if self.base.startswith("M2"):
-            cols = {c: codes[c].astype(np.float64) for c in CAT_INPUTS} | {c: num[:, j] for j, c in enumerate(NUM_INPUTS)}
+            cols = {c: codes[c].astype(np.float64) for c in CAT_INPUTS} | {
+                c: num[:, j] for j, c in enumerate(NUM_INPUTS)
+            }
             st = getattr(self, "stacking", None)
             if st is not None:
                 if st["aux"] is not None:  # stage 1: auxiliary model on the base inputs
@@ -105,8 +111,9 @@ class Server:
                     cols["aux_mta"] = st["aux"].booster.predict(Xa, num_threads=1)
                 for k, (table, p0) in st["te"].items():
                     cols[f"te_{k}"] = np.fromiter((table.get(int(x), p0) for x in codes[k]), np.float64, len(rows))
-                    cols[f"logn_{k}"] = np.log1p(np.fromiter((st["counts"][k].get(int(x), 0) for x in codes[k]),
-                                                             np.float64, len(rows)))
+                    cols[f"logn_{k}"] = np.log1p(
+                        np.fromiter((st["counts"][k].get(int(x), 0) for x in codes[k]), np.float64, len(rows))
+                    )
             X = np.column_stack([cols[c] for c in self.model.inputs])
             return self.model.booster.predict(X, num_threads=1)
         n = len(rows)

@@ -69,11 +69,19 @@ _S: dict = {}
 def _init(out: str, seeds: list[int]) -> None:
     v1, v2 = pl.read_parquet(Path(out) / "preds_v1.parquet"), pl.read_parquet(Path(out) / "preds_v2.parquet")
     g1 = v2["group_class"].to_numpy() == "G1"
-    _S.update(seeds=seeds, u1=v1["user_key"].to_numpy(), y1=v1["y"].to_numpy().astype(np.float64),
-              g1=v1["g"].to_numpy(), p1={s: v1[f"p_s{s}"].to_numpy() for s in seeds},
-              y2=v2["y"].to_numpy()[g1].astype(np.float64), g2=v2["g"].to_numpy()[g1],
-              p2={s: v2[f"p_s{s}"].to_numpy() for s in seeds}, g2_all=v2["g"].to_numpy(), m2=g1,
-              users=np.unique(v1["user_key"].to_numpy()))
+    _S.update(
+        seeds=seeds,
+        u1=v1["user_key"].to_numpy(),
+        y1=v1["y"].to_numpy().astype(np.float64),
+        g1=v1["g"].to_numpy(),
+        p1={s: v1[f"p_s{s}"].to_numpy() for s in seeds},
+        y2=v2["y"].to_numpy()[g1].astype(np.float64),
+        g2=v2["g"].to_numpy()[g1],
+        p2={s: v2[f"p_s{s}"].to_numpy() for s in seeds},
+        g2_all=v2["g"].to_numpy(),
+        m2=g1,
+        users=np.unique(v1["user_key"].to_numpy()),
+    )
 
 
 def subsample(frac: float, rep: int) -> np.ndarray:
@@ -85,17 +93,23 @@ def subsample(frac: float, rep: int) -> np.ndarray:
 
 
 def group_table(y: np.ndarray, p: np.ndarray, g: np.ndarray) -> pl.DataFrame:
-    return (pl.DataFrame({"g": g, "y": y, "p": p, "l": bce(y, p)})
-            .group_by("g").agg(pl.col("y").sum().alias("O"), pl.col("p").sum().alias("E"),
-                               pl.col("l").mean().alias("ll")).sort("g"))
+    return (
+        pl.DataFrame({"g": g, "y": y, "p": p, "l": bce(y, p)})
+        .group_by("g")
+        .agg(pl.col("y").sum().alias("O"), pl.col("p").sum().alias("E"), pl.col("l").mean().alias("ll"))
+        .sort("g")
+    )
 
 
 def summarize_groups(t: pl.DataFrame) -> dict:
     o, e = t["O"].to_numpy(), t["E"].to_numpy()
     dev = 2 * (np.where(o > 0, o * np.log(np.where(o > 0, o, 1) / e), 0.0) - (o - e))
     pos = o > 0
-    return {"macro_logloss": float(t["ll"].mean()), "poisson_deviance": float(dev.mean()),
-            "old_median_abs_ratio_dev": float(np.median(np.abs(o[pos] / e[pos] - 1)))}
+    return {
+        "macro_logloss": float(t["ll"].mean()),
+        "poisson_deviance": float(dev.mean()),
+        "old_median_abs_ratio_dev": float(np.median(np.abs(o[pos] / e[pos] - 1))),
+    }
 
 
 def task(args: tuple) -> dict:
@@ -105,28 +119,55 @@ def task(args: tuple) -> dict:
     y1, g1, p1 = _S["y1"][m], _S["g1"][m], _S["p1"][seed][m]
     p2_all = _S["p2"][seed]
     # calibration evidence per V2 G1 group, from the V1 rows actually used
-    ev = pl.DataFrame({"g": g1, "y": y1}).group_by("g").agg(pl.len().alias("v1_clicks"), pl.col("y").sum().alias("v1_conv"))
+    ev = (
+        pl.DataFrame({"g": g1, "y": y1})
+        .group_by("g")
+        .agg(pl.len().alias("v1_clicks"), pl.col("y").sum().alias("v1_conv"))
+    )
     glob = GlobalPlatt.fit(p1, y1)
     t_ii = group_table(_S["y2"], glob.predict(p2_all)[_S["m2"]], _S["g2"])
-    bins = t_ii.select("g").join(ev, on="g", how="left", maintain_order="left").with_columns(
-        pl.when(pl.col("v1_clicks").is_null()).then(pl.lit("absent from V1"))
-        .when(pl.col("v1_conv") == 0).then(pl.lit("0"))
-        .when(pl.col("v1_conv") <= 2).then(pl.lit("1-2"))
-        .when(pl.col("v1_conv") <= 9).then(pl.lit("3-9"))
-        .otherwise(pl.lit("10+")).alias("bin"))["bin"].to_numpy()
-    res = {"seed": seed, "frac": frac, "rep": rep, "v1_rows": int(m.sum()), "v1_conversions": int(y1.sum()),
-           "g1_groups": int(t_ii.height), "groups_per_bin": {b: int((bins == b).sum()) for b in BINS},
-           "ii": summarize_groups(t_ii), "iii": {}}
+    bins = (
+        t_ii.select("g")
+        .join(ev, on="g", how="left", maintain_order="left")
+        .with_columns(
+            pl.when(pl.col("v1_clicks").is_null())
+            .then(pl.lit("absent from V1"))
+            .when(pl.col("v1_conv") == 0)
+            .then(pl.lit("0"))
+            .when(pl.col("v1_conv") <= 2)
+            .then(pl.lit("1-2"))
+            .when(pl.col("v1_conv") <= 9)
+            .then(pl.lit("3-9"))
+            .otherwise(pl.lit("10+"))
+            .alias("bin")
+        )["bin"]
+        .to_numpy()
+    )
+    res = {
+        "seed": seed,
+        "frac": frac,
+        "rep": rep,
+        "v1_rows": int(m.sum()),
+        "v1_conversions": int(y1.sum()),
+        "g1_groups": int(t_ii.height),
+        "groups_per_bin": {b: int((bins == b).sum()) for b in BINS},
+        "ii": summarize_groups(t_ii),
+        "iii": {},
+    }
     for lam in LAMBDAS:
         gs = GroupShrunkPlatt.fit(p1, y1, g1, glob, lam)
         t = group_table(_S["y2"], gs.predict(p2_all, _S["g2_all"])[_S["m2"]], _S["g2"])
         d = t["ll"].to_numpy() - t_ii["ll"].to_numpy()
         res["iii"][f"{lam:g}"] = summarize_groups(t) | {
-            "converged": gs.converged, "nonpositive_slopes": gs.n_nonpositive_slopes,
+            "converged": gs.converged,
+            "nonpositive_slopes": gs.n_nonpositive_slopes,
             # sum over the groups of a bin / all G1 groups = that bin's share of the macro LogLoss difference
             "macro_diff_by_bin": {b: float(d[bins == b].sum() / d.size) for b in BINS},
             "mean_group_diff_by_bin": {b: (float(d[bins == b].mean()) if (bins == b).any() else None) for b in BINS},
-            "max_abs_diff_absent": float(np.abs(d[bins == "absent from V1"]).max()) if (bins == "absent from V1").any() else 0.0}
+            "max_abs_diff_absent": float(np.abs(d[bins == "absent from V1"]).max())
+            if (bins == "absent from V1").any()
+            else 0.0,
+        }
     res["seconds"] = round(time.time() - t0, 1)
     return res
 
@@ -137,8 +178,10 @@ def reproduce(run: Path, seeds: list[int]) -> dict:
     out = {}
     for s in seeds:
         r = task((s, 1.0, 0))
-        for key, mine in ((f"M2_s{s}|ii", r["ii"]["macro_logloss"]),
-                          (f"M2_s{s}|iii_lam100", r["iii"]["100"]["macro_logloss"])):
+        for key, mine in (
+            (f"M2_s{s}|ii", r["ii"]["macro_logloss"]),
+            (f"M2_s{s}|iii_lam100", r["iii"]["100"]["macro_logloss"]),
+        ):
             ref = stored[key]["G1"]["macro_logloss"]
             if abs(mine - ref) > REPRO_TOL:
                 raise SystemExit(f"reproduction failed for {key}: {mine} vs stored {ref}")
@@ -153,15 +196,21 @@ def write_md(path: Path, meta: dict, repro: dict, results: list[dict]) -> None:
         per = [np.mean([f(r) for r in results if r["frac"] == frac and r["rep"] == d]) for d in draws]
         return float(np.mean(per)), float(np.min(per)), float(np.max(per))
 
-    lines = ["# Study A: calibration data size and group-shrunk calibration (development data)", "",
-             f"Models fixed: M2 seeds {meta['seeds']} of `{meta['run']}`; calibration on V1 {meta['files']['v1']} "
-             f"(users subsampled), evaluation on V2 {meta['files']['v2']} G1 groups. Design: docs/DESIGN.md §15.1. "
-             "V2 was used to choose M2 and lambda = 100, so the 100% values of lambda = 100 are optimistic.", "",
-             f"Reproduction check (full V1): {len(repro)} stored V2 values recomputed within {REPRO_TOL:g}.", "",
-             "Differences are (iii) - (ii); negative = (iii) better. Mean over seeds per draw; brackets = min / max "
-             f"over {REPS} draws (one draw at 100%).", "",
-             "| V1 used | V1 conversions | lambda | macro LogLoss diff | Poisson deviance diff | old median metric diff |",
-             "|---:|---:|---:|---|---|---|"]
+    lines = [
+        "# Study A: calibration data size and group-shrunk calibration (development data)",
+        "",
+        f"Models fixed: M2 seeds {meta['seeds']} of `{meta['run']}`; calibration on V1 {meta['files']['v1']} "
+        f"(users subsampled), evaluation on V2 {meta['files']['v2']} G1 groups. Design: docs/DESIGN.md §15.1. "
+        "V2 was used to choose M2 and lambda = 100, so the 100% values of lambda = 100 are optimistic.",
+        "",
+        f"Reproduction check (full V1): {len(repro)} stored V2 values recomputed within {REPRO_TOL:g}.",
+        "",
+        "Differences are (iii) - (ii); negative = (iii) better. Mean over seeds per draw; brackets = min / max "
+        f"over {REPS} draws (one draw at 100%).",
+        "",
+        "| V1 used | V1 conversions | lambda | macro LogLoss diff | Poisson deviance diff | old median metric diff |",
+        "|---:|---:|---:|---|---|---|",
+    ]
     for frac in FRACTIONS:
         conv = agg(frac, lambda r: r["v1_conversions"])[0]
         for lam in LAMBDAS:
@@ -171,11 +220,16 @@ def write_md(path: Path, meta: dict, repro: dict, results: list[dict]) -> None:
                 m, lo, hi = agg(frac, lambda r: r["iii"][k][metric] - r["ii"][metric])
                 cells.append(f"{m:+.6f} [{lo:+.6f}, {hi:+.6f}]" if frac < 1 else f"{m:+.6f}")
             lines.append(f"| {frac:.0%} | {conv:,.0f} | {k} | " + " | ".join(cells) + " |")
-    lines += ["", "## Where the difference comes from (lambda = 100 and lambda = 1)", "",
-              "Share of the macro LogLoss difference contributed by each group bin (bins by the group's conversions in "
-              "the V1 rows used). Groups absent from V1 get the global mapping, so their difference must be 0.", "",
-              "| V1 used | lambda | " + " | ".join(f"{b} (groups)" for b in BINS) + " |",
-              "|---:|---:|" + "---|" * len(BINS)]
+    lines += [
+        "",
+        "## Where the difference comes from (lambda = 100 and lambda = 1)",
+        "",
+        "Share of the macro LogLoss difference contributed by each group bin (bins by the group's conversions in "
+        "the V1 rows used). Groups absent from V1 get the global mapping, so their difference must be 0.",
+        "",
+        "| V1 used | lambda | " + " | ".join(f"{b} (groups)" for b in BINS) + " |",
+        "|---:|---:|" + "---|" * len(BINS),
+    ]
     for frac in FRACTIONS:
         for k in ("100", "1"):
             cells = []
@@ -186,8 +240,11 @@ def write_md(path: Path, meta: dict, repro: dict, results: list[dict]) -> None:
             lines.append(f"| {frac:.0%} | {k} | " + " | ".join(cells) + " |")
     absent = max(r["iii"][k]["max_abs_diff_absent"] for r in results for k in r["iii"])
     conv = all(r["iii"][k]["converged"] and r["iii"][k]["nonpositive_slopes"] == 0 for r in results for k in r["iii"])
-    lines += ["", f"Checks: largest |difference| in groups absent from V1 = {absent:.2e}; every (iii) fit converged with "
-              f"increasing mappings: {conv}."]
+    lines += [
+        "",
+        f"Checks: largest |difference| in groups absent from V1 = {absent:.2e}; every (iii) fit converged with "
+        f"increasing mappings: {conv}.",
+    ]
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -210,13 +267,26 @@ def main() -> None:
         for res in ex.map(task, jobs):
             results.append(res)
             print(f"seed {res['seed']} frac {res['frac']} rep {res['rep']}: {res['seconds']}s", flush=True)
-    (a.out / "results.json").write_text(json.dumps({"meta": meta, "reproduction": repro, "fractions": FRACTIONS,
-                                                    "reps": REPS, "lambdas": LAMBDAS, "sub_seed": SUB_SEED,
-                                                    "results": results}, indent=1))
+    (a.out / "results.json").write_text(
+        json.dumps(
+            {
+                "meta": meta,
+                "reproduction": repro,
+                "fractions": FRACTIONS,
+                "reps": REPS,
+                "lambdas": LAMBDAS,
+                "sub_seed": SUB_SEED,
+                "results": results,
+            },
+            indent=1,
+        )
+    )
     if a.md:
         a.md.parent.mkdir(parents=True, exist_ok=True)
         write_md(a.md, meta, repro, results)
-        (a.md.with_suffix(".json")).write_text(json.dumps({"meta": meta, "reproduction": repro, "results": results}, indent=1))
+        (a.md.with_suffix(".json")).write_text(
+            json.dumps({"meta": meta, "reproduction": repro, "results": results}, indent=1)
+        )
     print(f"done in {time.time() - t0:.0f}s")
 
 

@@ -74,18 +74,19 @@ def measure(run_dir: Path, v2_file: str, base: str, method: str) -> dict:
     online = server.predict(rows)
     offline = offline_predict(server, run_dir, raw, feats)
     # hard check: raises CheckFailed (and stops before any timing) if the two paths disagree
-    consistency = serving_consistency(codes, {c: feats[c].to_numpy() for c in VOCAB_COLS},
-                                      num, feats.select(NUM_INPUTS).to_numpy(), online, offline)
+    consistency = serving_consistency(
+        codes, {c: feats[c].to_numpy() for c in VOCAB_COLS}, num, feats.select(NUM_INPUTS).to_numpy(), online, offline
+    )
     for _ in range(50):  # warm-up
         server.predict(rows[:1])
     b1 = []
     for i in range(1000):
         t = time.perf_counter()
-        server.predict(rows[i:i + 1])
+        server.predict(rows[i : i + 1])
         b1.append(1000 * (time.perf_counter() - t))
     b100 = []
     for i in range(100):
-        chunk = rows[(i * 100) % (N_ROWS - 100):][:100]
+        chunk = rows[(i * 100) % (N_ROWS - 100) :][:100]
         t = time.perf_counter()
         server.predict(chunk)
         b100.append(1000 * (time.perf_counter() - t))
@@ -98,16 +99,37 @@ def main(run: str, v2_file: str, method: str | None = None, out_name: str = "lat
     if method:  # e.g. "ii", to time the same calibration as a comparison table (default: the run's selection)
         sel = sel | {"calibration_method": method}
     # a served model is "base model + calibrator": measure every base that has saved calibrators
-    bases = sorted(p.name[len("calib_"):-len(".npz")] for p in (run_dir / "models").glob("calib_*.npz"))
-    report = {"run": str(run_dir), "calibration_method": sel["calibration_method"], "rows": N_ROWS,
-              "env": {"cpu": cpu_name(),
-                      "python": platform.python_version(), "torch_threads": 1, "lightgbm_threads": 1,
-                      "process": "one subprocess per base model"},
-              "models": {}}
+    bases = sorted(p.name[len("calib_") : -len(".npz")] for p in (run_dir / "models").glob("calib_*.npz"))
+    report = {
+        "run": str(run_dir),
+        "calibration_method": sel["calibration_method"],
+        "rows": N_ROWS,
+        "env": {
+            "cpu": cpu_name(),
+            "python": platform.python_version(),
+            "torch_threads": 1,
+            "lightgbm_threads": 1,
+            "process": "one subprocess per base model",
+        },
+        "models": {},
+    }
     for base in bases:
         out = run_dir / f"latency_{base}.json"
-        subprocess.run([sys.executable, __file__, run, v2_file, "--base", base, "--out", str(out),
-                        "--method", sel["calibration_method"]], check=True)
+        subprocess.run(
+            [
+                sys.executable,
+                __file__,
+                run,
+                v2_file,
+                "--base",
+                base,
+                "--out",
+                str(out),
+                "--method",
+                sel["calibration_method"],
+            ],
+            check=True,
+        )
         report["models"][base] = json.loads(out.read_text())
         out.unlink()
         print(base, json.dumps(report["models"][base]))
