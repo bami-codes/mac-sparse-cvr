@@ -6,8 +6,9 @@ import torch
 from torch import nn
 
 from cvr.checks import NN_SINGLE_VS_BATCH_TOL
-from cvr.mddata import MDArrays
-from cvr.mdnet import (
+from cvr.schema import MISSING, UNKNOWN
+from experiments.mddata import MDArrays
+from experiments.mdnet import (
     PN_EPS,
     PN_MIN_ROWS,
     MDModel,
@@ -20,7 +21,6 @@ from cvr.mdnet import (
     save_md_model,
     train_step,
 )
-from cvr.schema import MISSING, UNKNOWN
 
 CAT_SIZES = [7, 10, 20]  # column 0 is the domain: codes 2..5 have training rows; 0 (UNKNOWN), 1 and 6 have none
 DOM_COL = 0
@@ -67,7 +67,7 @@ def test_single_row_training_batch_is_finite_and_updates_nothing():
     assert int(net.pn.dom_updates.sum()) == 0 and int(net.pn.glob_updates) == 0  # below PN_MIN_ROWS: global stats
 
 
-def test_domain_batches_are_single_domain_cover_every_row_once_and_are_never_tiny():
+def test_domain_batches_cover_each_row_once():
     a, _ = _data()
     dom = a.cat[:, DOM_COL]
     dom_rows = [np.flatnonzero(dom == d) for d in sorted(ROWS)]
@@ -88,7 +88,7 @@ def test_first_pn_update_replaces_the_initial_statistics():
     assert int(pn.dom_updates[4]) == 1
 
 
-def test_domain_never_updated_uses_global_statistics_at_evaluation():
+def test_unupdated_domain_uses_global_stats():
     m = _fit("star")[0]
     pn = m.net.pn
     assert int(pn.dom_updates[5]) == 0  # 3 training rows < PN_MIN_ROWS
@@ -119,7 +119,7 @@ def _shared_path(net, cat, num):
 
 
 @pytest.mark.parametrize("variant", ["int", "shared", "head", "star", "star_nopn"])
-def test_unseen_domains_all_get_the_shared_prediction_after_training(variant):
+def test_unseen_domains_get_shared_prediction(variant):
     m = _fit(variant)[0]
     net = m.net
     preds = {}
@@ -231,7 +231,7 @@ def test_seed_determinism_and_exact_reload(tmp_path, variant):
     assert np.array_equal(load_md_model(tmp_path / "m").predict(a), p2)
 
 
-def test_star_mixed_evaluation_batch_equals_per_domain_evaluation():
+def test_star_mixed_batch_equals_per_domain():
     # Exact on macOS arm64; on a Linux x86 GPU pod the batch-size-dependent float32 matmul kernels differ by up to
     # 7.5e-9 (measured). Statistics leaking across rows in evaluation would differ by ~1e-2, far above 1e-6.
     from cvr.checks import NN_SINGLE_VS_BATCH_TOL
@@ -246,7 +246,7 @@ def test_star_mixed_evaluation_batch_equals_per_domain_evaluation():
 
 # ---------------------------------------------------------------- 7. epoch checkpoints
 @pytest.mark.parametrize("variant", ["star", "shared"])
-def test_epoch1_checkpoint_of_a_two_epoch_run_equals_a_one_epoch_run(variant):
+def test_epoch1_checkpoint_equals_one_epoch_run(variant):
     a, _ = _data()
     two = _fit(variant, epochs=2)
     one = _fit(variant, epochs=1)
@@ -280,7 +280,7 @@ def _fit_constant(variant):
     return a, MDModel.fit(a, y, CAT_SIZES, DOM_COL, variant, seed=1, dim=4, epochs=1, batch=1024, lr=3e-3, threads=1)[0]
 
 
-def test_pn_dimension_constant_in_a_domain_falls_back_to_the_global_statistics():
+def test_constant_pn_dimension_uses_global_stats():
     a, m = _fit_constant("star")
     net = m.net
     sub = a.take(np.flatnonzero(a.cat[:, DOM_COL] == 2)[:64])
@@ -301,7 +301,7 @@ def test_pn_dimension_constant_in_a_domain_falls_back_to_the_global_statistics()
 
 
 @pytest.mark.parametrize("variant", ["int", "shared", "head", "star"])
-def test_numeric_column_constant_in_training_is_neutral_at_inference(variant):
+def test_constant_numeric_column_is_neutral(variant):
     a, m = _fit_constant(variant)
     assert m.num_keep[3] == 0 and m.num_keep[:3].all()
     sub = a.take(np.arange(64))
@@ -333,7 +333,7 @@ def test_star_optimizer_steps_hold_at_least_one_batch_of_rows():
 
 
 @pytest.mark.parametrize("variant", ["star", "head"])
-def test_single_row_and_batched_predictions_agree_within_the_float32_tolerance(variant):
+def test_single_row_matches_batch(variant):
     m = _fit(variant)[0]
     a, _ = _data(seed=5)
     sub = a.take(np.arange(200))  # mixed domains, so each domain's share differs between the two paths
@@ -391,7 +391,7 @@ def net_num_start(net):
 
 
 def test_reload_check_rows_keep_every_prediction_batch_identical():
-    from cvr.study_c_worker import PREDICT_BATCH, same_batch_rows
+    from experiments.study_c_worker import PREDICT_BATCH, same_batch_rows
 
     assert PREDICT_BATCH == 16384
     assert same_batch_rows(50_000, 4_000_000) == 49_152  # 3 full batches, no shorter last batch
@@ -401,7 +401,7 @@ def test_reload_check_rows_keep_every_prediction_batch_identical():
 
 
 # ---------------------------------------------------------------- counterexample: training vs evaluation rule
-def test_domain_id_embedding_dimensions_always_use_the_global_statistics():
+def test_domain_id_dims_use_global_stats():
     import copy
 
     m = _fit("star", epochs=2)[1]

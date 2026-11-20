@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Study E after the grid, on the GPU pod, with the settings chosen on the Mac:
+# After the grid, on the GPU machine, with the settings chosen on V2:
 #   bash scripts/pod_after_grid.sh <MoAE lr> <MoAE lambda> <BASE lr>
 # Seeds 2027 and 2028 of both chosen settings and the three weighted MoAE runs (seven runs on four GPUs). Nothing
-# else runs on the pod: the checkpoints are copied to the Mac (scripts/pod_fetch.sh) and every evaluation
+# else runs on the pod: the checkpoints are copied to the local machine (scripts/pod_fetch.sh) and every evaluation
 # prediction is made there.
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"

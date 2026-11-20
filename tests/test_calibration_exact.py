@@ -53,7 +53,7 @@ def _reference(p, y, g, base, lam):
     return gid, da, db
 
 
-def test_exact_solver_matches_a_tight_reference_and_beats_the_joint_fit():
+def test_exact_solver_matches_reference():
     p, y, g = _data()
     base = GlobalPlatt.fit(p, y)
     for lam in (1.0, 100.0):
@@ -90,7 +90,7 @@ def test_exact_calibrator_predicts_with_the_same_formula():
     assert np.allclose(unseen, base.predict(p[:5]))  # a group absent from the fit gets the global mapping
 
 
-def test_global_slope_below_the_bound_still_gives_a_feasible_converged_fit():
+def test_slope_below_bound_still_converges():
     """A global slope of 0.000289 (< MIN_SLOPE) makes the zero start infeasible. The solver must still return a
     feasible fit, not keep that slope and report convergence, and must not divide by zero in the line search."""
     p, y, g = _data()

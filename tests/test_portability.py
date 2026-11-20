@@ -67,7 +67,7 @@ class _Resp(io.BytesIO):
         return False
 
 
-def test_download_resumes_after_a_stall_and_restarts_if_the_range_is_ignored(tmp_path, monkeypatch):
+def test_download_resumes_after_a_stall(tmp_path, monkeypatch):
     content = b"0123456789abcdefghij"
     calls = []
 

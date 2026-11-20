@@ -7,8 +7,7 @@ Files are saved under data/raw/mac/<path>. Raw data is never committed. Verifica
 - plain git files (13 of the 17 vocabulary files): size and git blob SHA-1 equal the API's `oid`
   (the API gives no SHA-256 for them; the earlier shell script could not verify them).
 Every verified file gets a `<file>.sha256` sidecar with its SHA-256, which the runners record.
-Only the standard library is used, so this runs before any environment is installed (a fresh GPU pod).
-Replaces scripts/fetch_mac.sh, which used BSD `stat -f` (wrong on Linux) and `shasum`.
+Only the standard library is used, so this runs on macOS and Linux before any environment is installed.
 """
 
 import hashlib

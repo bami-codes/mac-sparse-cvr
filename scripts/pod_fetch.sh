@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Study E: copy from the main pod to this Mac (docs/DESIGN.md §18.1).
+# Copy from the training pod to the local machine (docs/DESIGN.md §18.1).
 #   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh records      # every job's records (small files only)
 #   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh checkpoints  # the 12 chosen + 3 weighted checkpoints, then SHA-256
-#   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh devicecheck <run id>   # GPU vs Mac CPU on the same V2 rows
+#   POD="-p <port> root@<host>" bash scripts/pod_fetch.sh devicecheck <run id>   # GPU vs CPU on the same V2 rows
 # The chosen runs are read from runs/e_study/config_choice.json (both models, seeds 2026-2028); for each run the
 # train-17 checkpoint (Q2) and the train-19 checkpoint (Q1) are copied six at a time (one connection to the pod is
 # slow) and checked against the run record before the pod is terminated.
@@ -20,10 +20,10 @@ case "$1" in
       "$addr:/root/naver/runs/e_runs/" runs/e_runs/
     pod_list=$($SSH "$addr" 'cd /root/naver/runs/e_runs && find . -path "*/val/*" -name train-19.json | sort')
     here_list=$(cd runs/e_runs && find . -path "*/val/*" -name train-19.json | sort)
-    if [ "$pod_list" != "$here_list" ]; then echo "validation records differ between the pod and this Mac"; exit 1; fi
+    if [ "$pod_list" != "$here_list" ]; then echo "validation records differ between the pod and the local machine"; exit 1; fi
     echo "validation records: $(echo "$here_list" | grep -c . ) on both sides" ;;
   devicecheck)
-    # one validated run (argument: its id): its train-18 checkpoint scored on train-19 on this Mac's CPU against the
+    # one validated run (argument: its id): its train-18 checkpoint scored on train-19 on the local CPU against the
     # pod's GPU predictions of the same rows (validation data only; the official test is not used)
     rid=$2
     sub=$($SSH "$addr" "cd /root/naver/runs/e_runs/$rid && ls -d val/model_after_train-18_*")

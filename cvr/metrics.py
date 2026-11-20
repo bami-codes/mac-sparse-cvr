@@ -160,3 +160,11 @@ def paired_bootstrap_macro_diff(
         "seed_pairs": len(pa),
         "per_pair_diff": [macro(ones, as_matrix(r)) for r in row_diffs],
     }
+
+
+def poisson_deviance(observed: np.ndarray, expected: np.ndarray) -> np.ndarray:
+    """Per-group Poisson deviance of observed positive counts against the summed predicted probabilities."""
+    o, e = np.asarray(observed, float), np.asarray(expected, float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        term = np.where(o > 0, o * np.log(o / e), 0.0)
+    return 2 * (term - (o - e))

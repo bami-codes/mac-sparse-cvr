@@ -61,7 +61,7 @@ def test_the_command_line(tmp_path):
     assert len(answers) == 3 and "error" in answers[1] and answers[0] == answers[2]
 
 
-def test_line_by_line_answers_each_request_without_waiting_for_the_input_to_end():
+def test_jsonl_answers_each_line_at_once():
     import select
 
     p = subprocess.Popen(
@@ -157,13 +157,13 @@ def test_a_bundle_without_calibrator_serves_raw_probabilities(tmp_path):
     assert all(c["cvr"] == c["cvr_uncalibrated"] for c in got["candidates"])
 
 
-def test_export_bundles_a_calibrator_only_with_the_checkpoint_it_was_fitted_on(tmp_path, monkeypatch):
-    """A study E layout in miniature: two checkpoints of one run, the calibrator fitted on train-17's predictions."""
+def test_export_pairs_calibrator_with_its_checkpoint(tmp_path, monkeypatch):
+    """A training-run layout in miniature: two checkpoints of one run, the calibrator fitted on train-17's predictions."""
     import polars as pl
 
+    from cvr import evaluation as Q
+    from cvr import groups as E
     from cvr import pymal_run as R
-    from cvr import study_e as E
-    from cvr import study_e_eval as Q
 
     shutil = __import__("shutil")
     monkeypatch.setattr(Q, "RUNS", tmp_path / "e_runs")
@@ -195,7 +195,7 @@ def test_export_bundles_a_calibrator_only_with_the_checkpoint_it_was_fitted_on(t
     assert cfg["calibrator"] is None and not (tmp_path / "b19" / "calibrator.npz").exists()
 
 
-def test_an_empty_history_is_refused_rather_than_scored_differently(server):
+def test_empty_history_is_refused(server):
     """An empty purchase history used to pass and give another probability than MAC's padded history (0.0365 vs 0.0482
     for the example's first candidate); MAC always stores 20 slots, so the request must too."""
     r = copy.deepcopy(REQUEST)

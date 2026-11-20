@@ -55,7 +55,7 @@ def test_require_close_rejects_nan_and_large():
         require_close("x", 1e-6, 1e-9)
 
 
-def test_python_max_hides_nan_so_each_calibrator_is_checked_separately():
+def test_each_calibrator_is_checked_for_nan():
     # the bug a reviewer found: combining per-calibrator differences with Python max() drops a NaN
     assert max([0.0, float("nan"), 0.0]) == 0.0
     from cvr.checks import require_finite_probs
@@ -68,7 +68,7 @@ def test_python_max_hides_nan_so_each_calibrator_is_checked_separately():
         require_close("iii", float(np.abs(bad - good).max()), 1e-9)  # numpy max propagates NaN
 
 
-def test_float32_rounding_needs_the_network_tolerance_but_a_real_error_does_not_pass_it():
+def test_network_tolerance_admits_rounding_not_errors():
     c_on, c_off, n_on, n_off, p_on, p_off = _ok()
     p_on[0] += 5.96e-8  # the size of a single-row vs batched float32 difference of the same network
     with pytest.raises(CheckFailed, match="calibrated predictions"):

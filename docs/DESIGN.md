@@ -1,20 +1,21 @@
-# 설계와 연구 기록 — 전환이 드문 광고 그룹의 CVR 예측 (MAC)
+# 설계와 연구 기록: 전환이 드문 광고 그룹의 CVR 예측 (MAC)
 
-> 이 문서는 시간순 기록이다. 판정 기준은 결과를 보기 전에 적었고, 이후의 개정과 발견은 그 아래에 날짜와 함께 덧붙였다. 최종 결과와 사용법은 [README](../README.md), 결과 표는 [docs/results](results/), 재현 명령은 [docs/reproduce.md](reproduce.md)에 있다. 최종 연구는 §18(연구 E)이다.
+> 시간순 기록이다. 판정 기준은 결과를 보기 전에 적었고, 이후의 개정과 발견은 그 아래에 날짜와 함께 덧붙였다. 최종 결과와 사용법은 [README](../README.md), 최종 결과의 표는 [docs/results](results), 앞선 실험의 표는 [experiments/results](../experiments/results), 재현 명령은 [docs/reproduce.md](reproduce.md)에 있다.
 
-- 상태: **v0.2 이후 데이터 변경(Criteo Sponsored Search 확보 불가 → MAC)과 리뷰 의견을 반영함. 학습 부분자료로 E1–E6 점검 후 §3·§4를 고정하고 본 실험 진행**
 - 작성: 2026-11-17 / bami-codes
-- 표기 규칙: `[공식]` 논문·공식 코드에 명시 / `[추정]` 데이터나 정황으로 추정 / `[미확인]` 아직 근거 없음
+- 표기: `[공식]` 논문이나 공식 코드에 명시 / `[추정]` 데이터나 정황으로 추정 / `[미확인]` 아직 근거 없음
 
-## v0.2 → v0.3 변경 요약
-
-| 위치 | v0.2 | v0.3 | 이유 |
-|---|---|---|---|
-| 데이터 | Criteo Sponsored Search | **MAC (Alimama, 2026)** | 공식 다운로드 링크 소멸(404, DNS 없음), 미러·아카이브 없음. MAC은 광고 클릭 단위 CVR 데이터이고 카테고리·상점 계열 ID가 있음 |
-| §0 주장 | "소규모 카테고리" | "**익명 광고 특성별 희소 그룹**" (카테고리로 추정되는 특성) | 컬럼 의미가 공식적으로 매핑되지 않음 |
-| §2 레이블 | `Sale` | `y = (last > 0)`. 다른 귀속 레이블은 입력 금지 | 원본 값은 귀속 방식별 가중치이고 공식 코드는 `> 0`으로 이진화 |
-| §4 분할 | 30일 레이블 확정 조건 | 공식 학습/테스트 분할. 검증은 학습 파일 안에서. **오프라인 비교로만 설명** | 귀속 기간 비공개, 타임스탬프 없음, 사용자 활동량별 추출 |
-| §10 EDA | 전체 데이터 기준 | **학습 파일 일부로만** 진행. 테스트 파일은 최종 평가에만 사용 | 그룹·임계값·레이블 결정에 테스트를 쓰지 않기 위함 |
+| 절 | 내용 |
+|---|---|
+| §0–§9 | 질문과 주장 범위, 데이터, 레이블과 입력, 희소 그룹, 분할, 비교 모델, 평가, 성공 기준, 재현 절차 |
+| §10 | EDA와 1차 실험 (LightGBM 위의 희소 그룹 보정) |
+| §13 | 2차 실험 (보조 귀속 레이블과 그룹 전환율) |
+| §15 | 연구 A, B (작동 조건, 개발 자료만) |
+| §16 | 연구 C (작은 광고 맥락 그룹과 도메인 구조) |
+| §17 | 연구 D (절편만 축소하는 보정, 백테스트) |
+| §18 | 연구 E (공식 BASE와 MoAE, 최종 결과) |
+| §12 | 결정 기록 |
+| 부록 | 초기 초안(v0.2)에서 바뀐 점 |
 
 ## 0. 연구 질문과 주장 범위
 
@@ -31,7 +32,7 @@
 ## 1. 데이터: MAC (Multi-Attribution Benchmark)
 
 **개요** (논문 arXiv 2603.02184, 공식 코드 PyMAL, Apache-2.0)
-- `[공식]` 라이선스 (2026-11-18 확인): 데이터 카드 `alimamaTech/MAC`의 `license: apache-2.0`, 공식 코드 `alimama-tech/PyMAL`의 LICENSE는 Apache-2.0, 논문의 arXiv 라이선스는 CC BY 4.0. 이전 `.gitignore` 주석의 "CC BY-NC-SA 4.0"은 근거가 없어 고쳤다. 원본·파생 데이터는 크기 때문에 저장소에 올리지 않고 `scripts/fetch_mac.sh`로 받는다.
+- `[공식]` 라이선스 (2026-11-18 확인): 데이터 카드 `alimamaTech/MAC`의 `license: apache-2.0`, 공식 코드 `alimama-tech/PyMAL`의 LICENSE는 Apache-2.0, 논문의 arXiv 라이선스는 CC BY 4.0. 이전 `.gitignore` 주석의 "CC BY-NC-SA 4.0"은 근거가 없어 고쳤다. 원본·파생 데이터는 크기 때문에 저장소에 올리지 않고 `scripts/fetch_mac.py`로 받는다.
 - `[공식]` 타오바오 광고 시스템 로그에서 추출. 21일, 광고 클릭 7,900만 건, 상품 1,510만 개, 사용자 80만 명. 한 행 = 광고 클릭 1건. 사용자 활동량에 따라 추출 비율이 다름.
 - `[공식]` 레이블 4종: `last`, `first`, `linear`, `mta`(데이터 기반 귀속). 귀속 기간은 비공개.
 - `[공식]` 파일: `train-00`~`train-19`(각 2.6–3.3GB), `test`(3.2GB), `vocabs/`. 공식 코드는 학습 파일을 00 → 19 순서로 학습한 뒤 테스트로 평가한다.
@@ -162,12 +163,12 @@
 
 - **파일 검증**: 크기와 SHA-256이 Hugging Face 공식 값과 일치함.
 - **실행 비용**: 읽기 6초, 전체 EDA 29초, 최대 메모리 13.9GB (문자열·시퀀스 열을 모두 올렸을 때).
-- 스크립트: [scripts/eda_premise.py](../scripts/eda_premise.py), [scripts/premise_calibration.py](../scripts/premise_calibration.py). 결과 JSON은 `runs/eda/` (집계값만 있음, 레포 미포함).
+- 스크립트: [experiments/scripts/eda_premise.py](../experiments/scripts/eda_premise.py), [experiments/scripts/premise_calibration.py](../experiments/scripts/premise_calibration.py). 결과 JSON은 `runs/eda/` (집계값만 있음, 레포 미포함).
 - **재현 명령** (아래 표의 모든 수치가 두 명령으로 나온다):
   ```bash
-  scripts/fetch_mac.sh train/train-17.parquet
-  uv run python scripts/eda_premise.py data/raw/mac/train/train-17.parquet runs/eda/train-17.json
-  uv run python scripts/premise_calibration.py data/raw/mac/train/train-17.parquet runs/eda/premise_calibration_train-17.json
+  python3 scripts/fetch_mac.py train/train-17.parquet
+  uv run python experiments/scripts/eda_premise.py data/raw/mac/train/train-17.parquet runs/eda/train-17.json
+  uv run python experiments/scripts/premise_calibration.py data/raw/mac/train/train-17.parquet runs/eda/premise_calibration_train-17.json
   ```
 
 | 항목 | 결과 | 해석 |
@@ -195,22 +196,22 @@
 
 ### 10.3 파이프라인과 스모크 실행 (2026-11-17)
 
-**구현** ([cvr/](../cvr/), 실행 한 번에 끝까지)
+**구현** ([cvr/](../cvr), 실행 한 번에 끝까지)
 
 | 단계 | 파일 | 내용 |
 |---|---|---|
-| 매핑 | `cvr/vocab.py` | 학습 소스로만 만든 범주형 매핑. 0 = 학습에 없던 값, 1 = 결측 토큰, 2부터 (빈도 내림차순, 값 오름차순). 실행마다 지문(fingerprint)을 기록 |
-| 피처 | `cvr/features.py` | 사용자 키는 12자리 16진 ID를 정수로 바꿔 씀 (라이브러리 버전과 무관하게 안정). 구매 이력 일치 횟수는 결측 토큰 제외 |
-| 그룹 | `cvr/groups.py` | 학습 통계로만 G1·small·mid·dense·unseen·missing 분류 |
-| 모델 | `cvr/models.py` | M0a·M0b (베타-이항 주변우도로 사전 강도 추정), M1, M2, M2_nohist |
+| 매핑 | `experiments/vocab.py` | 학습 소스로만 만든 범주형 매핑. 0 = 학습에 없던 값, 1 = 결측 토큰, 2부터 (빈도 내림차순, 값 오름차순). 실행마다 지문(fingerprint)을 기록 |
+| 피처 | `experiments/features.py` | 사용자 키는 12자리 16진 ID를 정수로 바꿔 씀 (라이브러리 버전과 무관하게 안정). 구매 이력 일치 횟수는 결측 토큰 제외 |
+| 그룹 | `experiments/groups.py` | 학습 통계로만 G1·small·mid·dense·unseen·missing 분류 |
+| 모델 | `experiments/models.py` | M0a·M0b (베타-이항 주변우도로 사전 강도 추정), M1, M2, M2_nohist |
 | 보정 | `cvr/calibration.py` | (ii)·(iii)·(iv) 모두 V1에서 학습. (iii)는 `a + da_g ≥ 0.001`을 최적화 제약으로 강제 |
-| 평가·선택 | `cvr/metrics.py`, `cvr/pipeline.py` | V2에서 기반 모델 → λ → (iii)/(iv) 순으로 시드 평균 1차 지표로 선택, `selection.json`에 고정. 개발 설정에 테스트 파일이 있으면 실행을 거부함 |
+| 평가·선택 | `cvr/metrics.py`, `experiments/pipeline.py` | V2에서 기반 모델 → λ → (iii)/(iv) 순으로 시드 평균 1차 지표로 선택, `selection.json`에 고정. 개발 설정에 테스트 파일이 있으면 실행을 거부함 |
 
 **실행 명령**
 ```bash
 uv run pytest -q                                          # 매핑·그룹·보정 기울기·부트스트랩 단위 테스트
-uv run python -m cvr.pipeline configs/smoke_day17.toml    # train-17 하나를 사용자 단위로 나눈 점검용
-uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18, V2 19
+uv run python -m experiments.pipeline experiments/configs/smoke_day17.toml    # train-17 하나를 사용자 단위로 나눈 점검용
+uv run python -m experiments.pipeline experiments/configs/dev_day17_v18_v19.toml  # 학습 17, V1 18, V2 19
 ```
 결과는 `runs/<설정 이름>/<UTC 시각>/`에 `results.md`, `results.json`, `selection.json`, `config.toml`, `vocab/`로 남는다. 커밋 해시, 작업 트리 변경 여부, 데이터 체크섬, 라이브러리 버전, 단계별 시간, 최대 메모리를 함께 기록한다.
 
@@ -223,7 +224,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 
 ### 10.4 개발 실행 결과 (학습 17 / V1 18 / V2 19, 커밋 `7fb9bf6`)
 
-- 명령: `uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml`. 7.6분, 최대 메모리 10.4GB, 작업 트리 변경 없음.
+- 명령: `uv run python -m experiments.pipeline experiments/configs/dev_day17_v18_v19.toml`. 7.6분, 최대 메모리 10.4GB, 작업 트리 변경 없음.
 - G1: 학습 클릭 ≥ 500 · 학습 양성 < 20인 605개 그룹 (학습 클릭의 16.05%). V2의 G1 행은 647,886개.
 - **아래 값은 모두 V2 = 선택에 쓴 자료다. 테스트 결과가 아니며, λ와 방식을 여기서 골랐으므로 선택된 방식의 값은 낙관적이다.**
 
@@ -249,7 +250,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 
 ### 10.5 M3 준비, 저장·재로드, 서빙 경로 (2026-11-17)
 
-**M3 타당성 측정** ([scripts/m3_probe.py](../scripts/m3_probe.py), `train-17`의 첫 행 그룹만 사용, 사용자 70/30 분할, 연구 결과 아님)
+**M3 타당성 측정** ([experiments/scripts/m3_probe.py](../experiments/scripts/m3_probe.py), `train-17`의 첫 행 그룹만 사용, 사용자 70/30 분할, 연구 결과 아님)
 
 | 항목 | 결과 |
 |---|---|
@@ -269,14 +270,14 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
     - [tests/test_nn.py](../tests/test_nn.py): 전부 패딩인 이력에서 출력·그래디언트가 유한한지, 패딩 위치 값을 바꿔도 출력이 같은지, 평균 풀링이 유효 단계 평균과 같은지, 같은 시드면 예측이 같은지 확인한다.
 
 **저장·재로드와 서빙 경로**
-- [cvr/artifacts.py](../cvr/artifacts.py), `cvr/nn.py`, `cvr/calibration.py`: **모든 모델의 모든 시드**(M1, M1_nohist, M2·M2_nohist 시드 3개, M3 두 변형 시드 3개)와, 기반 모델마다 선택된 λ로 학습한 보정 (ii)·(iii)·(iv)를 `runs/.../models/`에 저장한다. 최종 테스트에서 시드 평균 비교와 제거 실험·풀링 비교를 같은 학습 결과로 이어가기 위해서다.
-- **하드 검사** ([cvr/checks.py](../cvr/checks.py)): 기준을 넘으면 기록만 하지 않고 예외로 실행을 멈춘다. 허용 오차는 미리 고정했다: 재로드 예측 차이 1e-9, 서빙 vs 평가 경로 예측 차이 1e-9, 수치 특성 차이 1e-6, 범주형 코드 불일치 0, 예측이 [0, 1] 안의 유한한 값일 것. [tests/test_checks.py](../tests/test_checks.py)는 코드 불일치, 수치 특성 오류, 예측 오차 0.0271, NaN을 넣었을 때 멈추는지 확인한다. 실제 `scripts/latency.py`에서도 서빙 특성 하나에 오류를 넣자 측정 전에 멈췄다.
-- [cvr/serving.py](../cvr/serving.py): 원시 행 1건(문자열·리스트) → 매핑 → 구매 이력 특성 → 모델 → 보정을 순수 Python·NumPy로 처리한다. 학습·평가 경로(polars)와는 다른 구현이다.
-- [scripts/latency.py](../scripts/latency.py): 먼저 V2 원시 행 3,000개에서 두 경로의 특성과 보정된 예측이 같은지(온라인·오프라인 일관성) 확인하고, 단일 스레드에서 batch=1 1,000회, batch=100 100회의 p50·p99를 잰다. 네트워크와 피처 저장소 조회는 제외한다.
+- [experiments/artifacts.py](../experiments/artifacts.py), `experiments/nn.py`, `cvr/calibration.py`: **모든 모델의 모든 시드**(M1, M1_nohist, M2·M2_nohist 시드 3개, M3 두 변형 시드 3개)와, 기반 모델마다 선택된 λ로 학습한 보정 (ii)·(iii)·(iv)를 `runs/.../models/`에 저장한다. 최종 테스트에서 시드 평균 비교와 제거 실험·풀링 비교를 같은 학습 결과로 이어가기 위해서다.
+- **하드 검사** ([cvr/checks.py](../cvr/checks.py)): 기준을 넘으면 기록만 하지 않고 예외로 실행을 멈춘다. 허용 오차는 미리 고정했다: 재로드 예측 차이 1e-9, 서빙 vs 평가 경로 예측 차이 1e-9, 수치 특성 차이 1e-6, 범주형 코드 불일치 0, 예측이 [0, 1] 안의 유한한 값일 것. [tests/test_checks.py](../tests/test_checks.py)는 코드 불일치, 수치 특성 오류, 예측 오차 0.0271, NaN을 넣었을 때 멈추는지 확인한다. 실제 `experiments/scripts/latency.py`에서도 서빙 특성 하나에 오류를 넣자 측정 전에 멈췄다.
+- [experiments/serving.py](../experiments/serving.py): 원시 행 1건(문자열·리스트) → 매핑 → 구매 이력 특성 → 모델 → 보정을 순수 Python·NumPy로 처리한다. 학습·평가 경로(polars)와는 다른 구현이다.
+- [experiments/scripts/latency.py](../experiments/scripts/latency.py): 먼저 V2 원시 행 3,000개에서 두 경로의 특성과 보정된 예측이 같은지(온라인·오프라인 일관성) 확인하고, 단일 스레드에서 batch=1 1,000회, batch=100 100회의 p50·p99를 잰다. 네트워크와 피처 저장소 조회는 제외한다.
 
 **PyTorch와 LightGBM을 한 프로세스에서 쓰면 안 됨 (2026-11-17 발견)**
 - M3를 파이프라인 안에서 학습하자 프로세스가 CPU 0%로 멈췄다. 작은 스크립트로 확인한 결과, PyTorch를 먼저 불러오면 세그멘테이션 오류(exit 139), LightGBM을 먼저 불러오면 멈춤(시간 제한 exit 142)이 났다. 두 라이브러리가 각자 다른 `libomp.dylib`를 쓰기 때문으로 보이며, `KMP_DUPLICATE_LIB_OK=TRUE`로도 해결되지 않았다.
-- 해결: 메인 파이프라인은 PyTorch를 불러오지 않는다. M3 배열은 [cvr/m3data.py](../cvr/m3data.py)(PyTorch 없음)에서 만들고, 학습·예측은 PyTorch만 쓰는 별도 프로세스 [cvr/m3_worker.py](../cvr/m3_worker.py)에서 한다. 지연 측정도 모델마다 별도 프로세스에서 한다. scikit-learn은 보정 학습 시에만 불러온다.
+- 해결: 메인 파이프라인은 PyTorch를 불러오지 않는다. M3 배열은 [experiments/m3data.py](../experiments/m3data.py)(PyTorch 없음)에서 만들고, 학습·예측은 PyTorch만 쓰는 별도 프로세스 [experiments/m3_worker.py](../experiments/m3_worker.py)에서 한다. 지연 측정도 모델마다 별도 프로세스에서 한다. scikit-learn은 보정 학습 시에만 불러온다.
 - 그 전에 "다른 실행과 CPU를 나눠 써서 느리다"고 판단했던 M3 스모크 지연도 같은 원인이었을 가능성이 크다.
 
 **스모크 검증 (새 구조, `train-17`을 사용자 단위로 나눔, 연구 결과 아님)**
@@ -302,11 +303,11 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 - 구매 이력 제거 실험 (V2 G1, 원시 예측, 모델 고정): M2에서 −0.000118 [−0.000177, −0.000064], 시드 3쌍 모두 음수. M1에서 −0.000057 [−0.000096, −0.000020].
 - 결측 토큰 행: 학습 3파일에서 314,982행 중 양성 3건. `train-17`만 볼 때의 "양성 0건"은 다른 파일에서는 성립하지 않으므로, 구조적 0 가설은 더 약해졌다.
 
-### 10.7 최종 평가 절차 ([cvr/final_eval.py](../cvr/final_eval.py))
+### 10.7 최종 평가 절차 ([experiments/final_eval.py](../experiments/final_eval.py))
 
 "테스트 1회"는 **미리 정한 비교들을 한 번에 평가하고, 그 결과로 다시 모델을 고르거나 튜닝하지 않는 것**으로 구현한다.
 
-1. **고정** `uv run python -m cvr.final_eval freeze <run>`
+1. **고정** `uv run python -m experiments.final_eval freeze <run>`
    - 저장된 매핑으로 학습 파일에서 그룹 통계를 다시 계산하고, 보정기와 함께 저장된 그룹 클릭 수와 다르면 멈춘다.
    - `freeze.json`에 다음을 쓴다: 모든 모델·보정기·매핑 파일과 그룹 통계의 SHA-256, G1 그룹 수와 코드 목록의 해시, 선택 결과(기반 모델, 보정 방식, λ), 주 비교와 성공 기준, 보조 비교 목록. 이미 있으면 덮어쓰지 않는다.
 2. **V2 예행 실행** `... final_eval dryrun <run>`
@@ -327,7 +328,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - 구매 이력 제거(M1, M2)와 M3 attention vs 평균 풀링 (원시 예측, 시드 짝 부트스트랩)
   - 모델 계열별 raw / (ii) / 선택 / (iv) 표
   - G1exp 민감도 분석
-- M3 예측은 PyTorch 전용 프로세스 [cvr/final_eval_m3.py](../cvr/final_eval_m3.py)에서 한다.
+- M3 예측은 PyTorch 전용 프로세스 [experiments/final_eval_m3.py](../experiments/final_eval_m3.py)에서 한다.
 
 ### 10.8 본 개발 실행 결과 (M3 포함, 커밋 `d3ce4e8`, `runs/dev_train15_17_m3/20261117T110713Z`)
 
@@ -370,10 +371,10 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 
 ### 10.9 테스트 결과 (1회 실행, 2026-11-17)
 
-- 명령: `uv run python -m cvr.final_eval test runs/dev_train15_17_m3/20261117T110713Z data/raw/mac/test/test.parquet`
+- 명령: `uv run python -m experiments.final_eval test runs/dev_train15_17_m3/20261117T110713Z data/raw/mac/test/test.parquet`
 - 평가 코드 `eeeb0d4`: 예행 실행 커밋 `685961c`과 `cvr/`·`scripts/`·`configs/`가 동일하고, 그 사이 변경은 문서뿐이다.
 - 기록된 해시: `freeze.json` `66f0b7e8…`, 테스트 파일 `c67dbee7…`.
-- 공식 테스트 파일: 4,064,648 클릭, 그중 G1 행 435,086개. 결과 표는 [docs/results/final_test.md](results/final_test.md).
+- 공식 테스트 파일: 4,064,648 클릭, 그중 G1 행 435,086개. 결과 표는 [experiments/results/final_test.md](../experiments/results/final_test.md).
 
 **주 비교 (미리 정한 성공 기준: 충족)**
 - M2 계열(시드 3개)에서 그룹별 축소 보정 (iii) λ = 100 − 공통 보정 (ii)의 G1 macro LogLoss 차이: **−0.000100, 95% CI [−0.000154, −0.000049]**. 시드 짝별로는 −0.000098, −0.000103, −0.000098이다.
@@ -454,11 +455,11 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 - 보조 예측과 그룹 통계를 입력에 추가한 모델에서 **구분력 개선을 관찰했다** (AUC +0.0035, GAUC +0.0047). (참고: 그룹별 보정이 유지하는 것은 같은 그룹 안의 순위뿐이며, 그룹 간 순위와 전체 AUC는 보정으로도 바뀔 수 있다.) (iii) 보정을 더하면 G1 macro LogLoss가 0.06408로 조금 더 낮아진다.
 - **고정·예행 실행** (평가 코드 `10df70d`): 파일 71개를 고정했다. V2 408만 행에서 지표 432개와 주 비교 부트스트랩을 1e-9 안에서 재현했다.
 - **고정 문서 기록 (리뷰 반영)**: `freeze.json`의 보조 비교 목록에는 1차 실험의 "구매 이력 제거" 비교가 일반 문구로 남아 있다. 2차 실험은 이 비교를 수행하지 않으므로 결과의 `secondary`가 비어 있으며, **2차 실험에서는 해당 없음**이다. 고정 파일은 덮어쓰지 않는다.
-- **지연, (ii) 보정 기준** (주 비교와 같은 설정, [docs/results/p2_latency.md](results/p2_latency.md)): batch=1 p50/p99는 M2 0.072–0.074 / 0.11–0.12 ms, **M2both 0.097–0.103 / 0.13–0.15 ms**다. batch=100 p99는 M2 3.96–4.74 ms, M2both 4.06–4.13 ms다.
+- **지연, (ii) 보정 기준** (주 비교와 같은 설정, [experiments/results/p2_latency.md](../experiments/results/p2_latency.md)): batch=1 p50/p99는 M2 0.072–0.074 / 0.11–0.12 ms, **M2both 0.097–0.103 / 0.13–0.15 ms**다. batch=100 p99는 M2 3.96–4.74 ms, M2both 4.06–4.13 ms다.
 
-### 13.2 2차 실험 테스트 결과 (1회 실행, 2026-11-17, [docs/results/p2_final_test.md](results/p2_final_test.md))
+### 13.2 2차 실험 테스트 결과 (1회 실행, 2026-11-17, [experiments/results/p2_final_test.md](../experiments/results/p2_final_test.md))
 
-- 명령: `uv run python -m cvr.final_eval test runs/p2_train00_02/20261117T131443Z data/raw/mac/train/train-12.parquet`
+- 명령: `uv run python -m experiments.final_eval test runs/p2_train00_02/20261117T131443Z data/raw/mac/train/train-12.parquet`
 - 평가 코드 `aea0370`: 예행 실행 커밋 `10df70d`과 평가 경로(`cvr/`의 평가 코드와 `configs/`)가 동일하다. 기록된 해시는 `freeze.json` `2e5bcd85…`, 테스트 파일 `bc886901…`.
 - `train-12`: 3,544,371 클릭.
 
@@ -519,7 +520,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 
 **한계**: λ = 100과 M2는 이 V2에서 골랐다. 따라서 100% 지점의 λ = 100 값은 낙관적이다. 비율별 차이의 변동은 V1 추출 반복과 시드로만 나타낸다.
 
-#### 15.1.1 연구 A 결과 (개발 자료, [표](results/calibration_data_study.md))
+#### 15.1.1 연구 A 결과 (개발 자료, [표](../experiments/results/calibration_data_study.md))
 
 **확인 절차**: 저장된 개발 결과 6개를 1e-9 안에서 재현했다. V1에 없는 그룹의 차이는 정확히 0이다. (iii) 학습은 모두 수렴했고, 모든 그룹에서 증가 함수였다.
 
@@ -576,7 +577,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 - M2aux가 분명히 더 좋으면: 이 개발 자료에서 `mta` 레이블이 교차 예측 효과를 넘는 정보를 더한다고 서술한다.
 - M2both는 이 V2에서 골랐으므로 M2both가 포함된 비교는 낙관적이다.
 
-#### 15.2.1 연구 B 결과 (개발 자료, [표](results/aux_label_control.md))
+#### 15.2.1 연구 B 결과 (개발 자료, [표](../experiments/results/aux_label_control.md))
 
 **확인 절차**
 - 다시 만든 학습 행으로 저장된 `mta` 보조 모델을 다시 학습하면 정확히 같은 모델이 나왔다(반복 174회, 예측 차이 0). 학습 자료와 절차가 원래 실행과 같다는 뜻이다.
@@ -746,7 +747,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 ### 16.1 축 발굴 기록 (개발 자료 `train-17`·`19`)
 
 - 이 축은 설계 전에 두 파일을 보고 골랐다. 두 파일은 1차 실험에 이미 쓴 자료이고, 연구 C의 학습·선택·평가에는 쓰지 않는다.
-- 재현: `uv run python scripts/domain_probe.py data/raw/mac/train/train-17.parquet data/raw/mac/train/train-19.parquet runs/eda/domain_probe.json` ([scripts/domain_probe.py](../scripts/domain_probe.py))
+- 재현: `uv run python experiments/scripts/domain_probe.py data/raw/mac/train/train-17.parquet data/raw/mac/train/train-19.parquet runs/eda/domain_probe.json` ([experiments/scripts/domain_probe.py](../experiments/scripts/domain_probe.py))
 - **의미**: MAC 논문 §3.2.3은 "광고 시나리오 ID 같은 맥락 특성 3개"라고만 쓰고, 어느 컬럼인지는 밝히지 않는다. 그래서 결과 문장에서는 "트래픽 규모가 다른 익명 광고 맥락 그룹 `context_feat1`"이라고 쓰고, 시나리오라고 단정하지 않는다.
 
 | 항목 | `train-17` | `train-19` |
@@ -959,8 +960,8 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - 이렇게 나누면 실제 예측을 바꾸는 오류(위 8–10)와 수치 반올림을 서로 다른 검사에서 잡는다.
   - 기준을 넘으면 실행을 멈춘다 (§10.5).
 
-**실행기** (`8821a8e`, [cvr/study_c.py](../cvr/study_c.py), [cvr/study_c_worker.py](../cvr/study_c_worker.py), [cvr/domain_eval.py](../cvr/domain_eval.py))
-- 명령: `uv run python -m cvr.study_c configs/c_dev_train08_10.toml` (스모크: `configs/c_smoke.toml`).
+**실행기** (`8821a8e`, [experiments/study_c.py](../experiments/study_c.py), [experiments/study_c_worker.py](../experiments/study_c_worker.py), [experiments/domain_eval.py](../experiments/domain_eval.py))
+- 명령: `uv run python -m experiments.study_c experiments/configs/c_dev_train08_10.toml` (스모크: `experiments/configs/c_smoke.toml`).
 - 구조: GBDT 계열은 메인 프로세스(LightGBM)에서 학습한다. 신경망은 PyTorch만 쓰는 작업자 프로세스에서 두 작업으로 학습한다.
   - 탐색 작업: 변형 × 학습률마다 2에폭을 한 번, 1·2에폭 체크포인트를 평가하고 저장하지 않는다.
   - 최종 작업: 고른 조건으로 시드 3개를 학습하고, 저장한 뒤 다시 불러온다.
@@ -1039,7 +1040,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 4. GBDT에서 도메인을 입력으로 넣은 모델과 절편만 둔 모델의 점추정 차이는 −0.000018로 작았다. 다만 95% 구간 [−0.000145, +0.000105]에는 채택 기준 크기의 개선(−0.000120)도 들어 있다. 시드 짝 부호가 섞였고, 작은 그룹 하나를 빼면 22번 중 4번 방향이 바뀌었다. 따라서 V2에서 말할 수 있는 것은 **"G-shared가 선택됐고, 기준선 대비 추가 이득은 불확실하다"**까지다 (개정 6에서 정정). 그룹별 보정 (iii-d)는 두 GBDT 모두 큰 그룹의 손실을 (ii)보다 줄였다(구간이 0 미만).
 5. 학습 중 도메인을 절편으로만 쓴 G-int의 작은 그룹 도메인 내 AUC(0.7182)가 G-shared(0.7107)보다 높았다. 원인은 분석하지 않았다.
 
-**실제 자료 진단** (`scripts/study_c_diagnostics.py`):
+**실제 자료 진단** (`experiments/scripts/study_c_diagnostics.py`):
 - STAR 도메인 ID 차원: 시드 2026에서 592개 (도메인 × 차원) 중 1개가 개정 4 이전 규칙이었다면 도메인 자신의 통계를 썼을 것이다(분산 비율 0.01166, 기준 0.01). 시드 2027·2028은 0개였다(최대 0.00905, 0.00864). 이 실행은 개정 4 규칙으로 학습했으므로 이 모델들에는 영향이 없다.
   - 리뷰는 같은 저장 가중치에서 정규화 규칙만 옛 것으로 바꿔, 해당 도메인의 V1 1,024행에서 보정 전 확률이 최대 0.000582 달라짐을 확인했다. 다른 도메인 512행에서는 차이가 0이었다.
 - 보정 해법:
@@ -1050,12 +1051,12 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 
 ### 16.8.2 원시 행 서빙 검사와 지연 (개발 실행 모델, 테스트 전)
 
-**서빙 경로** ([cvr/serving_c.py](../cvr/serving_c.py)):
+**서빙 경로** ([experiments/serving_c.py](../experiments/serving_c.py)):
 - 순서: 원시 행(문자열·리스트) → 매핑 → 구매 이력 특성 → 기반 모델 → (iii-d) 그룹별 보정.
 - 보정 그룹 키는 `context_feat1`이다. 1차 서빙 코드는 `ad_feat1`로 보정하는데, 연구 C에서 그 키를 쓰면 다른 모델을 서빙하게 된다(리뷰: 스모크 G-shared에서 최대 0.021 차이).
 - 특성 계산은 1차 서빙 코드와 같은 함수(`row_features`)를 쓴다. 동작은 그대로 두고 함수로만 꺼냈다.
 
-**검사** ([scripts/latency_c.py](../scripts/latency_c.py)): 시간을 재기 전에 하드 검사를 한다.
+**검사** ([experiments/scripts/latency_c.py](../experiments/scripts/latency_c.py)): 시간을 재기 전에 하드 검사를 한다.
 - 표본: V2의 모든 도메인에서 최대 40행씩, 그리고 무작위 2,000행을 고른다(고정 시드). 이렇게 해서 3,490행으로 38개 도메인을 모두 덮었다.
 - 각 행을 **한 건씩** 서빙한 확률을 기준값과 비교한다. 기준값은 서빙 코드를 쓰지 않는다. 개발 실행이 **저장한** 그 행의 V2 기반 예측에, 저장된 (iii-d) 보정기를 평가 배열의 도메인 코드로 적용한 값이다.
 - 허용 오차: 범주형 코드는 정확히 일치, 수치 특성은 1e-6, 확률은 GBDT 1e-9·신경망 1e-6(`NN_SINGLE_VS_BATCH_TOL`)이다.
@@ -1100,9 +1101,9 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - N-star의 p99는 측정마다 0.31–1.08 ms로 흔들려, 이 환경에서는 1 ms 기준 근처의 판정이 불안정하다.
   - 서로 다른 클릭 100행을 처리할 때 N-int·N-shared·N-head는 1.3–1.5 ms, G-shared는 3.0–3.5 ms, N-star는 3.8–6.4 ms였다. 즉 STAR를 뺀 신경망 세 계열만 GBDT보다 빨랐다 (개정 8에서 범위를 좁힘). 단건에서는 GBDT가 더 빨랐다. 이 비교는 단일 스레드 Python 서빙 경로에서만 한 것이다.
 
-### 16.8.3 최종 평가 절차 ([cvr/final_eval_c.py](../cvr/final_eval_c.py))
+### 16.8.3 최종 평가 절차 ([experiments/final_eval_c.py](../experiments/final_eval_c.py))
 
-1. **고정** `uv run python -m cvr.final_eval_c freeze <run>`
+1. **고정** `uv run python -m experiments.final_eval_c freeze <run>`
    - 전제 조건:
      - 진단의 독립 재선택이 `selection.json`과 일치해야 한다.
      - `latency_c.json`에 여섯 계열의 시드 세 개 p99가 모두 있어야 한다.
@@ -1118,7 +1119,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
    - 두 파일을 합쳐 평가하고, 두 날짜에 모두 나오는 사용자는 한 군집으로 묶는다. 파일별 방향도 따로 보고한다.
    - 판정은 고정된 p99로 한다.
    - 결과 표에 계열마다 작은 그룹 손실·큰 그룹 손실·도메인 내 AUC·시드 최대 p99를 나란히 낸다.
-- 신경망 예측은 PyTorch 전용 프로세스([cvr/final_eval_c_nn.py](../cvr/final_eval_c_nn.py))에서 개발 실행과 같은 배치 크기로 한다.
+- 신경망 예측은 PyTorch 전용 프로세스([experiments/final_eval_c_nn.py](../experiments/final_eval_c_nn.py))에서 개발 실행과 같은 배치 크기로 한다.
 - 안전장치 테스트([tests/test_final_eval_c.py](../tests/test_final_eval_c.py)): 다시 고정하기, 고정 파일 변경, 예행 없는 테스트, 잘못된 파일, 두 번째 테스트, 커밋 안 된 변경을 각각 거부하는지 확인한다.
 - **스모크 확인** (스모크 실행의 사본): 고정과 V2 예행이 통과했고, 537개 값을 1e-9 안에서 재현했다. 개정 6–8 뒤에는 653개다.
 - **개발 실행의 고정과 정식 예행** (2026-11-18, 평가 코드 `74960f7`):
@@ -1128,10 +1129,10 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - V2 판정 예행(결과 아님): "확인되지 않음". 효과 크기 조건이 미달이었고, 지연 조건은 충족했다.
   - 이 뒤로 `cvr/*.py`는 바꾸지 않는다. 바꾸면 평가 코드 지문이 달라져 테스트가 시작되지 않는다.
 
-### 16.8.4 테스트 결과 (1회 실행, 2026-11-18, [표](results/c_final_test.md); V2 선택 [표](results/c_dev_v2_selection.md), 예행 [표](results/c_dryrun_v2.md), 지연 [표](results/c_latency.md))
+### 16.8.4 테스트 결과 (1회 실행, 2026-11-18, [표](../experiments/results/c_final_test.md); V2 선택 [표](../experiments/results/c_dev_v2_selection.md), 예행 [표](../experiments/results/c_dryrun_v2.md), 지연 [표](../experiments/results/c_latency.md))
 
 **절차**
-- `train-13`·`14`는 `scripts/fetch_mac.sh`로 받아 공식 크기와 SHA-256을 확인했다.
+- `train-13`·`14`는 `scripts/fetch_mac.py`로 받아 공식 크기와 SHA-256을 확인했다.
 - 테스트는 모든 사전 검사를 통과한 뒤 실행권을 얻었다. 상태는 `started` → `done`이고, 실행권은 한 번만 쓰였다.
 - 두 파일의 SHA-256은 고정 전에 기록한 공식 값(`2a0fc1c9…`, `db1e0768…`)과 같았다.
 - 평가 코드는 예행과 같은 지문(`cvr/*.py` 변경 없음)이다. 실행 시점의 커밋은 `e08e980`(예행 뒤 문서만 커밋)다.
@@ -1300,7 +1301,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 - "실제 버티컬이나 온라인 성과를 개선했다" (익명 맥락 그룹, 오프라인 비교다).
 - "전환 수(주문 수)" (단위는 마지막 클릭 귀속 기준의 양성 클릭 수다, §16 개정 7).
 
-### 17.8 결과 (재사용 자료 백테스트, 2026-11-18, 코드 `82f1960`, [표](results/study_d.md))
+### 17.8 결과 (재사용 자료 백테스트, 2026-11-18, 코드 `82f1960`, [표](../experiments/results/study_d.md))
 
 **자체 검사**: 저장 모델로 예측을 다시 계산해, 기존 실험에 기록된 **보정 후 집계 지표(그룹을 같은 비중으로 본 LogLoss) 30개**를 1e-9 이내로 재현했다.
 - 설정 C: (ii)와 (iii-d) λ = 1을 V2와 평가 파일에서, 두 계열 × 시드 3개로 24개.
@@ -1388,7 +1389,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   2. 실제 적용된 학습률, λ, 보조 목표를 실행 기록에 남긴다.
   3. (개정 1) `train-17`, `train-18`, `train-19` 학습이 끝난 시점마다 **추론용 체크포인트**(모델 가중치)를 저장한다. 이와 별도로 매 파일이 끝날 때 **재개 상태**(모델, 옵티마이저, 스케줄러, 단계 수, 난수 상태)를 하나의 파일에 덮어써 저장하고, 실행이 끝나면 지운다. 유료 실행이 중간에 멈추면 마지막으로 끝난 파일 다음부터 같은 결과로 이어 간다.
   4. 평가를 학습과 분리한다. 평가 명령은 체크포인트와 파일을 받아 행 순서대로 예측(행 위치, 주 목표와 보조 목표의 확률)을 저장한다. (개정 1) 예측은 체크포인트마다 별도 폴더에 저장하고, 이미 있는 예측은 덮어쓰지 않는다. 파일 인자는 공식 이름(`train-NN.parquet`, `test.parquet`)만 받는다. 전처리 캐시는 원본 parquet과 캐시 자신의 SHA-256을 함께 기록하고, 쓰기 전에 확인한다.
-  4-1. (개정 1) 공식 테스트는 고정 기록(체크포인트 SHA-256 전부와 공식 테스트 파일의 SHA-256)이 있어야 평가하고, 고정 기록 하나당 한 번만 평가한다(배타적 잠금; 실행권을 얻은 뒤의 실패는 기록된다). Q2의 시드 3개는 한 번의 평가에 함께 묶는다. 예행으로 V2 값을 재현하는 절차와 깨끗한 트리 확인은 연구 C처럼 고정 단계([cvr/final_eval_c.py](../cvr/final_eval_c.py)와 같은 방식)에서 연결하며, 공식 테스트 평가 전에 구현한다.
+  4-1. (개정 1) 공식 테스트는 고정 기록(체크포인트 SHA-256 전부와 공식 테스트 파일의 SHA-256)이 있어야 평가하고, 고정 기록 하나당 한 번만 평가한다(배타적 잠금; 실행권을 얻은 뒤의 실패는 기록된다). Q2의 시드 3개는 한 번의 평가에 함께 묶는다. 예행으로 V2 값을 재현하는 절차와 깨끗한 트리 확인은 연구 C처럼 고정 단계([experiments/final_eval_c.py](../experiments/final_eval_c.py)와 같은 방식)에서 연결하며, 공식 테스트 평가 전에 구현한다.
   5. AUC·GAUC는 공식 함수(`compute_auc_gauc`)로 계산하고, 이 프로젝트의 `cvr.metrics`로 다시 계산해 1e-9 안에서 같은지 확인한다.
 - **수정본 검증** (GPU 전, 로컬 CPU): 합성 MAC 자료([tests/synthetic_mac.py](../tests/synthetic_mac.py))에 공식 형식의 어휘 파일을 더해 확인한다.
   - 같은 시드에서 수정 전 코드(장치만 CPU)와 학습 손실의 궤적, 최종 파라미터가 같다.
@@ -1439,7 +1440,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - 그룹 수, 학습 클릭 비중, 1차의 1,083개 목록과의 겹침을 함께 보고한다. 원래 임계값(500/20)을 그대로 쓴 목록은 민감도 분석으로 보고한다.
 - **작은 맥락 그룹 (보조)**: `context_feat1`. 연구 C의 정의(비중 < 1%, 클릭 ≥ 3,000, 학습 10,499,793행)를 같은 방식으로 늘려 비중 < 1%, 클릭 ≥ 19,085로 둔다.
 - 목록은 학습 통계를 계산한 직후 해시와 함께 고정하고, 모든 후보를 같은 평가 행에서 비교한다.
-- **고정 기록** (2026-11-18, 모델 결과 전, [cvr/study_e.py](../cvr/study_e.py) `groups`, 학습 66,796,113행): G1 979개(학습 클릭 9.37%, 양성 65,937), C 1613개(80.2%), 민감도 목록(500/20) 1451개, 작은 맥락 그룹 22개(8.22%). `ad_feat1` 결측은 학습 클릭의 2.83%이다.
+- **고정 기록** (2026-11-18, 모델 결과 전, [cvr/groups.py](../cvr/groups.py) `groups`, 학습 66,796,113행): G1 979개(학습 클릭 9.37%, 양성 65,937), C 1613개(80.2%), 민감도 목록(500/20) 1451개, 작은 맥락 그룹 22개(8.22%). `ad_feat1` 결측은 학습 클릭의 2.83%이다.
   - 1차 실험의 G1을 같은 코드로 다시 뽑으면 1,083개가 그대로 나온다. 그중 838개는 새 G1, 137개는 C(학습 기간이 늘며 양성이 쌓임), 108개는 새 클릭 하한 아래다.
   - 목록 SHA-256 (정렬한 토큰을 줄바꿈으로 이어 계산): G1 `8aa5ab47541041af…`, C `27d4dff55e201dfd…`, 작은 맥락 `eea6c02d9f2265c6…`; 목록 파일 `group_lists.json` `edadb178e3275c8c…`.
 
@@ -1527,7 +1528,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - **비용·일정**: 추가 시드 4회와 같은 라운드에 GPU 4장으로 돌린다(약 2라운드, 추가 약 4~5달러, 예산 상한 60달러 안).
 
 - **개정 4** (2026-11-19 02:00, 탐색 진행 중·V1/V2 보정 결과와 공식 테스트를 보기 전): **AdaCalib은 사전 비교에서 뺀다.** §18.4는 AdaCalib의 구현 명세를 V1·V2 결과를 보기 전에 고정하기로 했지만, 자동 진행이 (ii)·(iii)·(iii-0)의 V2 결과를 먼저 계산하고 고정까지 한다. 명세를 그 뒤에 쓰면 사전 비교라고 할 수 없다. 그래서 Q2·Q4는 지금의 방법들로 완결한다. AdaCalib을 하게 되면 "V2 결과를 본 뒤 추가한 후속 비교"로 표시하고, 판정 없이 보고한다.
-- **포드 종료 조건** (기록): 종료 요청은 맥의 감시기가 보낸다. RunPod REST API v2에는 이미 떠 있는 포드에 서버 쪽 종료 시각을 거는 필드가 없고, 포드 안에서 스스로 종료하려면 API 키를 포드에 넣어야 해서 하지 않는다. 정상 진행이면 체크포인트 15개를 검증한 뒤 종료한다. 시간 상한에 닿으면 회수 여부와 관계없이 종료한다. 둘 다 맥이 켜져 있고 연결돼 있어야 한다. 포드가 종료된 뒤 맥 단계에서 멈추면 [scripts/e_local_finish.sh](../scripts/e_local_finish.sh)로 이어 간다. 이 스크립트는 로컬 체크포인트 15개를 다시 검증하고, 빠진 V1·V2 예측만 체크포인트·파일 단위로 만든다.
+- **포드 종료 조건** (기록): 종료 요청은 맥의 감시기가 보낸다. RunPod REST API v2에는 이미 떠 있는 포드에 서버 쪽 종료 시각을 거는 필드가 없고, 포드 안에서 스스로 종료하려면 API 키를 포드에 넣어야 해서 하지 않는다. 정상 진행이면 체크포인트 15개를 검증한 뒤 종료한다. 시간 상한에 닿으면 회수 여부와 관계없이 종료한다. 둘 다 맥이 켜져 있고 연결돼 있어야 한다. 포드가 종료된 뒤 맥 단계에서 멈추면 [scripts/calibrate_and_freeze.sh](../scripts/calibrate_and_freeze.sh)로 이어 간다. 이 스크립트는 로컬 체크포인트 15개를 다시 검증하고, 빠진 V1·V2 예측만 체크포인트·파일 단위로 만든다.
 
 - **V1·V2에서 본 것, 공식 테스트 전 기록** (2026-11-19 11:40; 선택 자료이며 결과가 아니다)
   - 탐색 45회는 모두 검증까지 끝났고 발산은 없었다. 고른 설정은 MoAE 학습률 0.004·λ 0.2(`train-18` 시점의 `train-19` GAUC 0.7647), BASE 학습률 0.003(0.7465)이다. MoAE의 0.004는 공개 예제가 의도했지만 파서 때문에 적용되지 않던 값이다.
@@ -1543,7 +1544,7 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - **미수행으로 명시**: 작은 맥락 그룹 22개(§18.3) 분석은 이번 공식 테스트에 넣지 않는다. 그룹 목록은 고정돼 있으므로 후속 분석으로 남긴다.
   - **보고 형식**: Q3는 G1 차이, C 차이, 이중 차분을 나란히 싣는다. V2에서는 (ii) 뒤 MoAE − BASE가 G1에서 +0.000233, C에서 +0.000876이었다. 즉 두 집단 모두 BASE가 나았고, G1에서 격차가 작았을 뿐이다. 이중 차분이 음수라는 것을 "MoAE가 희소 그룹을 개선했다"로 읽지 않는다.
 
-### 18.11 공식 테스트 결과 (각 질문 1회, 2026-11-19, 평가 코드 `0f3a36e`, [표](results/e_final_test.md))
+### 18.11 공식 테스트 결과 (각 질문 1회, 2026-11-19, 평가 코드 `0f3a36e`, [표](results/official_test.md))
 
 - **Q1 재현**: 시드 3개 평균으로 BASE AUC 0.8514(논문 0.8494, +0.0020, 근접)·GAUC 0.7419(0.7424, −0.0005, 재현), MoAE AUC 0.8674(0.8694, −0.0021, 근접)·GAUC 0.7604(0.7636, −0.0032, 근접). MoAE − BASE는 AUC +0.0159, GAUC +0.0186으로 논문(+0.0200, +0.0212)의 순서를 재현했고 크기는 약 80–88%다.
 - **Q2 (주 비교)**: MoAE (iii) − (ii)의 G1 macro LogLoss는 −0.000011 [−0.000019, −0.000004]이고 시드 3쌍 모두 음수다. 사전 기준으로 **개선 확인**이다. 크기는 공통 보정 뒤 손실 대비 약 0.018%다(1차 실험 −0.000100과의 비교는 학습량과 그룹이 달라 참고 수치). 이 이득은 `train-17`까지 학습한 모델에서 확인한 것이며, MoAE가 BASE를 앞서는 `train-19` 모델에서도 성립하는지는 알 수 없다. 이 분할에서는 `train-19`까지 학습하면 보정용 날짜가 남지 않는다. 같은 모델에서 공통 보정 (ii)는 원시 예측 대비 G1 macro LogLoss를 0.00147 낮췄다(G1 O/E 1.338 → 0.987). BASE에서도 (iii) − (ii)는 −0.000011이었다.
@@ -1555,14 +1556,14 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
 - **Q2 그룹별 서술 (테스트 뒤, 판정 없음)**: MoAE (iii) − (ii)를 그룹마다 보면 테스트에서 979개 중 548개가 개선, 431개가 악화됐다(V2 519 / 460). 순이득 0.0112는 그룹별 개선 합 0.0439의 약 4분의 1이다. 학습 양성 수 구간(0–39, 40–79, 80–122)별 이득 순서는 V2와 테스트에서 달라, 희소할수록 더 이득이라는 경향은 보이지 않았다. 979개 평균은 기록된 V2·테스트 값과 1e-12 안에서 같다([scripts/q2_per_group.py](../scripts/q2_per_group.py)).
 - 공식 테스트는 다시 쓰지 않는다(위 그룹별 서술은 이미 만든 예측과 고정 보정기를 다시 읽은 것이다). AdaCalib, 작은 맥락 그룹 22개, 민감도 목록 1,451개의 성능 분석은 하지 않았다(민감도 목록은 고정만 했다).
 
-### 18.12 서빙 (2026-11-19, [표](results/e_serving.md))
+### 18.12 서빙 (2026-11-19, [표](results/serving.md))
 
 - BASE와 MoAE(`train-17`, 시드 2026, 고정 보정기 (iii))를 맥 CPU 단일 스레드로 쟀다. 원시 행 → 공식 어휘·텐서 → 모델 → 보정의 결과가 저장된 평가 예측과 1.5e-7 안에서 같았다(V2 2,999행, 희소 그룹 1,195행 포함, 한 행씩).
 - 신규 입력: 처음 보는 `user_id`는 조회하지 않는다(모델이 쓰지 않는 열). 어휘에 없는 값은 PAD(학습 때의 결측값)로 바꾸고 센다. 학습 통계에 없는 그룹은 보정기의 미관측 그룹 −1을 쓴다(평가와 같은 동작). 세 경우 모두 테스트로 확인했다.
 - 공유 인코딩: 한 요청의 후보 100개가 같은 사용자 특성과 이력을 한 번만 인코딩하게 바꿨다. 결과는 후보별 인코딩과 정확히 같다(요청 320개). 같은 라운드 짝 비교로 요청 p50이 BASE 2.64 → 1.34ms, MoAE 3.35 → 2.13ms로 줄었고(10라운드 모두), 인코딩 단계는 약 3분의 1이 됐다. 단계별 시간은 직접 쟀다. 앞선 "1.3ms는 어휘 조회"는 전체에서 모델 시간을 뺀 추정이었다.
 - 클릭 한 건 p50은 BASE 0.42ms, MoAE 0.75ms다. p99는 같은 코드라도 측정 세션에 따라 2배 넘게 달랐다(후보별 경로 BASE 요청 p99 2.19 vs 4.63ms, 두 세션 모두 채택 기준 통과). 아래 지연 측정 v3으로 다시 잰다.
 
-- **결과 (v3, [표](results/e_serving.md))**: Linux 서버(AMD EPYC 4565P, CPU 하나에 고정)의 세 세션에서 모든 p50·p99가 1.16배 안에서 재현됐다. 후보 100개 요청은 공유 인코딩으로 BASE p50 1.89ms·p99 3.21ms, MoAE p50 3.98ms·p99 5.64ms다. 공유 인코딩은 세 세션 모두에서 p50(BASE ÷0.66, MoAE ÷0.80)과 p99(÷0.74, ÷0.82)를 줄였다. 맥 세 세션은 p50과 공유 인코딩 효과가 같은 방향으로 재현됐다. 하지만 다른 앱이 성능 코어를 약 3개분 쓰고 있어 p99가 세션 사이에서 2.6–4.6배 달랐다. 그래서 지연의 대표 수치는 서버 측정으로 한다.
+- **결과 (v3, [표](results/serving.md))**: Linux 서버(AMD EPYC 4565P, CPU 하나에 고정)의 세 세션에서 모든 p50·p99가 1.16배 안에서 재현됐다. 후보 100개 요청은 공유 인코딩으로 BASE p50 1.89ms·p99 3.21ms, MoAE p50 3.98ms·p99 5.64ms다. 공유 인코딩은 세 세션 모두에서 p50(BASE ÷0.66, MoAE ÷0.80)과 p99(÷0.74, ÷0.82)를 줄였다. 맥 세 세션은 p50과 공유 인코딩 효과가 같은 방향으로 재현됐다. 하지만 다른 앱이 성능 코어를 약 3개분 쓰고 있어 p99가 세션 사이에서 2.6–4.6배 달랐다. 그래서 지연의 대표 수치는 서버 측정으로 한다.
 
 #### 18.12.1 지연 측정 v3 (결과를 보기 전에 고정, 2026-11-19)
 
@@ -1599,3 +1600,13 @@ uv run python -m cvr.pipeline configs/dev_day17_v18_v19.toml  # 학습 17, V1 18
   - 남은 순서: 연구 C → 정리·README·공개.
 
 ---
+
+## 부록: 초기 초안(v0.2)에서 바뀐 점
+
+| 위치 | v0.2 | v0.3 | 이유 |
+|---|---|---|---|
+| 데이터 | Criteo Sponsored Search | **MAC (Alimama, 2026)** | 공식 다운로드 링크 소멸(404, DNS 없음), 미러·아카이브 없음. MAC은 광고 클릭 단위 CVR 데이터이고 카테고리·상점 계열 ID가 있음 |
+| §0 주장 | "소규모 카테고리" | "**익명 광고 특성별 희소 그룹**" (카테고리로 추정되는 특성) | 컬럼 의미가 공식적으로 매핑되지 않음 |
+| §2 레이블 | `Sale` | `y = (last > 0)`. 다른 귀속 레이블은 입력 금지 | 원본 값은 귀속 방식별 가중치이고 공식 코드는 `> 0`으로 이진화 |
+| §4 분할 | 30일 레이블 확정 조건 | 공식 학습/테스트 분할. 검증은 학습 파일 안에서. **오프라인 비교로만 설명** | 귀속 기간 비공개, 타임스탬프 없음, 사용자 활동량별 추출 |
+| §10 EDA | 전체 데이터 기준 | **학습 파일 일부로만** 진행. 테스트 파일은 최종 평가에만 사용 | 그룹·임계값·레이블 결정에 테스트를 쓰지 않기 위함 |

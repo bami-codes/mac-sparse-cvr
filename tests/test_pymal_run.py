@@ -1,4 +1,4 @@
-"""The study E runner (cvr/pymal_run.py) is the official MAC code with only the additions of docs/DESIGN.md §18.1.
+"""The runner (cvr/pymal_run.py) is the official MAC code with only the additions of docs/DESIGN.md §18.1.
 
 Synthetic MAC-shaped files in the official layout (<path>/data/{train,test,vocabs,cached}), CPU only:
 - the official run.py, executed top to bottom (tensors sent to the CPU instead of 'cuda', TensorBoard replaced by a
@@ -143,7 +143,7 @@ def test_the_runner_trains_exactly_like_the_official_run_py(tree, tmp_path, monk
     assert all(torch.equal(official_state[k], our_state[k]) for k in our_state)
 
 
-def test_the_checkpoint_after_file_k_equals_a_run_on_files_0_to_k(tree, tmp_path):
+def test_checkpoint_after_file_k_equals_short_run(tree, tmp_path):
     a = ours(tree, tmp_path / "all", TRAIN, ["train-01.parquet"])
     b = ours(tree, tmp_path / "first_two", TRAIN[:2], ["train-01.parquet"])
     sa, sb = torch.load(a / "model_after_train-01.pt"), torch.load(b / "model_after_train-01.pt")
@@ -153,7 +153,7 @@ def test_the_checkpoint_after_file_k_equals_a_run_on_files_0_to_k(tree, tmp_path
     assert ra["official_test_evaluated"] is False
 
 
-def test_predictions_keep_the_row_order_and_match_a_direct_forward_pass(tree, tmp_path):
+def test_predictions_keep_row_order(tree, tmp_path):
     from sklearn.metrics import roc_auc_score
 
     from cvr.metrics import gauc
@@ -209,7 +209,7 @@ def predict_args(mac: Path, out: Path, ckpts: list[Path], *rest: str) -> argpars
     )
 
 
-def test_the_official_test_is_scored_once_per_manifest_with_every_checkpoint_listed(tree, tmp_path):
+def test_official_test_runs_once_per_manifest(tree, tmp_path):
     _, mac = tree
     run = ours(tree, tmp_path / "run", TRAIN[:2], ["train-00.parquet", "train-01.parquet"])
     c0, c1 = run / "model_after_train-00.pt", run / "model_after_train-01.pt"
@@ -262,7 +262,7 @@ def test_predictions_of_two_checkpoints_never_replace_each_other(tree, tmp_path)
         R.predict(predict_args(mac, out, [c1], "train-02.parquet"))
 
 
-def test_a_stopped_run_resumed_from_its_last_file_equals_the_uninterrupted_run(tree, tmp_path):
+def test_resumed_run_equals_uninterrupted_run(tree, tmp_path):
     _, mac = tree
     full = ours(tree, tmp_path / "full", TRAIN, ["train-01.parquet", "train-02.parquet"])
     base = ["train", "--mac", str(mac), "--cache", str(mac / "cached"), "--device", "cpu", "--num_workers", "0"]
@@ -421,7 +421,7 @@ def test_weight_one_is_bit_identical_to_the_unweighted_run(tree, tmp_path):
         assert np.array_equal(np.load(a / f"loss_{Path(n).stem}.npy"), np.load(b / f"loss_{Path(n).stem}.npy"))
 
 
-def test_weight_two_is_applied_per_click_and_normalized_to_mean_one(tree, tmp_path):
+def test_click_weight_normalized_to_mean_one(tree, tmp_path):
     _, mac = tree
     groups = g1_file(tree, tmp_path)
     a = ours(tree, tmp_path / "plain", TRAIN, [TRAIN[-1]])
@@ -441,7 +441,7 @@ def test_weight_two_is_applied_per_click_and_normalized_to_mean_one(tree, tmp_pa
     )
 
 
-def test_the_weighted_main_loss_weights_each_click_before_the_mean():
+def test_weighted_loss_weights_each_click():
     D, _ = R.official()
     probs = {"last": torch.tensor([[0.9, 0.1], [0.2, 0.8], [0.7, 0.3], [0.4, 0.6]])}
     labels = {"last": torch.tensor([0, 1, 1, 0])}
@@ -482,7 +482,7 @@ def test_a_run_recorded_before_amendment_3_still_resumes(tree, tmp_path):
     assert (tmp_path / "old" / "run.json").exists()
 
 
-def test_the_g1_list_must_be_the_fixed_one_at_start_and_on_resume(tree, tmp_path):
+def test_g1_list_checked_on_start_and_resume(tree, tmp_path):
     _, mac = tree
     groups = g1_file(tree, tmp_path)
     with pytest.raises(ValueError, match="not the fixed"):
@@ -500,15 +500,14 @@ def test_the_g1_list_must_be_the_fixed_one_at_start_and_on_resume(tree, tmp_path
     assert json.loads((out / "run.json").read_text())["group_weighting"]["tokens_sha256"] == fixed
 
 
-# ------------------------------------------------------------------ study E serving (cvr/serving_e.py)
+# ------------------------------------------------------------------ serving (cvr/serving.py)
 def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, monkeypatch):
     import pickle
 
-    from cvr import serving_e as S
-    from cvr import study_e as E
-    from cvr import study_e_eval as Q
-    from cvr.calibration import GlobalPlatt, fit_group_shrunk_exact
-    from cvr.domain_models import save_domain_calibrators
+    from cvr import evaluation as Q
+    from cvr import groups as E
+    from cvr import serving as S
+    from cvr.calibration import GlobalPlatt, fit_group_shrunk_exact, save_group_calibrators
 
     _, mac = tree
     run = ours(tree, tmp_path / "run", TRAIN[:1], ["train-00.parquet"])
@@ -539,10 +538,10 @@ def test_serving_rows_give_the_official_tensors_and_predictions(tree, tmp_path, 
     g = np.array([codes.get(t, -1) for t in table.column("ad_feat1").to_pylist()])
     glob = GlobalPlatt.fit(p_batch, y)
     gs, _ = fit_group_shrunk_exact(p_batch, y, g, glob, 10.0)
-    save_domain_calibrators(glob, gs, Q.calibrator_path(rid, "iii", "main"))
+    save_group_calibrators(glob, gs, Q.calibrator_path(rid, "iii", "main"))
 
-    server = S.ServerE(rid, ckpt, vocabs, codes, threads=1)
-    rows = table.select(S.ServerE.columns()).to_pylist()
+    server = S.Server(rid, ckpt, vocabs, codes, threads=1)
+    rows = table.select(S.Server.columns()).to_pylist()
     idx = [0, 7, 99, 500, len(rows) - 1]
     user, ad, mm, seq = server.tensors([rows[i] for i in idx])
     assert torch.equal(user[:, 1:], ds.static_user[idx, 1:]) and torch.equal(ad, ds.static_ad[idx])  # official mapping

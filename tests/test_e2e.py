@@ -169,7 +169,7 @@ def sha256(path: Path) -> str:
 
 
 def test_study_c_end_to_end(ws: Path) -> None:
-    run(ws, "-m", "cvr.study_c", "configs/c_e2e.toml")
+    run(ws, "-m", "experiments.study_c", "configs/c_e2e.toml")
     r = only_run(ws, "c_e2e")
     res = json.loads((ws / r / "results.json").read_text())
     sel = res["selection"]
@@ -181,19 +181,19 @@ def test_study_c_end_to_end(ws: Path) -> None:
         "N-int",
     )
 
-    run(ws, str(REPO / "scripts" / "study_c_diagnostics.py"), "calib", str(r))
-    run(ws, str(REPO / "scripts" / "study_c_diagnostics.py"), "star", str(r))
+    run(ws, str(REPO / "experiments" / "scripts" / "study_c_diagnostics.py"), "calib", str(r))
+    run(ws, str(REPO / "experiments" / "scripts" / "study_c_diagnostics.py"), "star", str(r))
     diag = json.loads((ws / r / "diagnostics_calib.json").read_text())["calib"]
     assert diag["candidate_recomputed_exact"] == sel["candidate"]
 
     if sys.platform != "darwin":  # the acceptance rule uses macOS `ps` (scripts/latency_c.environment)
         pytest.skip("latency protocol v2 is defined on macOS; freeze needs an accepted measurement")
-    run(ws, str(REPO / "scripts" / "latency_c.py"), str(r))
+    run(ws, str(REPO / "experiments" / "scripts" / "latency_c.py"), str(r))
     lat = json.loads((ws / r / "latency_c.json").read_text())["families"]
     for f in lat.values():  # the serving check runs before any timing and is a hard check
         assert all(s["consistency"]["codes_mismatch"] == 0 for s in f["seeds"].values())
     if not all(f["accepted"] for f in lat.values()):
-        p = run(ws, "-m", "cvr.final_eval_c", "freeze", str(r), ok=False)
+        p = run(ws, "-m", "experiments.final_eval_c", "freeze", str(r), ok=False)
         assert "acceptance rule" in p.stderr or "attempts" in p.stderr
         pytest.skip("this machine was too busy for an accepted latency measurement; freeze refused it as it should")
 
@@ -206,13 +206,13 @@ def test_study_c_end_to_end(ws: Path) -> None:
             }
         )
     )
-    run(ws, "-m", "cvr.final_eval_c", "freeze", str(r))
-    assert "never re-frozen" in run(ws, "-m", "cvr.final_eval_c", "freeze", str(r), ok=False).stderr
-    run(ws, "-m", "cvr.final_eval_c", "dryrun", str(r))
+    run(ws, "-m", "experiments.final_eval_c", "freeze", str(r))
+    assert "never re-frozen" in run(ws, "-m", "experiments.final_eval_c", "freeze", str(r), ok=False).stderr
+    run(ws, "-m", "experiments.final_eval_c", "dryrun", str(r))
     dry = json.loads((ws / r / "final" / "dryrun" / "results.json").read_text())
     assert dry["dryrun_passed"] and dry["dryrun_values_reproduced"] > 0
 
-    test = ["-m", "cvr.final_eval_c", "test", str(r)]
+    test = ["-m", "experiments.final_eval_c", "test", str(r)]
     holdout = [str(DATA / n) for n in files]
     lock = ws / r / "final" / "test.lock"
     assert "not inside a git repository" in run(ws, *test, *holdout, ok=False, env_extra=NO_GIT).stderr
@@ -238,22 +238,22 @@ def test_study_c_end_to_end(ws: Path) -> None:
 
     calib = next((ws / r / "models").glob("calib_G-int_s2026*"))
     calib.write_bytes(calib.read_bytes() + b" ")
-    assert "frozen files changed" in run(ws, "-m", "cvr.final_eval_c", "dryrun", str(r), ok=False).stderr
+    assert "frozen files changed" in run(ws, "-m", "experiments.final_eval_c", "dryrun", str(r), ok=False).stderr
 
 
 def test_first_study_end_to_end(ws: Path) -> None:
-    run(ws, "-m", "cvr.pipeline", "configs/first_e2e.toml")
+    run(ws, "-m", "experiments.pipeline", "configs/first_e2e.toml")
     r = only_run(ws, "first_e2e")
     res = json.loads((ws / r / "results.json").read_text())
     assert res["meta"]["rows"]["train"] == 60_000
     assert any(k.startswith("M3_attn_s2026|") for k in res["v2_rows"])
-    run(ws, "-m", "cvr.final_eval", "freeze", str(r))
+    run(ws, "-m", "experiments.final_eval", "freeze", str(r))
     frozen = json.loads((ws / r / "freeze.json").read_text())
     assert frozen["groups"]["G1_groups"] > 0
-    run(ws, "-m", "cvr.final_eval", "dryrun", str(r))
+    run(ws, "-m", "experiments.final_eval", "dryrun", str(r))
     dry = json.loads((ws / r / "final" / "dryrun" / "results.json").read_text())
     assert dry["dryrun_metrics_reproduced"] > 0
-    first_test = ["-m", "cvr.final_eval", "test", str(r), str(DATA / "train-13.parquet")]
+    first_test = ["-m", "experiments.final_eval", "test", str(r), str(DATA / "train-13.parquet")]
     assert "not inside a git repository" in run(ws, *first_test, ok=False, env_extra=NO_GIT).stderr
     run(ws, *first_test)
     out = json.loads((ws / r / "final" / "test" / "results.json").read_text())

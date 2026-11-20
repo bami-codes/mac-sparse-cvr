@@ -8,11 +8,11 @@ in validation becomes UNKNOWN (a real purchase, kept as a valid step) while PAD 
 import polars as pl
 import torch
 
-from cvr import vocab as V
-from cvr.features import RAW_COLUMNS, featurize, user_columns
-from cvr.m3data import ID_COLS, OTHER_CATS, count_ids, encode_m3
-from cvr.nn import M3Net
 from cvr.schema import MISSING, PAD, UNKNOWN
+from experiments import vocab as V
+from experiments.features import RAW_COLUMNS, featurize, user_columns
+from experiments.m3data import ID_COLS, OTHER_CATS, count_ids, encode_m3
+from experiments.nn import M3Net
 
 L = 20
 
@@ -49,7 +49,7 @@ VALID = [  # "i9" / "c9" / "s9" appear only here
 ]
 
 
-def test_id_vocabulary_uses_training_rows_only_and_keeps_unknown_apart_from_pad():
+def test_id_vocabulary_from_training_rows_only():
     train, valid = make_raw(TRAIN), make_raw(VALID)
     id_vocab = V.build_vocab(count_ids(train), min_count=1)
     assert "i9" not in id_vocab["ad_feat0"]["value"].to_list()

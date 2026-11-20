@@ -3,7 +3,7 @@
 import numpy as np
 import polars as pl
 
-from cvr.stacking import fit_stacking, user_fold
+from experiments.stacking import fit_stacking, user_fold
 
 
 def _frame():
@@ -50,8 +50,8 @@ def test_control_input_keeps_its_own_column_name(tmp_path):
     # docs/DESIGN.md §15.2: the same-label control must not be written into the mta column
     import json
 
-    from cvr.artifacts import load_stacking
-    from cvr.stacking import StackingModels
+    from experiments.artifacts import load_stacking
+    from experiments.stacking import StackingModels
 
     df = _frame()
     out = StackingModels(_FakeAux(), {}, {}, "aux_last").transform(df)
@@ -64,7 +64,7 @@ def test_control_input_keeps_its_own_column_name(tmp_path):
 
 def test_group_rate_fit_does_not_depend_on_row_order():
     # the fitted prior strength moved in its 10th digit between two runs on the same rows (group_by order)
-    from cvr.models import SmoothedRate
+    from experiments.models import SmoothedRate
 
     rng = np.random.default_rng(0)
     df = pl.DataFrame(

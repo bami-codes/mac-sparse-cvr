@@ -5,9 +5,9 @@ import polars as pl
 import pytest
 from sklearn.metrics import roc_auc_score
 
-from cvr import domain_eval as D
 from cvr import metrics as M
 from cvr.schema import DOMAIN_KEY, UNKNOWN
+from experiments import domain_eval as D
 
 
 def _stats():
@@ -238,7 +238,7 @@ def test_development_config_guard():
         D.check_development_sources(smoke | {"smoke_v1_buckets": [50, 80]})
 
 
-def test_verdict_uses_the_preregistered_seeds_and_finite_latencies():
+def test_verdict_uses_fixed_seeds():
     one = _boot(-0.0002, -0.00005, [-1e-4], 5e-5, seeds=(2026,))
     with pytest.raises(ValueError, match="seed pairs"):  # a single seed is not enough
         D.verdict(one, l_int=0.05, p99_by_seed={2026: 0.2})

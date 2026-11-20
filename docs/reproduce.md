@@ -8,7 +8,7 @@
 - 연구 E의 학습과 서빙 지연을 뺀 결과는 모두 Apple M4(10코어) 한 대에서 만들었습니다. 개발 실행 하나의 최대 메모리는 9–15GB였습니다(1차 실험 14.55GB). 메모리가 16GB 이하이면 개발 실행이 돌지 않을 수 있습니다.
 - 연구 E의 학습(체크포인트 15개)은 RunPod의 Linux 포드(A40 4장)에서 했고, 예측과 보정과 평가는 맥 CPU에서 했습니다. 장치 차이는 V2에서 따로 확인했습니다(§5 연구 E). 서빙 지연은 Linux CPU 서버(AMD EPYC 4565P)에서 쟀습니다.
 - 원자료는 파일 하나가 2.6–3.3GB이고, 학습 파일 20개와 공식 테스트를 모두 받으면 약 58GB입니다.
-- 이 환경에서는 PyTorch와 LightGBM을 한 프로세스에 함께 불러오면 OpenMP가 충돌합니다. 그래서 신경망은 모두 별도 작업 프로세스(`cvr/m3_worker.py`, `cvr/study_c_worker.py`, `cvr/final_eval_m3.py`, `cvr/final_eval_c_nn.py`)에서 돌고, 실행기가 이를 자동으로 띄웁니다. 평가 쪽 작업 프로세스는 학습 때와 같은 스레드 수로 예측합니다. x86에서는 스레드 수가 달라지면 float32 반올림이 달라지기 때문입니다.
+- 이 환경에서는 PyTorch와 LightGBM을 한 프로세스에 함께 불러오면 OpenMP가 충돌합니다. 그래서 신경망은 모두 별도 작업 프로세스(`experiments/m3_worker.py`, `experiments/study_c_worker.py`, `experiments/final_eval_m3.py`, `experiments/final_eval_c_nn.py`)에서 돌고, 실행기가 이를 자동으로 띄웁니다. 평가 쪽 작업 프로세스는 학습 때와 같은 스레드 수로 예측합니다. x86에서는 스레드 수가 달라지면 float32 반올림이 달라지기 때문입니다.
 
 ## 2. 원자료 없이 확인하기
 
@@ -36,7 +36,7 @@ python3 scripts/fetch_mac.py train/train-15.parquet test/test.parquet vocabs ...
 ```
 
 - Hugging Face API가 공개한 값과 받은 파일을 대조합니다. LFS 파일(parquet, 큰 어휘 파일)은 크기와 SHA-256을, 일반 git 파일(어휘 파일 17개 중 13개)은 크기와 git blob SHA-1을 봅니다. 맞으면 `<파일>.sha256` 사이드카를 쓰고, 실행 결과(`results.json`)에 이 해시가 기록됩니다.
-- 표준 라이브러리만 쓰므로 macOS와 Linux(GPU 포드)에서 환경을 설치하기 전에 돌릴 수 있습니다. 예전 셸 스크립트 `scripts/fetch_mac.sh`는 이 스크립트를 부르는 래퍼로 남겼습니다.
+- 표준 라이브러리만 쓰므로 macOS와 Linux(GPU 포드)에서 환경을 설치하기 전에 돌릴 수 있습니다.
 - 데이터 카드 `alimamaTech/MAC`의 라이선스는 Apache-2.0입니다(DESIGN §1). 원자료와 파생 자료는 크기 때문에 저장소에 올리지 않습니다.
 
 ## 4. 파일별 쓰임
@@ -59,83 +59,85 @@ MAC의 학습 파일 20개와 공식 테스트는 모두 어느 연구에서든 
 
 ## 5. 연구별 명령
 
+최종 결과(연구 E)의 코드는 `cvr/`와 `scripts/`에, 앞선 실험(1차 실험부터 연구 D까지)의 코드와 설정은 `experiments/`에 있습니다([experiments/README.md](../experiments/README.md)).
+
 `<run>`은 개발 실행이 만든 `runs/<이름>/<UTC 시각>` 폴더입니다. 아래에 적은 실행 폴더는 이 저장소의 결과를 만든 폴더입니다(`runs/`는 git에 넣지 않습니다).
 
 ### 고정 → 예행 → 테스트 (1차 실험, 2차 실험, 연구 C 공통)
 
 1. **고정** (`freeze`): 모델, 보정기, 매핑, 선택 파일의 SHA-256과 주 비교, 판정 기준을 `freeze.json`에 씁니다. 이미 있으면 다시 고정하지 않습니다.
 2. **예행** (`dryrun`): 테스트와 같은 코드로 V2를 평가합니다. 개발 실행이 기록한 V2 지표와 부트스트랩 값을 1e-9 안에서 재현하지 못하면 멈춥니다.
-3. **테스트** (`test`): 고정한 해시가 하나라도 다르거나, 작업 트리에 커밋하지 않은 변경이 있거나, 이미 실행한 적이 있으면 거부합니다. 연구 C는 여기에 더해 예행이 같은 `freeze.json`과 같은 평가 코드(cvr/*.py의 지문)로 통과했는지, 홀드아웃 파일의 이름과 크기와 공식 SHA-256이 맞는지 확인합니다. 그다음 잠금 파일로 실행권을 한 번만 얻습니다. 실행권을 얻은 뒤의 실패는 기록되고, 실행권은 쓴 것으로 봅니다.
+3. **테스트** (`test`): 고정한 해시가 하나라도 다르거나, 작업 트리에 커밋하지 않은 변경이 있거나, 이미 실행한 적이 있으면 거부합니다. 연구 C는 여기에 더해 예행이 같은 `freeze.json`과 같은 평가 코드(`experiments/*.py`와 `cvr/*.py`의 지문)로 통과했는지, 홀드아웃 파일의 이름과 크기와 공식 SHA-256이 맞는지 확인합니다. 그다음 잠금 파일로 실행권을 한 번만 얻습니다. 실행권을 얻은 뒤의 실패는 기록되고, 실행권은 쓴 것으로 봅니다.
 
 ### 1차 실험: 희소 광고 그룹(`ad_feat1`)의 보정 (DESIGN §10)
 
 실행 폴더는 `runs/dev_train15_17_m3/20261117T110713Z`이고, 개발 실행에 3,564초가 걸렸습니다.
 
 ```bash
-uv run python -m cvr.pipeline configs/dev_train15_17_m3.toml
-uv run python -m cvr.final_eval freeze <run>
-uv run python -m cvr.final_eval dryrun <run>
-uv run python -m cvr.final_eval test   <run> data/raw/mac/test/test.parquet
-PYTHONPATH=. uv run python scripts/latency.py <run> data/raw/mac/train/train-19.parquet
+uv run python -m experiments.pipeline experiments/configs/dev_train15_17_m3.toml
+uv run python -m experiments.final_eval freeze <run>
+uv run python -m experiments.final_eval dryrun <run>
+uv run python -m experiments.final_eval test   <run> data/raw/mac/test/test.parquet
+PYTHONPATH=. uv run python experiments/scripts/latency.py <run> data/raw/mac/train/train-19.parquet
 ```
 
-결과: [V2 선택](results/dev_v2_selection.md), [테스트](results/final_test.md), [지연](results/latency.md)
+결과: [V2 선택](../experiments/results/dev_v2_selection.md), [테스트](../experiments/results/final_test.md), [지연](../experiments/results/latency.md)
 
 ### 2차 실험: 모델 쪽에서 희소 그룹 개선하기 (DESIGN §13)
 
 실행 폴더는 `runs/p2_train00_02/20261117T131443Z`이고, 개발 실행에 2,793초가 걸렸습니다.
 
 ```bash
-uv run python -m cvr.pipeline configs/p2_train00_02.toml
-uv run python -m cvr.final_eval freeze <run>
-uv run python -m cvr.final_eval dryrun <run>
-uv run python -m cvr.final_eval test   <run> data/raw/mac/train/train-12.parquet
-PYTHONPATH=. uv run python scripts/latency.py <run> data/raw/mac/train/train-04.parquet              # 선택한 보정
-PYTHONPATH=. uv run python scripts/latency.py <run> data/raw/mac/train/train-04.parquet --method ii  # (ii) 보정
+uv run python -m experiments.pipeline experiments/configs/p2_train00_02.toml
+uv run python -m experiments.final_eval freeze <run>
+uv run python -m experiments.final_eval dryrun <run>
+uv run python -m experiments.final_eval test   <run> data/raw/mac/train/train-12.parquet
+PYTHONPATH=. uv run python experiments/scripts/latency.py <run> data/raw/mac/train/train-04.parquet              # 선택한 보정
+PYTHONPATH=. uv run python experiments/scripts/latency.py <run> data/raw/mac/train/train-04.parquet --method ii  # (ii) 보정
 ```
 
-결과: [V2 선택](results/p2_dev_v2_selection.md), [테스트](results/p2_final_test.md), [지연](results/p2_latency.md)
+결과: [V2 선택](../experiments/results/p2_dev_v2_selection.md), [테스트](../experiments/results/p2_final_test.md), [지연](../experiments/results/p2_latency.md)
 
 ### 연구 A, B: 작동 조건 (DESIGN §15, 개발 자료만)
 
 ```bash
-PYTHONPATH=. uv run python scripts/calibration_data_study.py runs/dev_train15_17_m3/20261117T110713Z runs/calib_study \
-    --md docs/results/calibration_data_study.md
-PYTHONPATH=. uv run python scripts/aux_label_control.py runs/p2_train00_02/20261117T131443Z runs/aux_control \
-    --md docs/results/aux_label_control.md
+PYTHONPATH=. uv run python experiments/scripts/calibration_data_study.py runs/dev_train15_17_m3/20261117T110713Z runs/calib_study \
+    --md experiments/results/calibration_data_study.md
+PYTHONPATH=. uv run python experiments/scripts/aux_label_control.py runs/p2_train00_02/20261117T131443Z runs/aux_control \
+    --md experiments/results/aux_label_control.md
 ```
 
-결과: [연구 A](results/calibration_data_study.md), [연구 B](results/aux_label_control.md)
+결과: [연구 A](../experiments/results/calibration_data_study.md), [연구 B](../experiments/results/aux_label_control.md)
 
 ### 연구 C: 작은 광고 맥락 그룹과 도메인 구조 (DESIGN §16)
 
 실행 폴더는 `runs/c_dev_train08_10/20261118T061335Z`이고, 개발 실행에 3,295초, 최대 메모리 9.33GB가 들었습니다.
 
 ```bash
-uv run python -m cvr.study_c configs/c_dev_train08_10.toml
-PYTHONPATH=. uv run python scripts/study_c_diagnostics.py calib <run>   # 독립 재선택 (고정에 필요)
-PYTHONPATH=. uv run python scripts/study_c_diagnostics.py star  <run>
-PYTHONPATH=. uv run python scripts/latency_c.py <run>                  # 서빙 검사 + 지연 (고정에 필요)
-uv run python -m cvr.final_eval_c expect <run>                         # 홀드아웃의 공식 크기와 SHA-256 (메타데이터만)
-uv run python -m cvr.final_eval_c freeze <run>
-uv run python -m cvr.final_eval_c dryrun <run>
-uv run python -m cvr.final_eval_c test   <run> data/raw/mac/train/train-13.parquet data/raw/mac/train/train-14.parquet
+uv run python -m experiments.study_c experiments/configs/c_dev_train08_10.toml
+PYTHONPATH=. uv run python experiments/scripts/study_c_diagnostics.py calib <run>   # 독립 재선택 (고정에 필요)
+PYTHONPATH=. uv run python experiments/scripts/study_c_diagnostics.py star  <run>
+PYTHONPATH=. uv run python experiments/scripts/latency_c.py <run>                  # 서빙 검사 + 지연 (고정에 필요)
+uv run python -m experiments.final_eval_c expect <run>                         # 홀드아웃의 공식 크기와 SHA-256 (메타데이터만)
+uv run python -m experiments.final_eval_c freeze <run>
+uv run python -m experiments.final_eval_c dryrun <run>
+uv run python -m experiments.final_eval_c test   <run> data/raw/mac/train/train-13.parquet data/raw/mac/train/train-14.parquet
 ```
 
 - 지연 측정은 다른 작업이 없을 때 돌립니다. 채택 규칙(§2)을 맞추지 못하면 다시 재되, 계열마다 모두 3번까지입니다. 고정은 3번을 넘긴 기록과 채택되지 않은 기록을 거부합니다.
 
-결과: [V2 선택](results/c_dev_v2_selection.md), [지연](results/c_latency.md), [예행](results/c_dryrun_v2.md), [테스트](results/c_final_test.md)
+결과: [V2 선택](../experiments/results/c_dev_v2_selection.md), [지연](../experiments/results/c_latency.md), [예행](../experiments/results/c_dryrun_v2.md), [테스트](../experiments/results/c_final_test.md)
 
 ### 연구 D: 그룹 절편만 축소하는 보정 (DESIGN §17, 재사용 자료 백테스트)
 
 ```bash
-PYTHONPATH=. uv run python scripts/study_d.py runs/c_dev_train08_10/20261118T061335Z runs/dev_train15_17_m3/20261117T110713Z runs/study_d
-PYTHONPATH=. uv run python scripts/study_d.py --render runs/study_d/<UTC 시각>   # 저장 결과에서 표만 다시 만들기
+PYTHONPATH=. uv run python experiments/scripts/study_d.py runs/c_dev_train08_10/20261118T061335Z runs/dev_train15_17_m3/20261117T110713Z runs/study_d
+PYTHONPATH=. uv run python experiments/scripts/study_d.py --render runs/study_d/<UTC 시각>   # 저장 결과에서 표만 다시 만들기
 ```
 
 - 실행 전에 연구 C와 1차 실험에 기록된 보정 후 지표 30개를 다시 계산해 맞는지 확인합니다.
 
-결과: [표](results/study_d.md)
+결과: [표](../experiments/results/study_d.md)
 
 ### 연구 E: 공식 PyMAL 모델(BASE, MoAE)의 재현과 희소 그룹 보정 (DESIGN §18)
 
@@ -144,18 +146,18 @@ PYTHONPATH=. uv run python scripts/study_d.py --render runs/study_d/<UTC 시각>
 **학습** (CUDA GPU가 있는 Linux 기계). 결과의 모델은 A40 4장에서 학습했고, 자료 받기와 전처리부터 체크포인트를 옮기기까지 약 12시간 걸렸습니다. 공식 전처리는 파일 하나에 메모리가 약 23GB 듭니다.
 
 ```bash
-uv run python -m cvr.study_e groups                                    # 그룹 목록 (train-00~17 통계만, 모델 결과 전에 고정)
+uv run python -m cvr.groups groups                                    # 그룹 목록 (train-00~17 통계만, 모델 결과 전에 고정)
 bash scripts/pod_setup.sh                                              # 환경, 자료 21개, 공식 전처리, 탐색 격자 목록
 uv run python scripts/pod_queue.py run runs/e_runs/jobs_grid.json --gpus 4   # 탐색 격자 45개를 GPU마다 나눠 실행
 uv run python scripts/pod_queue.py summary runs/e_runs/jobs_grid.json > runs/e_runs/summary_grid.jsonl
-uv run python -m cvr.final_eval_e choose runs/e_runs/summary_grid.jsonl     # train-18 체크포인트의 train-19 GAUC로 설정 선택
+uv run python -m cvr.final_test choose runs/e_runs/summary_grid.jsonl     # train-18 체크포인트의 train-19 GAUC로 설정 선택
 bash scripts/pod_after_grid.sh <MoAE lr> <MoAE λ> <BASE lr>            # 고른 설정의 시드 2개와 가중 학습 3개
 ```
 
 **평가** (CPU). 학습한 기계에서 이어서 해도 되고, 실행 폴더(`runs/e_runs/`)를 옮겨 다른 기계에서 해도 됩니다. 다른 기계라면 먼저 `uv run python -m cvr.pymal_run preprocess train-18.parquet train-19.parquet test.parquet`로 공식 전처리 캐시를 만듭니다.
 
 ```bash
-bash scripts/e_local_finish.sh     # 체크포인트 15개 해시 확인, V1/V2 예측, 보정, 고정, 예행 (결과가 있는 단계는 건너뜀)
+bash scripts/calibrate_and_freeze.sh     # 체크포인트 15개 해시 확인, V1/V2 예측, 보정, 고정, 예행 (결과가 있는 단계는 건너뜀)
 # 공식 테스트 (질문마다 한 번만, 깨끗한 트리와 같은 평가 코드의 예행이 필요)
 #   --official_test가 고정 파일의 체크포인트 집합과 테스트 SHA-256을 확인하고 실행권을 한 번 잡는다.
 #   Q1은 train-19 체크포인트 6개, Q2는 train-17 체크포인트 9개.
@@ -165,29 +167,29 @@ uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/e
 uv run python -m cvr.pymal_run predict --device cpu --num_workers 0 --out runs/e_runs/research \
     --official_test runs/e_study/frozen/freeze_q2.json \
     --ckpt runs/e_runs/<실행 id>/model_after_train-17.pt ...  test.parquet   # --ckpt를 9번
-uv run python -m cvr.final_eval_e test q1    # 예측 완료 기록, 파일과 체크포인트와 원본 해시, 행 수, 확률 범위를 확인한 뒤 평가
-uv run python -m cvr.final_eval_e test q2
+uv run python -m cvr.final_test test q1    # 예측 완료 기록, 파일과 체크포인트와 원본 해시, 행 수, 확률 범위를 확인한 뒤 평가
+uv run python -m cvr.final_test test q2
 PYTHONPATH=. uv run python scripts/q2_per_group.py               # 테스트 뒤 서술 (판정 없음)
 ```
 
 - 학습 실행 기록은 `runs/e_runs/<실행 id>/run.json`에 있습니다. 인자, 학습 파일의 SHA-256, 손실, 체크포인트 SHA-256이 들어 있습니다. 예측 파일은 체크포인트 해시로 찾기 때문에(`<체크포인트>_<SHA-256 앞 12자>/<파일>.npz`), 다른 체크포인트의 예측을 잘못 읽을 수 없습니다.
 - 학습은 GPU에서, 예측은 CPU에서 했습니다. 같은 체크포인트와 같은 V2 행에서 두 장치의 예측 차이는 `p_last` 최대 7.86e-7, 보조 출력 포함 최대 4.47e-6이었습니다(`scripts/device_compare.py`, 허용 오차 1e-5).
-- 학습에 쓴 GPU는 빌린 것이었고, 그때 쓴 도구가 `scripts/runpod.py`(예산 상한과 포드 수명), `scripts/e_autopilot.sh`(격자 이후 단계를 원격으로 이어 실행), `scripts/pod_fetch.sh`(체크포인트 회수와 해시 대조)입니다. 자기 GPU에서 돌린다면 필요 없습니다. 비용은 학습 $28.21(파일럿 포함), 서빙 측정 $1.01이었습니다.
+- 학습에 쓴 GPU는 빌린 것이었고, 그때 쓴 도구가 `scripts/runpod.py`(예산 상한과 포드 수명), `scripts/pod_autopilot.sh`(격자 이후 단계를 원격으로 이어 실행), `scripts/pod_fetch.sh`(체크포인트 회수와 해시 대조)입니다. 자기 GPU에서 돌린다면 필요 없습니다. 비용은 학습 $28.21(파일럿 포함), 서빙 측정 $1.01이었습니다.
 
-결과: [공식 테스트](results/e_final_test.md), 기록 [results/records](results/records)
+결과: [공식 테스트](results/official_test.md), 기록 [results/records](results/records)
 
 ### 연구 E 서빙: 원시 입력에서 보정 확률과 지연까지 (DESIGN §18.12)
 
 ```bash
 uv run pytest -q tests/test_pymal_run.py -k serving               # 원자료 없이: 공식 텐서와 같은지, 신규 입력, 공유 인코딩
-PYTHONPATH=. uv run python scripts/serving_e.py prepare            # 측정 행과 저장 예측을 한 번 고정 (V2 필요)
+PYTHONPATH=. uv run python scripts/serving_bench.py prepare            # 측정 행과 저장 예측을 한 번 고정 (V2 필요)
 bash scripts/serving_sessions.sh linux                             # 측정할 서버에서: 일치 검사, 20분 간격 세션 3개, 요약
-PYTHONPATH=. uv run python scripts/serving_e.py render linux       # 결과 표
+PYTHONPATH=. uv run python scripts/serving_bench.py render linux       # 결과 표
 ```
 
 - 측정 규약(v3)은 측정 전에 DESIGN §18.12.1에 고정했습니다. 측정하는 동안에는 이 저장소의 다른 작업을 돌리지 않습니다.
 
-결과: [서빙](results/e_serving.md)
+결과: [서빙](results/serving.md)
 
 ## 6. 재현을 확인한 범위
 

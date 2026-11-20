@@ -1,145 +1,143 @@
-"""Serving path for latency measurement: one raw row (python dict of strings/lists) -> calibrated probability.
+"""Serve an official PyMAL model on the CPU: raw MAC rows in, calibrated conversion probabilities out.
 
-Everything a request needs happens here: string -> code mapping, purchase-history features,
-model, and calibration. The training/evaluation path builds the same features with polars
-(cvr/features.py); `scripts/latency.py` checks that both paths give identical features and
-predictions before timing.
+The lookups match utils.data.df_to_dict and the tensors match utils.data.MALDataset, so a served row gets the same
+probability as in evaluation. The similarity sequences (mm_feat0_seq, mm_feat1_seq) come precomputed with MAC.
 
-Library imports are lazy and per model type: an M3 server imports PyTorch but never LightGBM,
-because the two OpenMP runtimes cannot share one process on this machine (cvr/m3_worker.py).
+Inputs the model has not seen:
+- user_id is never looked up. The official model drops that column (user_indices[:, 1:]).
+- A value missing from a vocabulary maps to that vocabulary's PAD index, the missing value used in training, and is
+  counted in `oov` so it can be monitored.
+- An ad group missing from the training statistics uses the calibrator's pooled "unseen" group (-1), exactly as in
+  evaluation.
 """
 
-import json
+import argparse
 from pathlib import Path
 
 import numpy as np
-import polars as pl
-from scipy.special import expit
 
-from .calibration import load_calibrators
-from .m3data import ID_COLS, OTHER_CATS, SEQ_LEN, M3Arrays
-from .schema import CAT_INPUTS, GROUP_KEY, LR_ONEHOT, MM_COLS, NUM_INPUTS, PAD, SEQ_PAIRS, UNKNOWN, VOCAB_COLS
-
-
-def _load_maps(folder: Path) -> dict[str, dict[str, int]]:
-    return {
-        p.stem: dict(zip(*pl.read_parquet(p).select("value", "code").to_dict(as_series=False).values()))
-        for p in folder.glob("*.parquet")
-    }
-
-
-def row_features(vocab: dict[str, dict[str, int]], rows: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray]:
-    """Codes of every vocabulary column and the history features of raw rows (must match cvr/features.py).
-    Shared by the first-study Server and the study C server (cvr/serving_c.py)."""
-    codes = {c: np.fromiter((vocab[c].get(r[c], UNKNOWN) for r in rows), np.int64, len(rows)) for c in VOCAB_COLS}
-    num = np.empty((len(rows), len(NUM_INPUTS)), dtype=np.float64)
-    for i, r in enumerate(rows):
-        vals = []
-        for tgt, seq in SEQ_PAIRS:
-            t = r[tgt]
-            vals.append(0 if t == PAD else sum(1 for s in r[seq] if s == t))
-        s0 = r["ad_feat0_seq"]
-        vals.append(1 if all(s == PAD for s in s0) else 0)  # hist_empty
-        for m in MM_COLS:
-            a = np.asarray(r[m], dtype=np.float64)
-            vals += [np.float32(a.max()), np.float32(a.mean())]  # float32 like the polars path
-        num[i] = vals
-    return codes, num
+from . import evaluation as Q
+from . import pymal_run as R
+from .calibration import load_group_calibrators
+from .schema import PAD
 
 
 class Server:
-    def __init__(self, run_dir: Path, base: str, method: str):
-        self.base, self.method = base, method
-        self.vocab = _load_maps(run_dir / "vocab")
-        mdir = run_dir / "models"
-        if base == "M1":
-            from .artifacts import load_logreg
+    def __init__(
+        self, rid: str, ckpt: Path, vocabs: dict, codes: dict[str, int], threads: int = 1, calibration: str = "iii"
+    ):
+        """A model of the official code, with its run record next to the checkpoint and its calibrator."""
+        run = R.run_record(Path(ckpt))
+        cal = Q.calibrator_path(rid, calibration, "main")
+        self._setup(run["args"], Path(ckpt), vocabs, codes, cal, threads, {"run": rid})
 
-            self.model = load_logreg(mdir / "M1")
-            self.coef = self.model.model.coef_[0]
-            self.intercept = float(self.model.model.intercept_[0])
-        elif base.startswith("M2"):
-            from .artifacts import load_gbdt, load_stacking
+    @classmethod
+    def from_parts(
+        cls,
+        args: dict,
+        ckpt: Path,
+        vocabs: dict,
+        codes: dict[str, int],
+        calibrator: Path | None,
+        threads: int = 1,
+        info: dict | None = None,
+    ) -> "Server":
+        """Any official model. With calibrator=None it can only return raw probabilities."""
+        self = cls.__new__(cls)
+        self._setup(args, Path(ckpt), vocabs, codes, Path(calibrator) if calibrator else None, threads, info or {})
+        return self
 
-            self.model = load_gbdt(mdir / base)
-            self.stacking = None
-            if any(c.startswith(("aux_", "te_", "logn_")) for c in self.model.inputs):
-                # second study: auxiliary model (2-stage cascade) and group-rate / count lookups
-                st = load_stacking(mdir / "stacking")
-                self.stacking = {
-                    "aux": st.aux,
-                    "te": {
-                        k: (dict(zip(m.table[k].to_list(), m.table["rate"].to_list())), m.p0) for k, m in st.te.items()
-                    },
-                    "counts": {k: dict(zip(c[k].to_list(), c["n"].to_list())) for k, c in st.counts.items()},
-                }
-        elif base.startswith("M3"):
-            import torch
+    def _setup(
+        self,
+        args: dict,
+        ckpt: Path,
+        vocabs: dict,
+        codes: dict[str, int],
+        calibrator: Path | None,
+        threads: int,
+        info: dict,
+    ) -> None:
+        import torch
 
-            from .nn import load_m3
+        torch.set_num_threads(threads)
+        self.torch = torch
+        self.D, _ = R.official()
+        a = argparse.Namespace(**args)
+        self.model, _, _ = R.build(a, vocabs, torch.device("cpu"))
+        self.model.load_state_dict(torch.load(ckpt, map_location="cpu"))
+        self.model.eval()
+        self.main_view = a.main_view
+        self.vocabs, self.codes = vocabs, codes
+        self.pad = {c: v[PAD] for c, v in vocabs.items()}
+        self.oov: dict[str, int] = {}
+        self.glob, self.gs = load_group_calibrators(calibrator) if calibrator else (None, None)
+        self.info = info | {
+            "checkpoint": str(ckpt),
+            "checkpoint_sha256": R.sha256(ckpt),
+            "model": a.model,
+            "calibrator": calibrator.name if calibrator else None,
+            "lambda": float(self.gs.lam) if self.gs else None,
+            "threads": threads,
+        }
 
-            torch.set_num_threads(1)
-            self.model = load_m3(mdir / base)
-            self.id_vocab = _load_maps(run_dir / "id_vocab")
-        else:
-            raise ValueError(base)
-        self.glob, self.gs, self.fa, gc = load_calibrators(mdir / f"calib_{base}")
-        self.group_clicks = dict(zip(gc[GROUP_KEY].to_list(), gc["tr_clicks"].to_list()))
+    @staticmethod
+    def columns() -> list[str]:
+        D, _ = R.official()
+        return D.USER_COLS + D.AD_COLS + D.SEQ_COLS + D.MM_COLS
 
-    # ------------------------------------------------------------ features (must match cvr/features.py)
-    def features(self, rows: list[dict]) -> tuple[dict[str, np.ndarray], np.ndarray]:
-        return row_features(self.vocab, rows)
+    def code(self, col: str, value: str) -> int:
+        i = self.vocabs[col].get(value)
+        if i is None:
+            self.oov[col] = self.oov.get(col, 0) + 1
+            return self.pad[col]
+        return i
 
-    # ------------------------------------------------------------ model scores
-    def raw_score(self, rows: list[dict], codes: dict[str, np.ndarray], num: np.ndarray) -> np.ndarray:
-        if self.base == "M1":
-            m = self.model
-            z = np.full(len(rows), self.intercept)
-            for c in LR_ONEHOT:
-                z += self.coef[codes[c] + m.offsets[c]]
-            if m.num_inputs:
-                z += ((num - m.mean) / m.std) @ self.coef[m.n_onehot : m.n_onehot + len(m.num_inputs)]
-            return expit(z)
-        if self.base.startswith("M2"):
-            cols = {c: codes[c].astype(np.float64) for c in CAT_INPUTS} | {
-                c: num[:, j] for j, c in enumerate(NUM_INPUTS)
-            }
-            st = getattr(self, "stacking", None)
-            if st is not None:
-                if st["aux"] is not None:  # stage 1: auxiliary model on the base inputs
-                    Xa = np.column_stack([cols[c] for c in st["aux"].inputs])
-                    cols["aux_mta"] = st["aux"].booster.predict(Xa, num_threads=1)
-                for k, (table, p0) in st["te"].items():
-                    cols[f"te_{k}"] = np.fromiter((table.get(int(x), p0) for x in codes[k]), np.float64, len(rows))
-                    cols[f"logn_{k}"] = np.log1p(
-                        np.fromiter((st["counts"][k].get(int(x), 0) for x in codes[k]), np.float64, len(rows))
-                    )
-            X = np.column_stack([cols[c] for c in self.model.inputs])
-            return self.model.booster.predict(X, num_threads=1)
-        n = len(rows)
-        tgt = np.empty((n, len(ID_COLS)), np.int32)
-        seq = np.empty((n, SEQ_LEN, len(ID_COLS)), np.int32)
-        for j, (t, s) in enumerate(SEQ_PAIRS):
-            v = self.id_vocab[t]
-            tgt[:, j] = [v.get(r[t], UNKNOWN) for r in rows]
-            seq[:, :, j] = [[v.get(x, UNKNOWN) for x in r[s]] for r in rows]
-        mm = np.stack([np.asarray([r[m] for r in rows], dtype=np.float32) for m in MM_COLS], axis=-1)
-        other = np.column_stack([codes[c] for c in OTHER_CATS]).astype(np.int32)
-        return self.model.predict(M3Arrays(other, tgt, seq, mm, num.astype(np.float32)), batch=n)
+    def user_part(self, row: dict):
+        """User features and purchase history as tensors. Slot 0 stands in for user_id, which the model ignores."""
+        D, torch = self.D, self.torch
+        user = [0] + [self.code(c, row[c]) for c in D.USER_COLS[1:]]
+        seq = [[self.code(D.MAP_COLS[c], t) for t in row[c]] for c in D.SEQ_COLS]
+        return torch.tensor([user], dtype=torch.long), torch.tensor([seq], dtype=torch.long)
 
-    def calibrate(self, p: np.ndarray, codes: dict[str, np.ndarray]) -> np.ndarray:
-        g = codes[GROUP_KEY]
-        if self.method == "ii":
-            return self.glob.predict(p)
-        if self.method == "iv":
-            n = np.fromiter((self.group_clicks.get(int(x), 0) for x in g), np.float64, g.size)
-            return self.fa.predict(p, n)
-        return self.gs.predict(p, g)  # iii_lam*
+    def ad_part(self, rows: list[dict]):
+        D, torch = self.D, self.torch
+        ad = torch.tensor([[self.code(c, r[c]) for c in D.AD_COLS] for r in rows], dtype=torch.long)
+        mm = torch.tensor(np.asarray([[r[c] for c in D.MM_COLS] for r in rows], dtype=np.float32))
+        return ad, mm
+
+    def tensors(self, rows: list[dict]):
+        """Tensors for rows that each carry their own user, in MALDataset's layout."""
+        parts = [self.user_part(r) for r in rows]
+        ad, mm = self.ad_part(rows)
+        return (self.torch.cat([u for u, _ in parts]), ad, mm, self.torch.cat([q for _, q in parts]))
+
+    def request_tensors(self, user_row: dict, candidates: list[dict]):
+        """Tensors for one user's candidates. The user's history is looked up once and broadcast to every
+        candidate instead of once per candidate, which removes most of the encoding time of a request."""
+        user, seq = self.user_part(user_row)
+        ad, mm = self.ad_part(candidates)
+        n = len(candidates)
+        return user.expand(n, -1), ad, mm, seq.expand(n, -1, -1)
+
+    def score(self, tensors) -> np.ndarray:
+        user, ad, mm, seq = tensors
+        with self.torch.no_grad():
+            p = self.model(user[:, 1:], ad, mm, seq)[self.main_view][:, 1]
+        return p.numpy().astype(np.float64)
+
+    def raw(self, rows: list[dict]) -> np.ndarray:
+        return self.score(self.tensors(rows))
+
+    def calibrate(self, p: np.ndarray, rows: list[dict]) -> np.ndarray:
+        if self.gs is None:
+            raise ValueError("this model has no calibrator fitted for it")
+        g = np.array([self.codes.get(r["ad_feat1"], -1) for r in rows])  # -1: the pooled "unseen" group
+        return self.gs.predict(p, g)
 
     def predict(self, rows: list[dict]) -> np.ndarray:
-        codes, num = self.features(rows)
-        return self.calibrate(self.raw_score(rows, codes, num), codes)
+        """Calibrated probability per row, each row with its own user."""
+        return self.calibrate(self.raw(rows), rows)
 
-
-def selection(run_dir: Path) -> dict:
-    return json.loads((run_dir / "selection.json").read_text())
+    def predict_request(self, user_row: dict, candidates: list[dict]) -> np.ndarray:
+        """Calibrated probability per candidate of one user's request."""
+        return self.calibrate(self.score(self.request_tensors(user_row, candidates)), candidates)

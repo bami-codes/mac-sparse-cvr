@@ -1,11 +1,11 @@
-"""Row sampling and positional reading of the study C serving check (scripts/latency_c.py)."""
+"""Row sampling and positional reading of the study C serving check (experiments/scripts/latency_c.py)."""
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from scripts.latency_c import RAW, read_rows, sample_indices
+from experiments.scripts.latency_c import RAW, read_rows, sample_indices
 
 
 def test_sample_covers_every_domain_and_is_sorted_unique():
@@ -29,7 +29,7 @@ def test_rows_are_read_at_their_file_positions(tmp_path):
 
 
 def test_the_acceptance_rule_is_refused_outside_macos(monkeypatch):
-    import scripts.latency_c as L
+    import experiments.scripts.latency_c as L
 
     monkeypatch.setattr(L.sys, "platform", "linux")  # ps -o pcpu means lifetime average CPU there
     with pytest.raises(RuntimeError, match="macOS"):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up the study E GPU pod: environment, every official data file, the official preprocessing.
+# Set up a GPU machine for training: environment, every official data file, the official preprocessing.
 #   bash scripts/pod_setup.sh        # then: python scripts/pod_queue.py run runs/e_runs/jobs_grid.json --gpus 4
 set -euo pipefail
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh

@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 
-from cvr.nn import M3Arrays, M3Model, M3Net
 from cvr.schema import MISSING
+from experiments.nn import M3Arrays, M3Model, M3Net
 
 
 def _batch(B=6, L=20, seed=0):

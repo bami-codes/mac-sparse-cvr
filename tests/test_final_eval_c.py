@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from cvr import final_eval_c as F
 from cvr.checks import CheckFailed
+from experiments import final_eval_c as F
 
 CLEAN = {"commit": "c" * 40, "dirty_files": []}
 
@@ -111,7 +111,7 @@ def test_the_dry_run_must_belong_to_this_freeze_and_this_code(setup):
     assert not (run / "final" / "test.lock").exists()
 
 
-def test_input_problems_are_refused_before_the_single_run_is_claimed(setup, tmp_path):
+def test_bad_inputs_refused_before_claiming_run(setup, tmp_path):
     run, files = setup
     _dry(run)
     with pytest.raises(CheckFailed, match="differ from the frozen holdout"):
@@ -247,7 +247,7 @@ def _provenance_run(tmp_path):
         for s in (2026, 2027, 2028):
             (run / "models" / f"{fam}_s{s}_e2.json").write_text("{}")
     sel = {"lambda_iiid": {f: 1.0 for f in F.LATENCY_FAMILIES}}
-    from cvr.serving_c import model_path
+    from experiments.serving_c import model_path
 
     env = {"load_average": [5.0] * 3, "cpu_count": 10, "other_repo_python": [], "other_cpu_percent": 250.0}
     fams = {}
@@ -274,7 +274,7 @@ def _provenance_run(tmp_path):
     return run, sel, {"run": str(run), "families": fams}
 
 
-def test_latency_report_must_come_from_this_run_and_its_calibrators(tmp_path):
+def test_latency_report_matches_run(tmp_path):
     import copy
 
     run, sel, rep = _provenance_run(tmp_path)
@@ -318,10 +318,10 @@ def test_the_kept_latency_attempt_is_the_first_accepted_one(tmp_path):
             F.check_latency_provenance(bad, run, sel)
 
 
-def test_at_most_three_latency_attempts_and_the_same_rule_as_the_measuring_script(tmp_path):
+def test_latency_attempts_capped_at_three(tmp_path):
     import copy
 
-    import scripts.latency_c as L
+    import experiments.scripts.latency_c as L
 
     assert (L.MAX_ATTEMPTS, L.REQUESTS, L.ACCEPT_OTHER_CPU, L.PROTOCOL["version"]) == (
         F.LATENCY_MAX_ATTEMPTS,
@@ -345,7 +345,7 @@ def test_at_most_three_latency_attempts_and_the_same_rule_as_the_measuring_scrip
 def test_a_failed_process_table_is_a_failed_measurement(monkeypatch):
     import subprocess
 
-    import scripts.latency_c as L
+    import experiments.scripts.latency_c as L
 
     monkeypatch.setattr(L.sys, "platform", "darwin")  # the rule is macOS-only; off macOS it is refused before ps runs
     monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="x"))

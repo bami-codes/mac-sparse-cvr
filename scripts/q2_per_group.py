@@ -1,4 +1,4 @@
-"""Study E Q2, per group (description after the official test, no verdict; docs/results/e_final_test.md).
+"""Q2 of the official test, per group (description after the official test, no verdict; docs/results/official_test.md).
 
     PYTHONPATH=. uv run python scripts/q2_per_group.py
 
@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from cvr import evaluation as Q
 from cvr import metrics as M
-from cvr import study_e_eval as Q
 from cvr.checks import CheckFailed
 
 OUT = Path("runs/e_study/q2_per_group.json")

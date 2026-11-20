@@ -280,3 +280,14 @@ def fit_group_intercept_exact(
         "max_iterations": iters,
         "tol": tol,
     }
+
+
+def save_group_calibrators(glob: GlobalPlatt, gs: GroupShrunkPlatt, path: Path) -> None:
+    """(ii) and (iii) of one base model in one .npz; the groups are the codes `gs` was fitted on."""
+    np.savez(path.with_suffix(".npz"), a=glob.a, b=glob.b, lam=gs.lam, group_ids=gs.group_ids, da=gs.da, db=gs.db)
+
+
+def load_group_calibrators(path: Path) -> tuple[GlobalPlatt, GroupShrunkPlatt]:
+    z = np.load(path.with_suffix(".npz"))
+    glob = GlobalPlatt(float(z["a"]), float(z["b"]))
+    return glob, GroupShrunkPlatt(glob.a, glob.b, float(z["lam"]), z["group_ids"], z["da"], z["db"], 0, True)

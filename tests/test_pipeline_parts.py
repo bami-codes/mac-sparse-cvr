@@ -6,11 +6,11 @@ import pytest
 from scipy.optimize import check_grad
 from scipy.special import expit
 
-from cvr import vocab as V
 from cvr.calibration import GlobalPlatt, GroupShrunkPlatt, logit
-from cvr.groups import classify
 from cvr.metrics import paired_bootstrap_macro_diff
 from cvr.schema import MISSING, PAD, UNKNOWN, assert_no_label_inputs
+from experiments import vocab as V
+from experiments.groups import classify
 
 
 def test_vocab_is_shared_and_handles_unseen_and_pad():

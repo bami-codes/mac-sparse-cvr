@@ -1,4 +1,4 @@
-"""Job queue for study E on a multi-GPU pod: one training run per GPU at a time.
+"""Job queue on a multi-GPU machine: one training run per GPU at a time.
 
     python scripts/pod_queue.py grid  > runs/e_runs/jobs_grid.json          # the paper's search space, seed 2026
     python scripts/pod_queue.py seeds --moae "<lr> <lamda>" --base "<lr>" > runs/e_runs/jobs_seeds.json

@@ -45,11 +45,11 @@ ignore = [
 "tests/*" = ["E402"]    # imports after sys.path setup for the synthetic data helpers
 "scripts/*" = ["E402"]
 # helpers defined inside a loop and called in the same iteration (each case reviewed)
-"cvr/final_eval.py" = ["B023"]
-"cvr/pipeline.py" = ["B023"]
-"scripts/calibration_data_study.py" = ["B023"]
-"scripts/study_d.py" = ["B023"]
+"experiments/final_eval.py" = ["B023"]
+"experiments/pipeline.py" = ["B023"]
+"experiments/scripts/calibration_data_study.py" = ["B023"]
+"experiments/scripts/study_d.py" = ["B023"]
 "tests/test_calibration_exact.py" = ["B023"]
 "tests/test_m3data.py" = ["B023"]
 "tests/test_study_d.py" = ["B023"]
-"cvr/domain_eval.py" = ["E741"]  # O and E are the observed and expected counts, as in the formulas
+"experiments/domain_eval.py" = ["E741"]  # O and E are the observed and expected counts, as in the formulas

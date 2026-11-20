@@ -28,8 +28,7 @@ from synthetic_mac import make_file, make_world, write_official_vocabs
 
 from cvr import predictor as P
 from cvr import pymal_run as R
-from cvr.calibration import GlobalPlatt, fit_group_shrunk_exact
-from cvr.domain_models import save_domain_calibrators
+from cvr.calibration import GlobalPlatt, fit_group_shrunk_exact, save_group_calibrators
 
 TRAIN, CALIB = ["train-00.parquet", "train-01.parquet", "train-02.parquet"], "train-03.parquet"
 LAMBDA = 100.0  # fixed for the example (the benchmark models choose it on a later file)
@@ -116,7 +115,7 @@ def build(out: Path, rows: int = 20000) -> dict:
         model_dir.mkdir(parents=True)
         shutil.copy(ckpt, model_dir / "model.pt")
         shutil.copytree(mac / "vocabs", model_dir / "vocabs")
-        save_domain_calibrators(glob, gs, model_dir / "calibrator.npz")
+        save_group_calibrators(glob, gs, model_dir / "calibrator.npz")
         (model_dir / "group_codes.json").write_text(json.dumps(codes))
         cfg = {
             "args": args,

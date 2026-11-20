@@ -120,9 +120,9 @@ uv run python -m cvr.predictor request.json --bundle bundles/BASE_train17 --voca
 | 그룹 평균 LogLoss | 1 | 0.037947 | 3.755 | 0.950 |
 | 그룹별 전환 합계 | 10000 | 0.038092 | 1.903 | 1.001 |
 
-LogLoss로 고른 보정은 공통 보정보다 그룹 평균 LogLoss를 낮췄지만(−0.000147 [−0.000253, −0.000054]), 클릭 단위 LogLoss는 거의 그대로였고(−0.000003 [−0.000036, +0.000028]) 그룹별 전환 합계의 오차는 키웠습니다(Poisson deviance +1.80 [+0.41, +3.16]). 앞선 실험에서 이미 한 번 연 평가 자료를 다시 쓴 결과라 확증은 아닙니다([표](docs/results/study_d.md)).
+LogLoss로 고른 보정은 공통 보정보다 그룹 평균 LogLoss를 낮췄지만(−0.000147 [−0.000253, −0.000054]), 클릭 단위 LogLoss는 거의 그대로였고(−0.000003 [−0.000036, +0.000028]) 그룹별 전환 합계의 오차는 키웠습니다(Poisson deviance +1.80 [+0.41, +3.16]). 앞선 실험에서 이미 한 번 연 평가 자료를 다시 쓴 결과라 확증은 아닙니다([표](experiments/results/study_d.md)).
 
-자세한 표는 [공식 테스트](docs/results/e_final_test.md)와 [서빙](docs/results/e_serving.md)에, 원본 기록(JSON)은 [docs/results/records](docs/results/records)에 있습니다.
+자세한 표는 [공식 테스트](docs/results/official_test.md)와 [서빙](docs/results/serving.md)에, 원본 기록(JSON)은 [docs/results/records](docs/results/records)에 있습니다.
 
 ## 검증 방법과 한계
 
@@ -140,10 +140,11 @@ LogLoss로 고른 보정은 공통 보정보다 그룹 평균 LogLoss를 낮췄�
 | [third_party/pymal](third_party/pymal_UPSTREAM.md) | 공식 코드(커밋 `3186be8`)를 고치지 않고 그대로 둡니다. 파일마다 git blob id를 테스트로 대조합니다. |
 | [cvr/pymal_run.py](cvr/pymal_run.py) | 공식 코드 실행기입니다. 체크포인트, 이어서 학습, 예측을 더했고, 공식 `run.py`와 손실과 파라미터가 비트 단위로 같은지 테스트합니다. |
 | [cvr/calibration.py](cvr/calibration.py) | 공통 Platt와 그룹별 축소 Platt(그룹마다 정확히 푸는 뉴턴 해법) |
-| [cvr/study_e.py](cvr/study_e.py), [cvr/study_e_eval.py](cvr/study_e_eval.py), [cvr/final_eval_e.py](cvr/final_eval_e.py) | 희소 그룹 정의, 보정 선택, 지표와 부트스트랩, 고정 → 예행 → 한 번의 테스트 |
-| [cvr/serving_e.py](cvr/serving_e.py), [cvr/predictor.py](cvr/predictor.py) | 원시 행 → 공식 텐서 → 모델 → 보정, 모델 묶음과 명령줄 |
-| [cvr/latency_v3.py](cvr/latency_v3.py), [scripts/serving_e.py](scripts/serving_e.py) | 지연 측정과 분석 |
+| [cvr/groups.py](cvr/groups.py), [cvr/evaluation.py](cvr/evaluation.py), [cvr/final_test.py](cvr/final_test.py) | 희소 그룹 정의, 보정 선택, 지표와 부트스트랩, 고정 → 예행 → 한 번의 테스트 |
+| [cvr/serving.py](cvr/serving.py), [cvr/predictor.py](cvr/predictor.py) | 원시 행 → 공식 텐서 → 모델 → 보정, 모델 묶음과 명령줄 |
+| [cvr/latency.py](cvr/latency.py), [scripts/serving_bench.py](scripts/serving_bench.py) | 지연 측정과 분석 |
 | [scripts/pod_queue.py](scripts/pod_queue.py), `scripts/pod_setup.sh` | GPU 학습: 환경과 자료 준비, 탐색 격자와 시드 학습을 GPU마다 나눠 실행 |
+| [experiments/](experiments/README.md) | 앞선 실험(LightGBM, 작은 신경망, 도메인 구조)의 코드, 설정, 결과 |
 
 ```bash
 uv run pytest -q                               # 단위 테스트 178개, 약 1분, 원자료 없이 합성 자료로
@@ -155,7 +156,8 @@ uvx ruff check . && uvx ruff format --check .  # CI와 같은 린트와 형식 �
 
 - [docs/reproduce.md](docs/reproduce.md): 자료 받기, GPU 학습, 평가, 서빙 측정 명령
 - [docs/DESIGN.md](docs/DESIGN.md): 설계, 미리 정한 판정 기준, 결정 기록
-- [docs/results](docs/results/README.md): 이 결과에 앞서 LightGBM과 작은 신경망으로 한 실험을 포함한 모든 결과
+- [docs/results](docs/results): 공식 테스트와 서빙의 자세한 표, 원본 기록
+- [experiments/README.md](experiments/README.md): 앞선 실험의 질문과 결과
 
 ## 라이선스
 

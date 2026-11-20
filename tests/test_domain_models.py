@@ -4,10 +4,16 @@ import numpy as np
 import polars as pl
 from scipy.special import expit
 
-from cvr.domain_models import G_INT_INPUTS, G_SHARED_INPUTS, GBDTOffset, early_stopping_offsets, oof_domain_offset
-from cvr.models import SmoothedRate, early_stopping_users
 from cvr.schema import DOMAIN_KEY
-from cvr.stacking import user_fold
+from experiments.domain_models import (
+    G_INT_INPUTS,
+    G_SHARED_INPUTS,
+    GBDTOffset,
+    early_stopping_offsets,
+    oof_domain_offset,
+)
+from experiments.models import SmoothedRate, early_stopping_users
+from experiments.stacking import user_fold
 
 
 def _frame(seed=0, n_users=300, rows=20):

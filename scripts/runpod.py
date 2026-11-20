@@ -1,4 +1,4 @@
-"""Manage RunPod GPU pods for study E within a budget (RunPod REST API v2, standard library only).
+"""Manage rented RunPod GPU pods within a budget (RunPod REST API v2, standard library only).
 
     python3 scripts/runpod.py gpus [--min-vram 24] [--cuda 13.0]   # prices and availability (no pod is created)
     python3 scripts/runpod.py templates                             # official images
@@ -130,7 +130,7 @@ def create(a) -> None:
     led = load()
     if led["budget_usd"] is None:
         raise SystemExit("set the budget first: scripts/runpod.py budget --usd ... --max-price ...")
-    if a.cpu:  # a CPU pod (study E latency on a Linux server): the price is per vCPU, secure cloud only
+    if a.cpu:  # a CPU pod (the latency measurement on a Linux server): the price is per vCPU, secure cloud only
         cpu = {c["id"]: c for c in call("GET", "/catalog/cpus").get("cpus", [])}.get(a.cpu)
         if cpu is None or a.cloud != "SECURE":
             raise SystemExit(f"unknown CPU flavor {a.cpu}, or not on SECURE")

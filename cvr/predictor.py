@@ -15,7 +15,7 @@ A model ships as a folder (bundle):
 A request uses MAC's raw columns:
     {"user": {user_feat0..5, ad_feat0_seq..ad_feat2_seq},
      "candidates": [{ad_feat0..5, context_feat0..3, mm_feat0_seq, mm_feat1_seq}, ...]}
-The three history lists have one length, and each candidate carries one similarity per history item.
+The three history lists hold MAC's 20 slots (padded), and each candidate carries one similarity per slot.
 """
 
 import argparse
@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from . import pymal_run as R
-from .serving_e import ServerE
+from .serving import Server
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "model"
 CALIBRATIONS = {"iii": "group-shrunk Platt on the ad group (ad_feat1)", "ii": "global Platt", "none": "none"}
@@ -79,7 +79,7 @@ def validate(request: dict) -> None:
             raise RequestError(f"candidate {i}: {bad} must hold one number per history item ({n})")
 
 
-def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -> ServerE:
+def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -> Server:
     """Load a bundle. Real bundles keep the 873 MB vocabularies outside, so pass them with `vocabs`."""
     bundle = Path(bundle)
     cfg = json.loads((bundle / "config.json").read_text())
@@ -91,7 +91,7 @@ def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -
     D, _ = R.official()
     calibrated = cfg.get("calibrator") is not None
     codes = json.loads((bundle / "group_codes.json").read_text()) if calibrated else {}
-    server = ServerE.from_parts(
+    server = Server.from_parts(
         cfg["args"],
         ckpt,
         D.get_vocabs(str(voc)),
@@ -105,7 +105,7 @@ def load(bundle: Path = EXAMPLE, vocabs: Path | None = None, threads: int = 1) -
     return server
 
 
-def predict(server: ServerE, request: dict, calibration: str = "iii") -> dict:
+def predict(server: Server, request: dict, calibration: str = "iii") -> dict:
     """CVR per candidate. Without a calibrator in the bundle, cvr is the raw probability and calibration says "none"."""
     validate(request)
     server.oov.clear()
@@ -131,11 +131,11 @@ def predict(server: ServerE, request: dict, calibration: str = "iii") -> dict:
 
 
 def export(rid: str, out: Path, after: str = "train-17.parquet", calibrated: bool = True) -> dict:
-    """Package a study E run as a bundle. The 2 GB checkpoint stays in place and is referenced by path and SHA-256.
+    """Package a training run as a bundle. The 2 GB checkpoint stays in place and is referenced by path and SHA-256.
 
     A calibrator only fits the checkpoint whose predictions it was trained on (train-17). Exporting any other
     checkpoint requires calibrated=False."""
-    from . import study_e_eval as Q
+    from . import evaluation as Q
 
     run = json.loads((Q.RUNS / rid / "run.json").read_text())
     ckpt = (Q.RUNS / rid / f"model_after_{Path(after).stem}.pt").resolve()

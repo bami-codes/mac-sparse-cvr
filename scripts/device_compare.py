@@ -1,4 +1,4 @@
-"""Compare GPU (pod) and Mac CPU predictions of the same checkpoint on the same rows (study E device check).
+"""Compare GPU and CPU predictions of the same checkpoint on the same rows (the device check).
 
     python scripts/device_compare.py <gpu .npz> <cpu .npz> <out .json>
 

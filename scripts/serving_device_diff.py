@@ -4,7 +4,7 @@
     PYTHONPATH=. uv run python scripts/serving_device_diff.py compare mac linux
 
 dump serves the 2,999 check rows one at a time and as a single batch. compare lines up machine vs machine next to
-one row vs a batch on the same machine, and both vs the saved evaluation predictions (Mac, batches of 4,096).
+one row vs a batch on the same machine, and both vs the saved evaluation predictions (local CPU, batches of 4,096).
 """
 
 import json
@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts import serving_e as S
+from scripts import serving_bench as S
 
 OUT = S.DIR
 

@@ -1,4 +1,4 @@
-"""Train and score the official MAC models (PyMAL) without changing them.
+r"""Train and score the official MAC models (PyMAL) without changing them.
 
     python -m cvr.pymal_run preprocess train-00.parquet ... test.parquet
     python -m cvr.pymal_run train --out runs/e_pymal/<name> --model MoAE --lr 0.004 --lamda 0.2 \

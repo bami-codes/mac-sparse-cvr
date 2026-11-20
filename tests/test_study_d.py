@@ -5,9 +5,9 @@ import pytest
 from scipy.optimize import minimize_scalar
 from scipy.special import expit
 
-from cvr import domain_eval as D
 from cvr import metrics as M
 from cvr.calibration import GlobalPlatt, fit_group_intercept_exact, logit
+from experiments import domain_eval as D
 
 
 def _data(seed=0):
@@ -20,7 +20,7 @@ def _data(seed=0):
     return expit(z), y, g
 
 
-def test_intercept_only_solver_matches_a_one_dimensional_reference():
+def test_intercept_solver_matches_reference():
     p, y, g = _data()
     base = GlobalPlatt.fit(p, y)
     for lam in (1.0, 100.0, 10000.0):
@@ -86,7 +86,7 @@ def test_group_bootstrap_of_identical_models_is_zero():
 
 
 def test_study_d_verdict_requires_the_preregistered_seeds():
-    import scripts.study_d as S
+    import experiments.scripts.study_d as S
 
     def comp(seeds, pois):
         return {
